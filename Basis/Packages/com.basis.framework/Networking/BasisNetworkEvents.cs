@@ -261,6 +261,15 @@ public static class BasisNetworkEvents
                 IncomingData(Reader);
                 Reader.Recycle();
                 break;
+                case BasisNetworkCommons.BatchedPlayerAvatarChannel:
+                if (ValidateSize(Reader, peer, channel) == false)
+                {
+                    Reader.Recycle();
+                    return;
+                }
+                BasisNetworkHandleAvatar.BatchedHandleAvatarUpdate(Reader);
+                Reader.Recycle();
+                break;
             default:
                 BNL.LogError($"this Channel was not been implemented {channel}");
                 Reader.Recycle();
