@@ -226,9 +226,252 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1856477555
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1856477559}
+  - component: {fileID: 1856477558}
+  - component: {fileID: 1856477557}
+  - component: {fileID: 1856477556}
+  m_Layer: 0
+  m_Name: GameObject
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1856477556
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1856477555}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e42bafd9a7ad40629d1abd5ff5d09aa6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: HVR.IK.Runtime::HVR.IK.FullTiger.HIKFullTiger
+  animator: {fileID: 0}
+  effectors: {fileID: 1856477558}
+  environmental: {fileID: 1856477557}
+  updateInLateUpdate: 0
+  useJobSystem: 1
+  updateEveryFrame: 1
+  overrideDefaultFabrikIterationCount: 0
+  fabrikIterations: 20
+  useLookupTables: 1
+  debugDrawFinalChains: 1
+  debugDrawSolver: 1
+  debugDrawFlags: 2147483647
+--- !u!114 &1856477557
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1856477555}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dabd7fa1b0df44e1b811f4d7c2655588, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: HVR.IK.Runtime::HVR.IK.FullTiger.HIKEnvironmental
+  groundingRaycastOrigin: {fileID: 0}
+  groundingRaycastLayerMask:
+    serializedVersion: 2
+    m_Bits: 0
+  debugDraw: 0
+  useSphereCastRadius: 0
+--- !u!114 &1856477558
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1856477555}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 773a302d7f7140e6943e203bff09a2d4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: HVR.IK.Runtime::HVR.IK.FullTiger.HIKEffectors
+  animator: {fileID: 0}
+  runtimeTargets: {fileID: 0}
+  hipTarget: {fileID: 0}
+  headTarget: {fileID: 0}
+  leftHandTarget: {fileID: 0}
+  rightHandTarget: {fileID: 0}
+  leftFootTarget: {fileID: 0}
+  rightFootTarget: {fileID: 0}
+  hipPositionMattersMore: 0
+  contortionist: 0
+  doNotPreserveHipsToNeckCurvatureLimit: 0
+  improveSpineBuckling: 1
+  chestRotationUsesHead: 0
+  useChest: 0
+  chestTarget: {fileID: 0}
+  alsoUseChestToMoveNeck: 0
+  useLeftLowerArm: 0
+  leftLowerArmTarget: {fileID: 0}
+  useRightLowerArm: 0
+  rightLowerArmTarget: {fileID: 0}
+  legStruggleStart: 0.99
+  legStruggleEnd: 1.04
+  armStruggleStart: 0.99
+  armStruggleEnd: 1.04
+  useShoulder: 0
+  shoulderForwardAngleMultiplier: 1
+  shoulderUpwardAngleMultiplier: 1
+  useStraddlingLeftLeg: 0
+  groundedStraddlingLeftLeg: {fileID: 0}
+  useStraddlingRightLeg: 0
+  groundedStraddlingRightLeg: {fileID: 0}
+  useSelfParentLeftHand: 0
+  selfParentLeftHandBone: 0
+  selfParentLeftHandRelativePosition:
+    x: 0
+    y: 0
+    z: 0
+  selfParentLeftHandRelativeRotationEuler:
+    x: 0
+    y: 0
+    z: 0
+  useSelfParentRightHand: 0
+  selfParentRightHandBone: 0
+  selfParentRightHandRelativePosition:
+    x: 0
+    y: 0
+    z: 0
+  selfParentRightHandRelativeRotationEuler:
+    x: 0
+    y: 0
+    z: 0
+  useHipsFromEnvironmental: 0
+  useFakeDoubleJointedKnees: 0
+  useDirectDrive: 0
+  hipWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  hipWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  leftHandWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  leftHandWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  rightHandWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  rightHandWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  leftFootWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  leftFootWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  rightFootWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  rightFootWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  chestTargetWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  chestTargetWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  leftLowerArmWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  leftLowerArmWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  rightLowerArmWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  rightLowerArmWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  groundedStraddlingLeftLegWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  groundedStraddlingLeftLegWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+  groundedStraddlingRightLegWorldPosition:
+    x: 0
+    y: 0
+    z: 0
+  groundedStraddlingRightLegWorldRotation:
+    value:
+      x: 0
+      y: 0
+      z: 0
+      w: 0
+--- !u!4 &1856477559
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1856477555}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.97757, y: -0.06079, z: 1.29011}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 1187098623}
   - {fileID: 1620637457}
+  - {fileID: 1856477559}

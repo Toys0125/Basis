@@ -6,6 +6,7 @@ using UnityEngine;
 [Serializable]
 public class BasisLocalFootDriver
 {
+    /*
     [Header("Raycast")]
     [SerializeField, Range(0.03f, 0.15f)] private float raySphereRadius = 0.06f;
     [SerializeField, Range(0.1f, 3f)] private float rayCastRange = 2f;   // recalculated at init (max of legs)
@@ -497,4 +498,5 @@ public class BasisLocalFootDriver
             }
         }
     }
+    */
 }

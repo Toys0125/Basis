@@ -5,6 +5,7 @@ using Basis.Scripts.Common;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.TransformBinders.BoneControl;
 using GatorDragonGames.JigglePhysics;
+using HVR.IK.FullTiger;
 using System;
 using System.Collections.Generic;
 using Unity.Mathematics;
@@ -101,8 +102,8 @@ namespace Basis.Scripts.Drivers
             player.LocalRigDriver.Initialize(player, References);
 
             player.LocalRigDriver.CleanupBeforeContinue();
-            player.LocalRigDriver.AdditionalTransforms.Clear();
-            player.LocalRigDriver.Rigs.Clear();
+            //  player.LocalRigDriver.AdditionalTransforms.Clear();
+            // player.LocalRigDriver.Rigs.Clear();
             GameObject AvatarAnimatorParent = player.BasisAvatar.Animator.gameObject;
             ScaleAvatarModification.ReInitalize(player.BasisAvatar.Animator);
 
@@ -127,9 +128,8 @@ namespace Basis.Scripts.Drivers
             {
                 Rig.OnInitialize();
             }
-
-            player.LocalRigDriver.Builder = BasisHelpers.GetOrAddComponent<RigBuilder>(AvatarAnimatorParent);
-            player.LocalRigDriver.Builder.enabled = false;
+            player.LocalRigDriver.HIKEffectors = BasisHelpers.GetOrAddComponent<HIKEffectors>(AvatarAnimatorParent);
+            player.LocalRigDriver.HIKEffectors.animator = player.BasisAvatar.Animator;
 
             Calibration(player);
 
@@ -155,7 +155,7 @@ namespace Basis.Scripts.Drivers
 
             ComputeOffsets(player.LocalBoneDriver);
 
-           // player.BasisLocalFootDriver.InitializeVariables();
+            // player.BasisLocalFootDriver.InitializeVariables();
 
             player.LocalHandDriver.ReInitialize(player.BasisAvatar.Animator);
             player.LocalAnimatorDriver.Initialize(player);
@@ -188,8 +188,8 @@ namespace Basis.Scripts.Drivers
             {
                 AddJiggleRigColliders(References);
             }
+          //  player.LocalRigDriver.HIKEffectors.Initalize();
         }
-
         /// <summary>
         /// Restores the head scale to its cached normal value if currently hidden/zeroed.
         /// </summary>

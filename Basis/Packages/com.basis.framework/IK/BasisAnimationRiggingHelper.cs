@@ -94,18 +94,18 @@ public static class BasisAnimationRiggingHelper
             while (currentTransform != null && currentTransform != BasisLocalAvatarDriver.References.Hips)
             {
                 // Add component if the current transform doesn't have it
-                if (currentTransform.TryGetComponent<RigTransform>(out RigTransform RigTransform))
-                {
-                    if (player.LocalRigDriver.AdditionalTransforms.Contains(RigTransform) == false)
-                    {
-                        player.LocalRigDriver.AdditionalTransforms.Add(RigTransform);
-                    }
-                }
-                else
-                {
-                    RigTransform = currentTransform.gameObject.AddComponent<RigTransform>();
-                    player.LocalRigDriver.AdditionalTransforms.Add(RigTransform);
-                }
+                // if (currentTransform.TryGetComponent<RigTransform>(out RigTransform RigTransform))
+                // {
+                //   if (player.LocalRigDriver.AdditionalTransforms.Contains(RigTransform) == false)
+                //  {
+                //     player.LocalRigDriver.AdditionalTransforms.Add(RigTransform);
+                //  }
+                //  }
+                //   else
+                //  {
+                //  RigTransform = currentTransform.gameObject.AddComponent<RigTransform>();
+                //  player.LocalRigDriver.AdditionalTransforms.Add(RigTransform);
+                //   }
                 // Move to the parent for the next iteration
                 currentTransform = currentTransform.parent;
             }
