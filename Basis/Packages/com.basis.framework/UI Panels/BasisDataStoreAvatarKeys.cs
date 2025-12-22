@@ -1,4 +1,5 @@
 using BasisSerializer.OdinSerializer;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -14,8 +15,13 @@ namespace Basis.Scripts.UI.UI_Panels
             public string Url;
             public string Pass;
         }
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+        private static string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), Application.companyName, Application.productName);
+        public static string FilePath = Path.Combine(directory, "KeyStore.json");
+#else
         public static string FilePath = Path.Combine(Application.persistentDataPath, "KeyStore.json");
-
+        
+#endif
         [SerializeField]
         private static List<AvatarKey> keys = new List<AvatarKey>();
 
@@ -63,6 +69,17 @@ namespace Basis.Scripts.UI.UI_Panels
             else
             {
                 BasisDebug.Log("No key file found. Starting fresh.");
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+                string checkMigration = Path.Combine(Application.persistentDataPath, "KeyStore.json");
+                if (File.Exists(checkMigration))
+                {
+                    File.Copy(checkMigration, FilePath);
+                }
+#endif
             }
         }
 
@@ -70,6 +87,12 @@ namespace Basis.Scripts.UI.UI_Panels
         {
             try
             {
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+#endif
                 byte[] byteData = SerializationUtility.SerializeValue<List<AvatarKey>>(keys, DataFormat.Binary);
                 await File.WriteAllBytesAsync(FilePath, byteData);
                 BasisDebug.Log($"Keys saved to file at: {FilePath}");
