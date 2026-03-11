@@ -183,16 +183,14 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
     public override void StartSDK()
     {
 #if UNITY_SERVER
-        if (BasisHeadlessInput == null)
+        if (BasisLocalPlayer.PlayerReady && BasisLocalPlayer.Instance != null)
         {
-            GameObject gameObject = new GameObject("Headless Eye");
-            if (BasisLocalPlayer.Instance != null)
-            {
-                gameObject.transform.parent = BasisLocalPlayer.Instance.transform;
-            }
-            BasisHeadlessInput = gameObject.AddComponent<BasisHeadlessInput>();
-            BasisHeadlessInput.Initialize("Desktop Eye", nameof(Basis.Scripts.Device_Management.Devices.Headless.BasisHeadlessInput));
-            BasisDeviceManagement.Instance.TryAdd(BasisHeadlessInput);
+            EnsureHeadlessInput();
+        }
+        else
+        {
+            BasisLocalPlayer.OnLocalPlayerInitalized -= OnLocalPlayerReadyForHeadless;
+            BasisLocalPlayer.OnLocalPlayerInitalized += OnLocalPlayerReadyForHeadless;
         }
         BasisDebug.Log(nameof(StartSDK), BasisDebug.LogTag.Device);
 
@@ -215,6 +213,42 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
 #endif
         BasisDebug.Log(nameof(StartSDK), BasisDebug.LogTag.Device);
     }
+
+    private void OnDestroy()
+    {
+#if UNITY_SERVER
+        BasisLocalPlayer.OnLocalPlayerInitalized -= OnLocalPlayerReadyForHeadless;
+#endif
+    }
+
+#if UNITY_SERVER
+    private void OnLocalPlayerReadyForHeadless()
+    {
+        BasisLocalPlayer.OnLocalPlayerInitalized -= OnLocalPlayerReadyForHeadless;
+        EnsureHeadlessInput();
+    }
+
+    private void EnsureHeadlessInput()
+    {
+        if (BasisHeadlessInput != null)
+        {
+            return;
+        }
+
+        if (BasisLocalPlayer.Instance == null)
+        {
+            BasisDebug.LogWarning("Headless input creation delayed: LocalPlayer instance is null.", BasisDebug.LogTag.Device);
+            return;
+        }
+
+        GameObject gameObject = new GameObject("Headless Eye");
+        gameObject.transform.parent = BasisLocalPlayer.Instance.transform;
+
+        BasisHeadlessInput = gameObject.AddComponent<BasisHeadlessInput>();
+        BasisHeadlessInput.Initialize("Desktop Eye", nameof(Basis.Scripts.Device_Management.Devices.Headless.BasisHeadlessInput));
+        BasisDeviceManagement.Instance.TryAdd(BasisHeadlessInput);
+    }
+#endif
 
     /// <inheritdoc/>
     public override void StopSDK()
@@ -275,3 +309,6 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         return $"{generatedName}";
     }
 }
+
+
+
