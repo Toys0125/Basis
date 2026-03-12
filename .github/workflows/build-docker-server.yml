@@ -144,6 +144,7 @@ jobs:
         run: |
           jq 'del(.dependencies["com.unity.xr.openxr"]) | del(.dependencies["com.valvesoftware.unity.openvr"])' < ${projectPath}/Packages/manifest.json > manifest.json.tmp && mv manifest.json.tmp ${projectPath}/Packages/manifest.json
           rm -rf ${projectPath}/Packages/com.valvesoftware.unity.openvr
+          rm -rf ${projectPath}/Packages/com.basis.openxr
       - name: "Build Unity project"
         timeout-minutes: 100
         uses: kitlith/unity-builder@linux-extension
