@@ -235,7 +235,7 @@ jobs:
 
   headless-docker-windows:
     name: Build & push headless Windows image
-    runs-on: windows-2022
+    runs-on: ubuntu-latest
     needs: [headless-build]
     permissions:
       contents: read
