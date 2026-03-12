@@ -136,6 +136,11 @@ jobs:
       - name: "Create version string"
         id: version
         run: echo "gitversion=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+      - name: "Remove OpenXR/OpenVR for headless builds"
+        shell: bash
+        run: |
+          jq 'del(.dependencies["com.unity.xr.openxr"]) | del(.dependencies["com.valvesoftware.unity.openvr"])' < ${projectPath}/Packages/manifest.json > manifest.json.tmp && mv manifest.json.tmp ${projectPath}/Packages/manifest.json
+          rm -rf ${projectPath}/Packages/com.valvesoftware.unity.openvr
       - name: "Build Unity project"
         timeout-minutes: 100
         uses: kitlith/unity-builder@linux-extension
