@@ -9,7 +9,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
+COPY ./StandaloneLinux64/. .
 RUN chmod +x ./HeadlessLinuxServer.x86_64
 
 ENTRYPOINT ["./HeadlessLinuxServer.x86_64"]
