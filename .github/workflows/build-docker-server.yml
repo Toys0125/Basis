@@ -280,4 +280,3 @@ jobs:
       - name: Image digest
         run: 'echo "Headless Windows image pushed with digest: ${{ steps.build.outputs.digest }}"'
 
-
