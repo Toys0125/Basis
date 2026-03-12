@@ -100,12 +100,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - targetPlatform: LinuxServer
+          - targetPlatform: StandaloneLinux64
             buildPlatform: ubuntu-latest
+            buildName: HeadlessLinuxServer
+            buildOutput: LinuxServer
             artifactName: LinuxHeadless
-          - targetPlatform: WindowsServer
+            buildMethod: BasisHeadlessBuild.BuildLinuxServer
+          - targetPlatform: StandaloneWindows64
             buildPlatform: ubuntu-latest
+            buildName: HeadlessWindowsServer
+            buildOutput: WindowsServer
             artifactName: WindowsHeadless
+            buildMethod: BasisHeadlessBuild.BuildWindowsServer
     needs: [check-secret]
     if: needs.check-secret.outputs.secret-is-set == 'true'
     steps:
@@ -133,9 +139,6 @@ jobs:
           path: ${{ env.projectPath }}/Library
           key: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-${{ hashFiles(env.projectPath) }}
           restore-keys: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-
-      - name: "Create version string"
-        id: version
-        run: echo "gitversion=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
       - name: "Remove OpenXR/OpenVR for headless builds"
         shell: bash
         run: |
@@ -149,12 +152,11 @@ jobs:
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
-          buildName: Headless${{ matrix.targetPlatform }}
+          buildName: ${{ matrix.buildName }}
+          buildMethod: ${{ matrix.buildMethod }}
           projectPath: ${{ env.projectPath }}
           targetPlatform: ${{ matrix.targetPlatform }}
-          versioning: Custom
-          version: ${{ steps.version.outputs.gitversion }}
-          buildPath: build/${{ matrix.targetPlatform }}
+          buildPath: build/${{ matrix.buildOutput }}
           linux64RemoveExecutableExtension: false
       - name: "Save Library Cache"
         uses: actions/cache/save@v3
