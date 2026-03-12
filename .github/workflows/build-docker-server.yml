@@ -154,7 +154,7 @@ jobs:
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
           buildName: ${{ matrix.buildName }}
-          customParameters: -standaloneBuildSubTarget Server
+          customParameters: -standaloneBuildSubtarget Server
           projectPath: ${{ env.projectPath }}
           targetPlatform: ${{ matrix.targetPlatform }}
           versioning: None
