@@ -158,7 +158,7 @@ jobs:
           projectPath: ${{ env.projectPath }}
           targetPlatform: ${{ matrix.targetPlatform }}
           versioning: None
-          buildPath: build/${{ matrix.buildOutput }}
+          buildsPath: build/${{ matrix.buildOutput }}
           linux64RemoveExecutableExtension: false
       - name: "Save Library Cache"
         uses: actions/cache/save@v3
