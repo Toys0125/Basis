@@ -156,6 +156,7 @@ jobs:
           buildMethod: ${{ matrix.buildMethod }}
           projectPath: ${{ env.projectPath }}
           targetPlatform: ${{ matrix.targetPlatform }}
+          versioning: None
           buildPath: build/${{ matrix.buildOutput }}
           linux64RemoveExecutableExtension: false
       - name: "Save Library Cache"
@@ -277,4 +278,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
       - name: Image digest
         run: 'echo "Headless Windows image pushed with digest: ${{ steps.build.outputs.digest }}"'
+
 
