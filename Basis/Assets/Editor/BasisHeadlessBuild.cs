@@ -35,7 +35,7 @@ public static class BasisHeadlessBuild
             scenes = scenes,
             locationPathName = outputDir,
             target = target,
-            options = BuildOptions.EnableHeadlessMode | BuildOptions.EnableServerBuild
+            options = BuildOptions.EnableHeadlessMode
         };
 
         var previousProductName = PlayerSettings.productName;
