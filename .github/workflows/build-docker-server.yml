@@ -161,12 +161,12 @@ jobs:
           linux64RemoveExecutableExtension: false
       - name: "Save Library Cache"
         uses: actions/cache/save@v3
-        if: always() && github.ref_name == 'developer'
+        if: always()
         with:
           path: ${{ env.projectPath }}/Library
           key: ${{ steps.restore-cache.outputs.cache-primary-key }}
       - name: "Only retain latest cache"
-        if: always() && github.ref_name == 'developer'
+        if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
