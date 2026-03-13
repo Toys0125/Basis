@@ -67,6 +67,7 @@ namespace BasisServerHandle
                 BasisNetworkOwnership.RemovePlayerOwnership(id);
                 BasisSavedState.RemovePlayer(id);
                 BasisServerReductionSystemEvents.RemovePlayer(id);
+                BasisNetworkContentShare.RemovePlayerSpheres(id);
 
                 if (NetworkServer.AuthenticatedPeers.TryRemove(id, out _))
                 {
@@ -82,6 +83,7 @@ namespace BasisServerHandle
                 {
                     BasisNetworkIDDatabase.Reset();
                     BasisNetworkResourceManagement.Reset();
+                    BasisNetworkContentShare.Reset();
                 }
 
                 NetDataWriter writer = NetworkServer.RentWriter();
@@ -220,6 +222,7 @@ namespace BasisServerHandle
                     BaseMultiplier = Config.BSRBaseMultiplier,
                     IncreaseRate = Config.BSRSIncreaseRate,
                     SlowestSendRate = Config.BSRSlowestSendRate,
+                    PeerLimit = Config.PeerLimit,
                 };
                 NetDataWriter Writer = NetworkServer.RentWriter();
                 ServerMetaDataMessage.Serialize(Writer);
@@ -248,6 +251,7 @@ namespace BasisServerHandle
 
                 BasisNetworkResourceManagement.SendOutAllResources(newPeer);
                 BasisNetworkOwnership.SendOutOwnershipInformation(newPeer);
+                BasisNetworkContentShare.SendAllSpheresToPeer(newPeer);
             }
             else
             {
@@ -300,7 +304,7 @@ namespace BasisServerHandle
                 audioSegmentData = audioSegment,
             };
 
-            SendVoiceMessageToClients(serverAudio, BasisNetworkCommons.VoiceChannel, peer, DeliveryMethod.Sequenced);
+            SendVoiceMessageToClients(serverAudio, BasisNetworkCommons.VoiceChannel, peer, DeliveryMethod.Unreliable);
 
             ThreadSafeMessagePool<AudioSegmentDataMessage>.Return(audioSegment);
         }
@@ -391,7 +395,7 @@ namespace BasisServerHandle
                     playerID = (ushort)authClient.Id
                 }
             };
-            BasisServerReductionSystemEvents.AddMessage(authClient, readyMessage.localAvatarSyncMessage);
+            BasisServerReductionSystemEvents.AddMessage(authClient, readyMessage.localAvatarSyncMessage, 0);
             BasisSavedState.AddLastData(authClient, readyMessage);
             return serverReadyMessage;
         }

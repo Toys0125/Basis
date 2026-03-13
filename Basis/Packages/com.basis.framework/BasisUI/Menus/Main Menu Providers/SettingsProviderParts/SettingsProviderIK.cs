@@ -10,7 +10,7 @@ public static class SettingsProviderIK
     private static PanelDropdown dropdownIKLockMode;
     private static PanelDropdown dropdownSeatedMode;
 
-    public const string SeatedMode_Seated = "Seated mode";
+    public const string SeatedMode_Seated = "Seated Mode";
     public const string SeatedMode_Standing = "Standing Mode";
 
     private static readonly List<PanelToggle> _euroToggleUIs = new();
@@ -46,15 +46,15 @@ public static class SettingsProviderIK
         // --- Tab (replaces BasisTabBuilder) ---
         var tabPage = PanelTabPage.CreateVertical(tabGroup.Descriptor.ContentParent);
         var tabDesc = tabPage.Descriptor;
-        tabDesc.SetTitle("IK Tab");
+        tabDesc.SetTitle("Body Tracking");
         tabDesc.SetIcon(AddressableAssets.Sprites.Settings);
 
-        // --- Group: "Calibration & IK" (replaces tab.Group(...)) ---
+        // --- Group: "Body Tracking" (replaces tab.Group(...)) ---
         var ikGroup = PanelElementDescriptor.CreateNew(
             PanelElementDescriptor.ElementStyles.Group,
             tabDesc.ContentParent);
 
-        ikGroup.SetTitle("Calibration & IK");
+        ikGroup.SetTitle("Body Tracking");
         ikGroup.SetDescription("Fine-tuning for avatar scaling, calibration, and IK smoothing");
         ikGroup.SetIcon(AddressableAssets.Sprites.Settings);
 
@@ -62,7 +62,7 @@ public static class SettingsProviderIK
 
         // --- Seated Mode dropdown ---
         dropdownSeatedMode = PanelDropdown.CreateNewEntry(ikParent);
-        dropdownSeatedMode.Descriptor.SetTitle(BasisSettingsDefaults.SitStand.BindingKey);
+        dropdownSeatedMode.Descriptor.SetTitle("Seated / Standing Mode");
         dropdownSeatedMode.Descriptor.SetDescription(
             "Select the reference pose used for body scaling"
         );
@@ -204,7 +204,7 @@ public static class SettingsProviderIK
 
         SyncMasterEuroFromChildren();
         // ONE RESET BUTTON FOR THIS PAGE
-        SettingsProvider.AddResetPageButton(tabDesc.ContentParent, "IK", ResetIkDefaults);
+        SettingsProvider.AddResetPageButton(tabDesc.ContentParent, "Body Tracking", ResetIkDefaults);
 
         tabDesc.ForceRebuild();
         return tabPage;

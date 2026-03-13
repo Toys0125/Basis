@@ -41,20 +41,45 @@ namespace Basis.BasisUI
 
             PanelTabGroup tabGroup = PanelTabGroup.CreateNew(panel.Descriptor.ContentParent, LayoutDirection.Vertical);
 
+            // First tab is eager (shown immediately on open)
             tabGroup.AddTab("General", null, GeneralTab(tabGroup));
-            tabGroup.AddTab("Audio", null, AudioTab(tabGroup));
-            tabGroup.AddTab("Graphics", null, GraphicsTab(tabGroup));
-            tabGroup.AddTab("Calibration", null, SettingsProviderIK.IKTab(tabGroup));
-            tabGroup.AddTab("Cached Storage", null, SettingsProviderStorage.StorageTab(tabGroup));
-            tabGroup.AddTab("chat", null, ChatTab(tabGroup));
-            tabGroup.AddTab("Bindings", null, SettingsProviderControllerConfig.OpenControllerConfig(tabGroup));
-            tabGroup.AddTab("Console", null, SettingsProviderConsoleTab.ConsoleTab(tabGroup));
-            tabGroup.AddTab("Admin", null, SettingsProviderAdminTab.AdminTab(tabGroup));
-            tabGroup.AddTab("Developer", null, DeveloperTab(tabGroup));
-            tabGroup.AddTab("Remote Audio", null, SettingsProviderRemoteAudio.RemoteAudioTab(tabGroup));
-            tabGroup.AddTab("Device Mode", null, SettingsProviderPlatform.DeviceModeTab(tabGroup));
+            // Remaining tabs are lazy-loaded on first selection to reduce stuttering
+            AddLazyTab(tabGroup, "Audio", () => AudioTab(tabGroup));
+            AddLazyTab(tabGroup, "Graphics", () => GraphicsTab(tabGroup));
+            AddLazyTab(tabGroup, "Controls", () => SettingsProviderControllerConfig.OpenControllerConfig(tabGroup));
+            AddLazyTab(tabGroup, "Chat", () => ChatTab(tabGroup));
+            AddLazyTab(tabGroup, "Nameplates", () => SettingsProviderNamePlate.NamePlateTab(tabGroup));
+            AddLazyTab(tabGroup, "Body Tracking", () => SettingsProviderIK.IKTab(tabGroup));
+         // AddLazyTab(tabGroup, "Face Tracking", () => SettingsProviderCameraTracking.CameraTrackingTab(tabGroup));
+            AddLazyTab(tabGroup, "Spatial Audio", () => SettingsProviderRemoteAudio.RemoteAudioTab(tabGroup));
+            AddLazyTab(tabGroup, "Device Mode", () => SettingsProviderPlatform.DeviceModeTab(tabGroup));
+            AddLazyTab(tabGroup, "Storage", () => SettingsProviderStorage.StorageTab(tabGroup));
+            AddLazyTab(tabGroup, "Console", () => SettingsProviderConsoleTab.ConsoleTab(tabGroup));
+            AddLazyTab(tabGroup, "Developer", () => DeveloperTab(tabGroup));
+            AddLazyTab(tabGroup, "Admin", () => SettingsProviderAdminTab.AdminTab(tabGroup));
 
             panel.Descriptor.ForceRebuild();
+        }
+
+        /// <summary>
+        /// Adds a tab with an empty placeholder page. On first selection the real
+        /// content is built, the placeholder is released, and the Pages entry is swapped.
+        /// </summary>
+        private static void AddLazyTab(PanelTabGroup tabGroup, string tabName, Func<PanelTabPage> builder)
+        {
+            PanelTabPage placeholder = PanelTabPage.CreateVertical(tabGroup.Descriptor.ContentParent);
+            int index = tabGroup.Pages.Count;
+            bool built = false;
+
+            tabGroup.AddTab(tabName, () =>
+            {
+                if (built) return;
+                built = true;
+
+                PanelTabPage realPage = builder();
+                tabGroup.Pages[index] = realPage;
+                placeholder.ReleaseInstance();
+            }, placeholder);
         }
 
 
@@ -115,7 +140,7 @@ namespace Basis.BasisUI
                 BasisSettingsDefaults.mousesensitivty);
 
             PanelToggle smoothlocomotion = PanelToggle.CreateNewEntry(generalGroup);
-            smoothlocomotion.Descriptor.SetTitle("Use SnapTurn locomotion");
+            smoothlocomotion.Descriptor.SetTitle("Use Snap Turn Locomotion");
             smoothlocomotion.AssignBinding(BasisSettingsDefaults.usesnapturn);
 
             PanelSlider sliderSnapTurnAngle = PanelSlider.CreateEntryAndBind(
@@ -720,7 +745,7 @@ namespace Basis.BasisUI
             dropdownScreenMode = PanelDropdown.CreateNewEntry(renderingGroup.ContentParent);
             List<string> screenModeOptions = new List<string> { "Fullscreen", "Borderless Window", "Windowed" };
 
-            dropdownScreenMode.Descriptor.SetTitle("ScreenMode");
+            dropdownScreenMode.Descriptor.SetTitle("Screen Mode");
             dropdownScreenMode.AssignEntries(screenModeOptions);
             dropdownScreenMode.DropdownComponent.onValueChanged.AddListener(ScreenMode);
             dropdownScreenMode.DropdownComponent.SetValueWithoutNotify(GetIndexFromScreenMode(Screen.fullScreenMode));
@@ -832,6 +857,18 @@ namespace Basis.BasisUI
 
             descriptor.SetTitle("Chat");
             RectTransform container = descriptor.ContentParent;
+
+            PanelElementDescriptor notificationGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
+            notificationGroup.SetTitle("Notifications");
+            notificationGroup.SetDescription("Toggle join and leave notifications.");
+
+            PanelToggle toggleJoinNotifications = PanelToggle.CreateNewEntry(notificationGroup);
+            toggleJoinNotifications.Descriptor.SetTitle("Join Notifications");
+            toggleJoinNotifications.AssignBinding(BasisSettingsDefaults.JoinNotifications);
+
+            PanelToggle toggleLeaveNotifications = PanelToggle.CreateNewEntry(notificationGroup);
+            toggleLeaveNotifications.Descriptor.SetTitle("Leave Notifications");
+            toggleLeaveNotifications.AssignBinding(BasisSettingsDefaults.LeaveNotifications);
 
             PanelElementDescriptor chatGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
             chatGroup.SetTitle("Chat");

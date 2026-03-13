@@ -159,6 +159,10 @@ namespace Basis.BasisUI
             other = true
         });
 
+        // ---------------- NOTIFICATIONS ----------------
+        public static BasisSettingsBinding<bool> JoinNotifications => new("joinnotifications", new BasisPlatformDefault<bool>(true));
+        public static BasisSettingsBinding<bool> LeaveNotifications => new("leavenotifications", new BasisPlatformDefault<bool>(true));
+
         public static BasisSettingsBinding<bool> FalseBinding => new("falsebinding", new BasisPlatformDefault<bool>(false));
 
         public static BasisSettingsBinding<bool> TrueBinding => new("truebinding", new BasisPlatformDefault<bool>(false));
@@ -375,7 +379,7 @@ namespace Basis.BasisUI
 
         // ---------------- REMOTE PLAYER AUDIO ----------------
         // AudioSource
-        public static BasisSettingsBinding<float> RAMinDistance => new("ra_mindistance", new BasisPlatformDefault<float>(1f));
+        public static BasisSettingsBinding<float> RAMinDistance => new("ra_mindistance", new BasisPlatformDefault<float>(0.5f));
         public static BasisSettingsBinding<float> RASpread => new("ra_spread", new BasisPlatformDefault<float>(70f));
         public static BasisSettingsBinding<float> RADopplerLevel => new("ra_dopplerlevel", new BasisPlatformDefault<float>(0f));
         public static BasisSettingsBinding<float> RASpatialBlend => new("ra_spatialblend", new BasisPlatformDefault<float>(1f));
@@ -451,6 +455,13 @@ namespace Basis.BasisUI
         public static BasisSettingsBinding<float> CalibSphereScaleRightToes => new("calibspherescalerighttoes", new BasisPlatformDefault<float>(1f));
         public static BasisSettingsBinding<float> CalibSphereScaleLeftShoulder => new("calibspherescaleleftshoulder", new BasisPlatformDefault<float>(1f));
         public static BasisSettingsBinding<float> CalibSphereScaleRightShoulder => new("calibspherescalerightshoulder", new BasisPlatformDefault<float>(1f));
+
+        // ---------------- REMOTE NAMEPLATE ----------------
+        public static BasisSettingsBinding<bool> NPEnabled => new("np_enabled", new BasisPlatformDefault<bool>(true));
+        public static BasisSettingsBinding<bool> NPMenuOnly => new("np_menuonly", new BasisPlatformDefault<bool>(false));
+        public static BasisSettingsBinding<float> NPWidth => new("np_width", new BasisPlatformDefault<float>(30f));
+        public static BasisSettingsBinding<float> NPSize => new("np_size", new BasisPlatformDefault<float>(1f));
+        public static BasisSettingsBinding<float> NPTransparency => new("np_transparency", new BasisPlatformDefault<float>(0.45f));
 
         // Limiter
         public static BasisSettingsBinding<float> LimitThreshold => new("limitthreshold", new BasisPlatformDefault<float>(0.95f)); // pre-clip
@@ -537,6 +548,10 @@ namespace Basis.BasisUI
             CacheMaxSizeGB.LoadBindingValue();
             AvatarMeshLOD.LoadBindingValue();
             GlobalMeshLOD.LoadBindingValue();
+
+            // Notifications
+            JoinNotifications.LoadBindingValue();
+            LeaveNotifications.LoadBindingValue();
 
             // UI
             MicrophoneIcon.LoadBindingValue();
@@ -662,6 +677,13 @@ namespace Basis.BasisUI
             CalibSphereScaleRightToes.LoadBindingValue();
             CalibSphereScaleLeftShoulder.LoadBindingValue();
             CalibSphereScaleRightShoulder.LoadBindingValue();
+
+            // Remote Nameplate
+            NPEnabled.LoadBindingValue();
+            NPMenuOnly.LoadBindingValue();
+            NPWidth.LoadBindingValue();
+            NPSize.LoadBindingValue();
+            NPTransparency.LoadBindingValue();
 
             // Remote Player Audio
             RAMinDistance.LoadBindingValue();

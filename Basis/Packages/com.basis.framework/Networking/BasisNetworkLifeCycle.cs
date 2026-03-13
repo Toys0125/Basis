@@ -3,6 +3,7 @@ using Basis.Scripts.Device_Management;
 using Basis.Scripts.Networking;
 using Basis.Scripts.Networking.NetworkedAvatar;
 using Basis.Scripts.Networking.Receivers;
+using Basis.Scripts.UI;
 using Basis.Network.Core;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,12 +32,14 @@ public static class BasisNetworkLifeCycle
             SyncInterval = 50,
             BaseMultiplier = 1,
             IncreaseRate = 0.005f,
-            SlowestSendRate = 2.5f
+            SlowestSendRate = 2.5f,
+            PeerLimit = 0
         };
 
         Management.transform.SetParent(BasisDeviceManagement.Instance.transform, false);
 
         Management.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+        BasisJoinLeaveNotification.Create();
         BasisNetworkManagement.OnEnableInstanceCreate?.Invoke();
         BasisNetworkManagement.NetworkRunning = true;
     }
@@ -66,6 +69,7 @@ public static class BasisNetworkLifeCycle
 
             BasisNetworkPlayers.ClearAllRegistries();//remove players
             await BasisNetworkSpawnItem.Reset();//remove items
+            BasisContentShareManager.Reset();//remove content spheres
             BasisNetworkIdResolver.KnownIdMap.Clear();
             BasisNetworkIdResolver.PendingResolutions.Clear();
             BasisNetworkManagement.Transmitter = null;
@@ -106,6 +110,7 @@ public static class BasisNetworkLifeCycle
         }
         BasisNetworkPlayers.ClearAllRegistries();//remove players
         await BasisNetworkSpawnItem.Reset();//remove items
+        BasisContentShareManager.Reset();//remove content spheres
         BasisNetworkIdResolver.KnownIdMap.Clear();
         BasisNetworkIdResolver.PendingResolutions.Clear();
         BasisAudioRemoteSource.DeInitalize();//release memory for audio gameobject
@@ -125,6 +130,7 @@ public static class BasisNetworkLifeCycle
         BasisNetworkManagement.NetworkRunning = false;
         // let the MonoBehaviour reset its Instance in OnDestroy; no direct assignment here
         BasisDebug.Log("BasisNetworkManagement has been successfully shutdown.", BasisDebug.LogTag.Networking);
+        BasisJoinLeaveNotification.Shutdown();
         BasisNetworkConnection.NetworkClient?.Disconnect();
     }
 }
