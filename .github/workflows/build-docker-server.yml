@@ -139,11 +139,12 @@ jobs:
           path: ${{ env.projectPath }}/Library
           key: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-${{ hashFiles(env.projectPath) }}
           restore-keys: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-
-      - name: "Remove OpenXR/OpenVR for headless builds"
+      - name: "Remove OpenXR/OpenVR packages for headless builds"
         shell: bash
         run: |
           jq 'del(.dependencies["com.unity.xr.openxr"]) | del(.dependencies["com.valvesoftware.unity.openvr"])' < ${projectPath}/Packages/manifest.json > manifest.json.tmp && mv manifest.json.tmp ${projectPath}/Packages/manifest.json
           rm -rf ${projectPath}/Packages/com.valvesoftware.unity.openvr
+          rm -rf ${projectPath}/Packages/com.basis.openvr
           rm -rf ${projectPath}/Packages/com.basis.openxr
       - name: "Build Unity project"
         timeout-minutes: 100

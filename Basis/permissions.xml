@@ -3,8 +3,10 @@
   <Groups>
     <Group name="default">
       <Node value="basis.command.help" />
-      <Node value="basis.resource.load" />
-      <Node value="basis.resource.unload" />
+      <Node value="basis.resource.load.prop" />
+      <Node value="basis.resource.unload.prop" />
+      <Node value="basis.resource.load.avatar" />
+      <Node value="basis.resource.unload.avatar" />
       <Node value="basis.ownership.transfer" />
       <Node value="basis.ownership.remove" />
       <Node value="basis.ownership.get" />
