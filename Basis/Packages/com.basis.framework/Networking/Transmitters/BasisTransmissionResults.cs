@@ -20,9 +20,15 @@ public partial class BasisTransmissionResults
     // Jobs
     public BasisDistanceJobParallel distanceJob;
     public BasisDistanceReduceJob reduceJob;
+    public BasisAvatarCapJob avatarCapJob;
+    public BasisDirectionalDampenJob dampenJob;
+    public BasisViewConeAvatarJob viewConeJob;
 
     public JobHandle distanceJobHandle;
     public JobHandle reduceJobHandle;
+    public JobHandle avatarCapJobHandle;
+    public JobHandle dampenJobHandle;
+    public JobHandle viewConeJobHandle;
 
     // Timing / interval control
     public float intervalSeconds = 0.05f;
@@ -47,6 +53,24 @@ public partial class BasisTransmissionResults
     // Capacity / length
     public int LengthOfArrays = -1;
     private int capacity = 0;
+
+    /// <summary>
+    /// Pre-computed per-index flag: true when the remote player currently has their
+    /// real avatar loaded (InAvatarRange and not fallback). Filled in the positions
+    /// loop so managed objects are never touched during sorting.
+    /// </summary>
+    private NativeArray<bool> hasRealAvatarLoaded;
+
+    /// <summary>
+    /// Scratch buffer for avatar-cap sorting. Sized to capacity, reused each tick.
+    /// </summary>
+    private NativeArray<AvatarCapEntry> avatarCapEntries;
+
+    /// <summary>
+    /// Per-index directional dampening multiplier computed by the Burst parallel job.
+    /// Copied to managed AudioReceiverModule after the job completes.
+    /// </summary>
+    private NativeArray<float> directionalDampening;
 
     // State
     public bool IndexChanged;
@@ -114,7 +138,9 @@ public partial class BasisTransmissionResults
         EnsureCapacity(receiverCount);
         LengthOfArrays = receiverCount;
 
-        // Fill target positions aligned to snapshot order
+        // Fill target positions aligned to snapshot order.
+        // Also pre-compute stickiness flags for the avatar cap so the
+        // NativeArray sort never needs to touch managed objects.
         for (int Index = 0; Index < receiverCount; Index++)
         {
             BasisNetworkReceiver remote = snapshot[Index];
@@ -129,6 +155,8 @@ public partial class BasisTransmissionResults
                 targetPositions[Index] = BasisLocalCameraDriver.Position + new Vector3(900, 900, 900);//shove it way outside of our understanding.
             }
 
+            var remotePlayer = remote.RemotePlayer;
+            hasRealAvatarLoaded[Index] = remotePlayer.InAvatarRange && !remotePlayer.IsConsideredFallBackAvatar;
         }
         var CurrentHearingRange = SMModuleDistanceBasedReductions.HearingRange;
         if (LastHearingRange != CurrentHearingRange)
@@ -154,14 +182,74 @@ public partial class BasisTransmissionResults
         // Schedule distance job (parallel)
         distanceJobHandle = distanceJob.Schedule(receiverCount, 64);
 
-        // Reduce depends on distance job
+        // Reduce depends on distance job (reads PerIndexMinD2/PerIndexMask)
         reduceJobHandle = reduceJob.Schedule(distanceJobHandle);
+
+        // Avatar cap job depends on distance job (reads AvatarRange/DistanceSq).
+        // Runs in parallel with reduce — they touch disjoint arrays.
+        if (SMModuleDistanceBasedReductions.UseMaxVisibleAvatars)
+        {
+            int maxVisible = SMModuleDistanceBasedReductions.MaxVisibleAvatars;
+            avatarCapJob.MaxVisible = maxVisible;
+            avatarCapJob.ReceiverCount = receiverCount;
+            avatarCapJobHandle = avatarCapJob.Schedule(distanceJobHandle);
+        }
+        else
+        {
+            avatarCapJobHandle = distanceJobHandle;
+        }
+
+        // View cone avatar job: filters AvatarRange to only show avatars in the
+        // direction the player is looking. Depends on distance + cap jobs.
+        if (SMModuleDistanceBasedReductions.UseViewConeAvatars)
+        {
+            float viewAngle = SMModuleDistanceBasedReductions.ViewConeAngle;
+            float halfConeRad = viewAngle * 0.5f * Mathf.Deg2Rad;
+
+            viewConeJob.ListenerPosition = BasisLocalCameraDriver.Position;
+            viewConeJob.ListenerForward = BasisLocalCameraDriver.Forward();
+            viewConeJob.CosHalfCone = Mathf.Cos(halfConeRad);
+
+            viewConeJobHandle = viewConeJob.Schedule(receiverCount, 64, avatarCapJobHandle);
+        }
+        else
+        {
+            viewConeJobHandle = avatarCapJobHandle;
+        }
+
+        // Directional dampening job: only reads targetPositions (shared ReadOnly
+        // with distance job) — no dependencies, runs in parallel with everything.
+        float coneAngle = BasisSettingsDefaults.RAListenerConeAngle.RawValue;
+        bool dampenEnabled = coneAngle < 360f;
+        if (dampenEnabled)
+        {
+            float dampenPercent = Mathf.Clamp(BasisSettingsDefaults.RAListenerDampenAmount.RawValue, 1f, 95f);
+            float halfConeRad = coneAngle * 0.5f * Mathf.Deg2Rad;
+            float cosHalfCone = Mathf.Cos(halfConeRad);
+
+            dampenJob.ListenerPosition = BasisLocalCameraDriver.Position;
+            dampenJob.ListenerForward = BasisLocalCameraDriver.Forward();
+            dampenJob.CosHalfCone = cosHalfCone;
+            dampenJob.CosRange = cosHalfCone + 1f;
+            dampenJob.MinVolume = 1f - (dampenPercent / 100f);
+
+            dampenJobHandle = dampenJob.Schedule(receiverCount, 64);
+        }
+        else
+        {
+            dampenJobHandle = default;
+        }
 
         // Do work that doesn't depend on distance results
         BasisNetworkAvatarCompressor.Compress(BasisNetworkTransmitter, avatar.Animator);
 
         // Finish before consuming results
         reduceJobHandle.Complete();
+        viewConeJobHandle.Complete();
+        if (dampenEnabled)
+        {
+            dampenJobHandle.Complete();
+        }
 
         int mask = changeMask[0];
         AnyMicrophoneRangeChanged = (mask & 1) != 0;
@@ -177,72 +265,70 @@ public partial class BasisTransmissionResults
 
         bool microphoneChange = IndexChanged || AnyMicrophoneRangeChanged;
         bool hearingChange = IndexChanged || AnyHearingRangeChanged;
-        bool avatarChange = IndexChanged || AnyAvatarRangeChanged;
         bool lodChange = IndexChanged || AnyLodRangeChanged;
 
-        // Apply hearing toggles only when needed
-        if (hearingChange)
+        // Re-check avatar changes: the cap or view-cone enforcement may have
+        // changed AvatarRange entries beyond what the distance job flagged.
+        bool avatarChange = IndexChanged || AnyAvatarRangeChanged;
+        if (!avatarChange && (SMModuleDistanceBasedReductions.UseMaxVisibleAvatars || SMModuleDistanceBasedReductions.UseViewConeAvatars))
         {
             for (int i = 0; i < receiverCount; i++)
             {
-                var receiver = snapshot[i];
-                bool canHear = hearingRange[i];
-                if (receiver.AudioReceiverModule.HasAudioSource != canHear)
+                if (AvatarRange[i] != snapshot[i].RemotePlayer.InAvatarRange)
                 {
-                    if (canHear)
-                    {
-                        receiver.AudioReceiverModule.StartAudio(ConvertedVoiceDistance);
-                        receiver.RemotePlayer.OutOfRangeFromLocal = false;
-                    }
-                    else
-                    {
-                        receiver.AudioReceiverModule.StopAudio();
-                        receiver.RemotePlayer.OutOfRangeFromLocal = true;
-                    }
+                    avatarChange = true;
+                    break;
                 }
             }
         }
-        if (RevaluteAudioRanges)
+
+        // Single-pass post-processing: hearing, audio range, dampening, avatar, LOD.
+        // Merging these loops avoids repeated cache-miss traversals of the same
+        // managed snapshot[] objects (up to 6 separate passes before).
+        for (int i = 0; i < receiverCount; i++)
         {
-            for (int i = 0; i < receiverCount; i++)
+            var receiver = snapshot[i];
+            var audio = receiver.AudioReceiverModule;
+            var remote = receiver.RemotePlayer;
+
+            if (hearingChange)
             {
-                var receiver = snapshot[i];
-                receiver.AudioReceiverModule.ApplyRangeData(ConvertedVoiceDistance);
+                bool canHear = hearingRange[i];
+                if (audio.HasAudioSource != canHear)
+                {
+                    if (canHear)
+                    {
+                        audio.StartAudio(ConvertedVoiceDistance);
+                        remote.OutOfRangeFromLocal = false;
+                    }
+                    else
+                    {
+                        audio.StopAudio();
+                        remote.OutOfRangeFromLocal = true;
+                    }
+                }
             }
-        }
 
-        // Apply listener directional dampening
-        ApplyListenerDirectionalDampening(snapshot, receiverCount);
-
-        // Apply avatar load toggles only when needed
-        if (avatarChange)
-        {
-            for (int Index = 0; Index < receiverCount; Index++)
+            if (RevaluteAudioRanges)
             {
-                var receiver = snapshot[Index];
-                var remote = receiver.RemotePlayer;
+                audio.ApplyRangeData(ConvertedVoiceDistance);
+            }
 
-                bool inRange = AvatarRange[Index];
+            audio.DirectionalDampeningMultiplier = dampenEnabled ? directionalDampening[i] : 1f;
+
+            if (avatarChange)
+            {
+                bool inRange = AvatarRange[i];
                 if (!remote.IsLoadingAnAvatar && remote.InAvatarRange != inRange)
                 {
                     remote.InAvatarRange = inRange;
                     remote.ReloadAvatar();
                 }
             }
-        }
 
-        // Apply mesh LOD only for changed indices (cheap micro-optimization)
-        if (lodChange)
-        {
-            for (int i = 0; i < receiverCount; i++)
+            if (lodChange && MeshLodRange[i])
             {
-                if (!MeshLodRange[i])
-                {
-                    continue;
-                }
-
-                var receiver = snapshot[i];
-                receiver.RemotePlayer.ChangeMeshLOD(MeshLodLevel[i]);
+                remote.ChangeMeshLOD(MeshLodLevel[i]);
             }
         }
 
@@ -281,6 +367,8 @@ public partial class BasisTransmissionResults
 
         distanceJob.AvatarRange = AvatarRange;
         distanceJob.PrevInAvatarRange = PrevInAvatarRange;
+        avatarCapJob.AvatarRange = AvatarRange;
+        viewConeJob.AvatarRange = AvatarRange;
 
         distanceJob.MeshLodLevel = MeshLodLevel;
         distanceJob.PrevMeshLodLevel = prevMeshLodLevel;
@@ -370,6 +458,10 @@ public partial class BasisTransmissionResults
         perIndexMinD2 = new NativeArray<float>(newCap, Allocator.Persistent);
         perIndexMask = new NativeArray<int>(newCap, Allocator.Persistent);
 
+        hasRealAvatarLoaded = new NativeArray<bool>(newCap, Allocator.Persistent);
+        avatarCapEntries = new NativeArray<AvatarCapEntry>(newCap, Allocator.Persistent);
+        directionalDampening = new NativeArray<float>(newCap, Allocator.Persistent);
+
         if (!smallestD2.IsCreated) smallestD2 = new NativeArray<float>(1, Allocator.Persistent);
         if (!changeMask.IsCreated) changeMask = new NativeArray<int>(1, Allocator.Persistent);
 
@@ -396,6 +488,18 @@ public partial class BasisTransmissionResults
         reduceJob.PerIndexMask = perIndexMask;
         reduceJob.SmallestD2 = smallestD2;
         reduceJob.ChangeMask = changeMask;
+
+        avatarCapJob.DistanceSq = distanceSq;
+        avatarCapJob.HasRealAvatarLoaded = hasRealAvatarLoaded;
+        avatarCapJob.AvatarRange = AvatarRange;
+        avatarCapJob.Entries = avatarCapEntries;
+        avatarCapJob.StickinessBonus = 0.75f;
+
+        viewConeJob.TargetPositions = targetPositions;
+        viewConeJob.AvatarRange = AvatarRange;
+
+        dampenJob.TargetPositions = targetPositions;
+        dampenJob.Multipliers = directionalDampening;
 
         LengthOfArrays = -1; // will be set on next Simulate call
     }
@@ -444,9 +548,12 @@ public partial class BasisTransmissionResults
     /// </summary>
     public void ReleaseResults()
     {
-        // Wait for in-flight jobs (both handles)
+        // Wait for in-flight jobs
         if (!distanceJobHandle.IsCompleted) distanceJobHandle.Complete();
         if (!reduceJobHandle.IsCompleted) reduceJobHandle.Complete();
+        if (!avatarCapJobHandle.IsCompleted) avatarCapJobHandle.Complete();
+        if (!viewConeJobHandle.IsCompleted) viewConeJobHandle.Complete();
+        if (!dampenJobHandle.IsCompleted) dampenJobHandle.Complete();
 
         if (targetPositions.IsCreated) targetPositions.Dispose();
         if (distanceSq.IsCreated) distanceSq.Dispose();
@@ -466,6 +573,10 @@ public partial class BasisTransmissionResults
         if (perIndexMinD2.IsCreated) perIndexMinD2.Dispose();
         if (perIndexMask.IsCreated) perIndexMask.Dispose();
 
+        if (hasRealAvatarLoaded.IsCreated) hasRealAvatarLoaded.Dispose();
+        if (avatarCapEntries.IsCreated) avatarCapEntries.Dispose();
+        if (directionalDampening.IsCreated) directionalDampening.Dispose();
+
         // Note: smallestD2/changeMask are 1-length arrays kept across reallocs; disposed in DeInitalize.
         capacity = 0;
         LengthOfArrays = -1;
@@ -478,63 +589,4 @@ public partial class BasisTransmissionResults
         b = tmp;
     }
 
-    /// <summary>
-    /// Reduces PCM volume for remote players outside the listener's forward cone.
-    /// Sets <see cref="BasisAudioReceiver.DirectionalDampeningMultiplier"/> which is
-    /// applied per-sample inside OnAudioFilterRead, bypassing AudioSource.volume
-    /// (which Steam Audio's spatializer ignores for filter-written audio).
-    /// </summary>
-    private void ApplyListenerDirectionalDampening(IReadOnlyList<BasisNetworkReceiver> snapshot, int receiverCount)
-    {
-        float coneAngle = BasisSettingsDefaults.RAListenerConeAngle.RawValue;
-
-        // 360 means no dampening
-        if (coneAngle >= 360f)
-        {
-            for (int i = 0; i < receiverCount; i++)
-            {
-                var module = snapshot[i].AudioReceiverModule;
-                module.DirectionalDampeningMultiplier = 1f;
-            }
-            return;
-        }
-
-        float dampenPercent = Mathf.Clamp(BasisSettingsDefaults.RAListenerDampenAmount.RawValue, 1f, 45f);
-        float minVolume = 1f - (dampenPercent / 100f);
-
-        float halfConeRad = (coneAngle * 0.5f) * Mathf.Deg2Rad;
-        float cosHalfCone = Mathf.Cos(halfConeRad);
-        float cosRange = cosHalfCone - (-1f); // cosHalfCone + 1
-
-        Vector3 listenerPos = BasisLocalCameraDriver.Position;
-        Vector3 listenerFwd = BasisLocalCameraDriver.Forward();
-
-        for (int i = 0; i < receiverCount; i++)
-        {
-            var module = snapshot[i].AudioReceiverModule;
-
-            Vector3 toSource = ((Vector3)targetPositions[i]) - listenerPos;
-            float sqrMag = toSource.sqrMagnitude;
-
-            if (sqrMag < 0.001f)
-            {
-                module.DirectionalDampeningMultiplier = 1f;
-                continue;
-            }
-
-            float invMag = 1f / Mathf.Sqrt(sqrMag);
-            Vector3 dir = toSource * invMag;
-            float dot = Vector3.Dot(listenerFwd, dir);
-
-            if (dot >= cosHalfCone)
-            {
-                module.DirectionalDampeningMultiplier = 1f;
-            }
-            else
-            {
-                float t = (cosHalfCone - dot) / cosRange;
-                module.DirectionalDampeningMultiplier = Mathf.Lerp(1f, minVolume, t);
-            }
-        }
-    }
 }

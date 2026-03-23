@@ -1,6 +1,7 @@
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Networking;
 using Basis.Scripts.Networking.NetworkedAvatar;
+using Basis.Scripts.Networking.Receivers;
 using System;
 using System.Collections.Generic;
 using TMPro;
@@ -73,6 +74,24 @@ namespace Basis.BasisUI
             // ------------------
             // Teleport actions
             // ------------------
+            PanelButton teleportToSelected = PanelButton.CreateNew(actionsGroup.ContentParent);
+            teleportToSelected.Descriptor.SetTitle("Teleport To Player");
+            teleportToSelected.Descriptor.SetDescription("Teleports you to the selected player's location.");
+            GuardedClick(
+                teleportToSelected,
+                "Teleport to player?",
+                "Teleport you to the selected player's location?",
+                "Teleport",
+                () =>
+                {
+                    if (controller.SelectedPlayer == null)
+                    {
+                        BasisDebug.LogError("No target selected.");
+                        return;
+                    }
+                    BasisNetworkModeration.TryTeleportToPlayer(controller.SelectedPlayer.playerId);
+                });
+
             PanelButton teleportAll = PanelButton.CreateNew(actionsGroup.ContentParent);
             teleportAll.Descriptor.SetTitle("Teleport All To Target");
             teleportAll.Descriptor.SetDescription("Teleports everyone to the selected player's location.");
@@ -91,50 +110,22 @@ namespace Basis.BasisUI
                     BasisNetworkModeration.TeleportAll(controller.SelectedPlayer.playerId);
                 });
 
-            PanelButton teleportTo = PanelButton.CreateNew(actionsGroup.ContentParent);
-            teleportTo.Descriptor.SetTitle("Teleport To Player (by UUID)");
-            teleportTo.Descriptor.SetDescription("Teleports you to the player with the UUID above.");
-            GuardedClick(
-                teleportTo,
-                "Teleport to player?",
-                "Teleport you to the player with the UUID above?",
-                "Teleport",
-                () =>
-                {
-                    string uuid = controller.GetUUIDText();
-                    if (string.IsNullOrWhiteSpace(uuid))
-                    {
-                        BasisDebug.LogError("UUID is empty.");
-                        return;
-                    }
-
-                    if (controller.TryFindId(uuid, out ushort id))
-                        BasisNetworkModeration.TryTeleportToPlayer(id);
-                    else
-                        BasisDebug.LogError("Can't find ID for UUID: " + uuid);
-                });
-
             PanelButton teleportHere = PanelButton.CreateNew(actionsGroup.ContentParent);
-            teleportHere.Descriptor.SetTitle("Teleport Player Here (by UUID)");
-            teleportHere.Descriptor.SetDescription("Teleports the player with the UUID above to you.");
+            teleportHere.Descriptor.SetTitle("Teleport Player Here");
+            teleportHere.Descriptor.SetDescription("Teleports the selected player to your location.");
             GuardedClick(
                 teleportHere,
                 "Teleport player to you?",
-                "Teleport the player with the UUID above to your location?",
+                "Teleport the selected player to your location?",
                 "Teleport",
                 () =>
                 {
-                    string uuid = controller.GetUUIDText();
-                    if (string.IsNullOrWhiteSpace(uuid))
+                    if (controller.SelectedPlayer == null)
                     {
-                        BasisDebug.LogError("UUID is empty.");
+                        BasisDebug.LogError("No target selected.");
                         return;
                     }
-
-                    if (controller.TryFindId(uuid, out ushort id))
-                        BasisNetworkModeration.TeleportHere(id);
-                    else
-                        BasisDebug.LogError("Can't find ID for UUID: " + uuid);
+                    BasisNetworkModeration.TeleportHere(controller.SelectedPlayer.playerId);
                 });
 
             // ------------------
@@ -216,44 +207,6 @@ namespace Basis.BasisUI
                     BasisNetworkModeration.UnBan(uuid);
                 });
 
-            PanelButton addAdmin = PanelButton.CreateNew(actionsGroup.ContentParent);
-            addAdmin.Descriptor.SetTitle("Add Admin (UUID)");
-            addAdmin.Descriptor.SetDescription("Grants admin to UUID.");
-            GuardedClick(
-                addAdmin,
-                "Grant admin?",
-                "Grant admin privileges to this UUID?",
-                "Grant",
-                () =>
-                {
-                    string uuid = controller.GetUUIDText();
-                    if (string.IsNullOrWhiteSpace(uuid))
-                    {
-                        BasisDebug.LogError("UUID is empty.");
-                        return;
-                    }
-                    BasisNetworkModeration.AddAdmin(uuid);
-                });
-
-            PanelButton removeAdmin = PanelButton.CreateNew(actionsGroup.ContentParent);
-            removeAdmin.Descriptor.SetTitle("Remove Admin (UUID)");
-            removeAdmin.Descriptor.SetDescription("Revokes admin from UUID.");
-            GuardedClick(
-                removeAdmin,
-                "Revoke admin?",
-                "Remove admin privileges from this UUID?",
-                "Revoke",
-                () =>
-                {
-                    string uuid = controller.GetUUIDText();
-                    if (string.IsNullOrWhiteSpace(uuid))
-                    {
-                        BasisDebug.LogError("UUID is empty.");
-                        return;
-                    }
-                    BasisNetworkModeration.RemoveAdmin(uuid);
-                });
-
             // ------------------
             // Messaging actions
             // ------------------
@@ -298,6 +251,48 @@ namespace Basis.BasisUI
                     }
                     BasisNetworkModeration.SendMessageAll(msg);
                 });
+
+            // ------------------
+            // Shout mode actions
+            // ------------------
+            PanelButton enableShout = PanelButton.CreateNew(actionsGroup.ContentParent);
+            enableShout.Descriptor.SetTitle("Enable Shout Mode");
+            enableShout.Descriptor.SetDescription("Grants non-spatialized broadcast voice to the selected player.");
+            GuardedClick(
+                enableShout,
+                "Enable shout mode?",
+                "Enable non-spatialized broadcast voice for this player?",
+                "Enable",
+                () =>
+                {
+                    if (controller.SelectedPlayer == null)
+                    {
+                        BasisDebug.LogError("No target selected.");
+                        return;
+                    }
+                    BasisNetworkModeration.EnableShoutMode(controller.SelectedPlayer.playerId);
+                });
+
+            PanelButton disableShout = PanelButton.CreateNew(actionsGroup.ContentParent);
+            disableShout.Descriptor.SetTitle("Disable Shout Mode");
+            disableShout.Descriptor.SetDescription("Removes non-spatialized broadcast voice from the selected player.");
+            GuardedClick(
+                disableShout,
+                "Disable shout mode?",
+                "Disable non-spatialized broadcast voice for this player?",
+                "Disable",
+                () =>
+                {
+                    if (controller.SelectedPlayer == null)
+                    {
+                        BasisDebug.LogError("No target selected.");
+                        return;
+                    }
+                    BasisNetworkModeration.DisableShoutMode(controller.SelectedPlayer.playerId);
+                });
+
+            // Permissions section
+            SettingsProviderPermissionsTab.BuildPermissionsUI(container, tab.gameObject);
 
             descriptor.ForceRebuild();
             return tab;
@@ -410,7 +405,10 @@ namespace Basis.BasisUI
                 foreach (BasisNetworkPlayer player in BasisNetworkPlayers.Players.Values)
                 {
                     PanelButton b = PanelButton.CreateNew(PlayerListParent);
-                    b.Descriptor.SetTitle($"{player.playerId} > {player.Player.SafeDisplayName}");
+                    bool isLocal = BasisNetworkPlayer.LocalPlayer != null && player.playerId == BasisNetworkPlayer.LocalPlayer.playerId;
+                    bool isShouting = isLocal ? BasisNetworkModeration.LocalPlayerInShoutMode : BasisShoutAudioDriver.IsInShoutMode(player.playerId);
+                    string shoutTag = isShouting ? " [SHOUT]" : "";
+                    b.Descriptor.SetTitle($"{player.playerId} > {player.Player.SafeDisplayName}{shoutTag}");
                     b.OnClicked += () => SelectPlayer(player);
 
                     _playerButtons.Add(b);

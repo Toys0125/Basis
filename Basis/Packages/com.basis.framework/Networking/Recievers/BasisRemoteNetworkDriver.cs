@@ -81,6 +81,29 @@ public static class BasisRemoteNetworkDriver
 
     public static JobHandle oneEuroJob;
 
+    // ---------------- CACHED READ POINTERS (set once per frame in BeginRead) ----------------
+    static System.IntPtr _ptrScaleChange;
+    static System.IntPtr _ptrFilteredRotations;
+    static System.IntPtr _ptrScaledBodyPositions;
+    static System.IntPtr _ptrEuroValues;
+    static System.IntPtr _ptrOutScales;
+
+    // ---------------- FILTER RESET ----------------
+    static System.IntPtr _ptrPoseFilterSeeded;
+
+    // ---------------- CACHED WRITE POINTERS (set once per frame in BeginWrite) ----------------
+    static System.IntPtr _ptrInterpolationTimes;
+    static System.IntPtr _ptrDeltaTimes;
+    static System.IntPtr _ptrHumanScales;
+    static System.IntPtr _ptrPrevPositions;
+    static System.IntPtr _ptrTargetPositions;
+    static System.IntPtr _ptrPrevScales;
+    static System.IntPtr _ptrTargetScales;
+    static System.IntPtr _ptrPrevRotations;
+    static System.IntPtr _ptrTargetRotations;
+    static System.IntPtr _ptrPrevMuscles;
+    static System.IntPtr _ptrTargetMuscles;
+
     // ---------------- TUNING ----------------
     // Pose (position + rotation) smoothing: usually higher MinCutoff than muscles to reduce "floaty" lag.
     public static float PoseMinCutoff = 3.0f;
@@ -156,8 +179,11 @@ public static class BasisRemoteNetworkDriver
     {
         if (!_initialized) return;
 
-        if (!oneEuroJob.IsCompleted)
-            oneEuroJob.Complete();
+        // Complete all possibly in-flight jobs before disposing NativeArrays.
+        // Destroy() can be called mid-frame (e.g. from a UI button) after
+        // Compute() scheduled jobs but before Apply() completed them.
+        // Complete the combined tail handle which chains all intermediate jobs.
+        oneEuroJob.Complete();
 
         DisposeAll();
         _muscleCount = 0;
@@ -165,17 +191,53 @@ public static class BasisRemoteNetworkDriver
     }
 
     /// <summary>
-    /// Write timing inputs for a given index (0..FixedCapacity-1).
-    /// interpolationTime is 0..1, deltaTimeSeconds is EFFECTIVE dt seconds (should include playback rate).
+    /// Caches raw write pointers from NativeArrays once per frame.
+    /// Must be called before any SetFrameTiming/SetFrameInputs calls.
+    /// Eliminates per-receiver NativeArray safety checks on the write path.
     /// </summary>
-    public static void SetFrameTiming(int index, double interpolationTime, double deltaTimeSeconds)
+    public static unsafe void BeginWrite()
     {
         if (!_initialized) return;
-        _interpolationTimes[index] = interpolationTime;
-        _deltaTimes[index] = deltaTimeSeconds;
+        _ptrInterpolationTimes = (System.IntPtr)_interpolationTimes.GetUnsafePtr();
+        _ptrDeltaTimes = (System.IntPtr)_deltaTimes.GetUnsafePtr();
+        _ptrHumanScales = (System.IntPtr)_humanScales.GetUnsafePtr();
+        _ptrPrevPositions = (System.IntPtr)_prevPositions.GetUnsafePtr();
+        _ptrTargetPositions = (System.IntPtr)_targetPositions.GetUnsafePtr();
+        _ptrPrevScales = (System.IntPtr)_prevScales.GetUnsafePtr();
+        _ptrTargetScales = (System.IntPtr)_targetScales.GetUnsafePtr();
+        _ptrPrevRotations = (System.IntPtr)_prevRotations.GetUnsafePtr();
+        _ptrTargetRotations = (System.IntPtr)_targetRotations.GetUnsafePtr();
+        _ptrPrevMuscles = (System.IntPtr)_prevMuscles.GetUnsafePtr();
+        _ptrTargetMuscles = (System.IntPtr)_targetMuscles.GetUnsafePtr();
+        _ptrPoseFilterSeeded = (System.IntPtr)_poseFilterSeeded.GetUnsafePtr();
     }
 
-    public static void SetFrameInputs(
+    /// <summary>
+    /// Resets the 1€ pose filter for a receiver so it re-seeds with the next real position.
+    /// Call when: (1) first real data arrives (avoids filter anchored at origin),
+    /// (2) buffer cleanup drops frames (avoids smoothing across a position gap).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static unsafe void ResetPoseFilter(int index)
+    {
+        if (!_initialized) return;
+        ((byte*)(void*)_ptrPoseFilterSeeded)[index] = 0;
+    }
+
+    /// <summary>
+    /// Write timing inputs for a given index (0..FixedCapacity-1).
+    /// Requires BeginWrite() called earlier this frame.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static unsafe void SetFrameTiming(int index, double interpolationTime, double deltaTimeSeconds)
+    {
+        if (!_initialized) return;
+        ((double*)(void*)_ptrInterpolationTimes)[index] = interpolationTime;
+        ((double*)(void*)_ptrDeltaTimes)[index] = deltaTimeSeconds;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static unsafe void SetFrameInputs(
         int index,
         float humanScale,
         float3 prevPos, float3 targetPos,
@@ -184,30 +246,20 @@ public static class BasisRemoteNetworkDriver
         NativeArray<float> prevMuscles, NativeArray<float> targetMuscles)
     {
         if (!_initialized) return;
+        ((float*)(void*)_ptrHumanScales)[index] = humanScale;
+        ((float3*)(void*)_ptrPrevPositions)[index] = prevPos;
+        ((float3*)(void*)_ptrTargetPositions)[index] = targetPos;
+        ((float3*)(void*)_ptrPrevScales)[index] = prevScale;
+        ((float3*)(void*)_ptrTargetScales)[index] = targetScale;
+        ((quaternion*)(void*)_ptrPrevRotations)[index] = prevRot;
+        ((quaternion*)(void*)_ptrTargetRotations)[index] = targetRot;
 
-        _humanScales[index] = humanScale;
-
-        _prevPositions[index] = prevPos;
-        _targetPositions[index] = targetPos;
-
-        _prevScales[index] = prevScale;
-        _targetScales[index] = targetScale;
-
-        _prevRotations[index] = prevRot;
-        _targetRotations[index] = targetRot;
-
+        int bytes = _muscleCount * sizeof(float);
         int baseOffset = index * _muscleCount;
-        FastCopyMuscles(prevMuscles, 0, _prevMuscles, baseOffset, _muscleCount);
-        FastCopyMuscles(targetMuscles, 0, _targetMuscles, baseOffset, _muscleCount);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static unsafe void FastCopyMuscles(NativeArray<float> src, int srcStart, NativeArray<float> dst, int dstStart, int count)
-    {
-        var bytes = (long)count * sizeof(float);
-        var srcPtr = (byte*)src.GetUnsafeReadOnlyPtr() + (long)srcStart * sizeof(float);
-        var dstPtr = (byte*)dst.GetUnsafePtr() + (long)dstStart * sizeof(float);
-        UnsafeUtility.MemCpy(dstPtr, srcPtr, bytes);
+        float* srcPrev = (float*)prevMuscles.GetUnsafeReadOnlyPtr();
+        float* srcTarget = (float*)targetMuscles.GetUnsafeReadOnlyPtr();
+        UnsafeUtility.MemCpy((float*)(void*)_ptrPrevMuscles + baseOffset, srcPrev, bytes);
+        UnsafeUtility.MemCpy((float*)(void*)_ptrTargetMuscles + baseOffset, srcTarget, bytes);
     }
 
     /// <summary>Schedule jobs for the current frame (does not complete them).</summary>
@@ -309,16 +361,35 @@ public static class BasisRemoteNetworkDriver
         oneEuroJob.Complete();
     }
 
+    /// <summary>
+    /// Caches raw read pointers from NativeArrays once per frame.
+    /// Must be called after Apply() (jobs complete) and before any GetMuscleArray/GetScaleOutput calls.
+    /// Eliminates per-receiver NativeArray safety checks and GetUnsafeReadOnlyPtr overhead.
+    /// </summary>
+    public static unsafe void BeginRead()
+    {
+        if (!_initialized) return;
+        _ptrScaleChange = (System.IntPtr)_HasScaleChange.GetUnsafeReadOnlyPtr();
+        _ptrFilteredRotations = (System.IntPtr)_filteredRotations.GetUnsafeReadOnlyPtr();
+        _ptrScaledBodyPositions = (System.IntPtr)_scaledBodyPositions.GetUnsafeReadOnlyPtr();
+        _ptrEuroValues = (System.IntPtr)euroValuesOutput.GetUnsafeReadOnlyPtr();
+        _ptrOutScales = (System.IntPtr)_outScales.GetUnsafeReadOnlyPtr();
+    }
+
     // ---------------- OUTPUT GETTERS ----------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void GetPositionOutput(int index, out float3 outPos) => outPos = _filteredPositions[index];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void GetScaleOutput(int index, out float3 outScale) => outScale = _outScales[index];
+    public static unsafe void GetScaleOutput(int index, out float3 outScale)
+    {
+        if (!_initialized) { outScale = new float3(1, 1, 1); return; }
+        outScale = ((float3*)(void*)_ptrOutScales)[index];
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void GetMuscleArray(
+    public static unsafe void GetMuscleArray(
         int index,
         out bool outScale,
         out quaternion outRot,
@@ -328,22 +399,23 @@ public static class BasisRemoteNetworkDriver
         int eyesAndMouthOffsetFloats,
         int eyesAndMouthCountBytes)
     {
-        outScale = _HasScaleChange[index];
-        outRot = _filteredRotations[index];
-        BodyPosition = _scaledBodyPositions[index];
-
-        int baseOffset = index * _muscleCount;
-        unsafe
+        if (!_initialized)
         {
-            float* src = (float*)euroValuesOutput.GetUnsafeReadOnlyPtr() + baseOffset;
-            fixed (float* dst = poseData.muscles)
-            {
-                UnsafeUtility.MemCpy(dst, src, _muscleCount * sizeof(float));
-                fixed (float* em = eyesAndMouth)
-                {
-                    UnsafeUtility.MemCpy(dst + eyesAndMouthOffsetFloats, em, eyesAndMouthCountBytes);
-                }
-            }
+            outScale = false;
+            outRot = quaternion.identity;
+            BodyPosition = float3.zero;
+            return;
+        }
+
+        outScale = ((bool*)(void*)_ptrScaleChange)[index];
+        outRot = ((quaternion*)(void*)_ptrFilteredRotations)[index];
+        BodyPosition = ((float3*)(void*)_ptrScaledBodyPositions)[index];
+
+        float* src = (float*)(void*)_ptrEuroValues + index * _muscleCount;
+        fixed (float* dst = poseData.muscles, em = eyesAndMouth)
+        {
+            UnsafeUtility.MemCpy(dst, src, _muscleCount * sizeof(float));
+            UnsafeUtility.MemCpy(dst + eyesAndMouthOffsetFloats, em, eyesAndMouthCountBytes);
         }
     }
 

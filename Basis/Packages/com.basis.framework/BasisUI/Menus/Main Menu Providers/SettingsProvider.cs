@@ -1,4 +1,6 @@
 using Basis.Scripts.Device_Management;
+using Basis.Scripts.Networking;
+using BasisPermissions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,6 +11,8 @@ namespace Basis.BasisUI
 {
     public partial class SettingsProvider : BasisMenuActionProvider<BasisMainMenu>
     {
+        private static string _pendingTabName;
+
         [RuntimeInitializeOnLoadMethod]
         public static void AddToMenu()
         {
@@ -23,6 +27,38 @@ namespace Basis.BasisUI
         public override string IconAddress => AddressableAssets.Sprites.Settings;
         public override int Order => 0;
         public override bool Hidden => false;
+
+        /// <summary>
+        /// Opens the Settings menu and navigates directly to the specified tab by name.
+        /// </summary>
+        public static void OpenToTab(string tabName)
+        {
+            _pendingTabName = tabName;
+            BasisMainMenu.OpenWithProvider(StaticTitle);
+        }
+
+        /// <summary>
+        /// Opens the Settings menu and navigates directly to the Body Tracking tab.
+        /// </summary>
+        public static void OpenBodyTrackingTab()
+        {
+            OpenToTab("Body Tracking");
+        }
+
+        private static void NavigateToTab(PanelTabGroup tabGroup, string tabName)
+        {
+            for (int i = 0; i < tabGroup.SelectionButtons.Count; i++)
+            {
+                PanelButton button = tabGroup.SelectionButtons[i];
+                if (button != null && button.Descriptor != null &&
+                    button.Descriptor.TitleLabel != null &&
+                    button.Descriptor.TitleLabel.text == tabName)
+                {
+                    button.OnClicked?.Invoke();
+                    return;
+                }
+            }
+        }
 
         public override void RunAction()
         {
@@ -45,18 +81,27 @@ namespace Basis.BasisUI
             tabGroup.AddTab("General", null, GeneralTab(tabGroup));
             // Remaining tabs are lazy-loaded on first selection to reduce stuttering
             AddLazyTab(tabGroup, "Audio", () => AudioTab(tabGroup));
+            AddLazyTab(tabGroup, "Microphone", () => MicrophoneTab(tabGroup));
             AddLazyTab(tabGroup, "Graphics", () => GraphicsTab(tabGroup));
             AddLazyTab(tabGroup, "Controls", () => SettingsProviderControllerConfig.OpenControllerConfig(tabGroup));
             AddLazyTab(tabGroup, "Chat", () => ChatTab(tabGroup));
-            AddLazyTab(tabGroup, "Nameplates", () => SettingsProviderNamePlate.NamePlateTab(tabGroup));
             AddLazyTab(tabGroup, "Body Tracking", () => SettingsProviderIK.IKTab(tabGroup));
-         // AddLazyTab(tabGroup, "Face Tracking", () => SettingsProviderCameraTracking.CameraTrackingTab(tabGroup));
-            AddLazyTab(tabGroup, "Spatial Audio", () => SettingsProviderRemoteAudio.RemoteAudioTab(tabGroup));
-            AddLazyTab(tabGroup, "Device Mode", () => SettingsProviderPlatform.DeviceModeTab(tabGroup));
-            AddLazyTab(tabGroup, "Storage", () => SettingsProviderStorage.StorageTab(tabGroup));
-            AddLazyTab(tabGroup, "Console", () => SettingsProviderConsoleTab.ConsoleTab(tabGroup));
+            AddLazyTab(tabGroup, "Nameplates", () => SettingsProviderNamePlate.NamePlateTab(tabGroup));
+            AddLazyTab(tabGroup, "Downloads & Cache", () => SettingsProviderStorage.StorageTab(tabGroup));
             AddLazyTab(tabGroup, "Developer", () => DeveloperTab(tabGroup));
-            AddLazyTab(tabGroup, "Admin", () => SettingsProviderAdminTab.AdminTab(tabGroup));
+
+
+            if (BasisNetworkManagement.LocalPermissions.Contains(PermNodes.PermissionsView))
+            {
+                AddLazyTab(tabGroup, "Admin", () => SettingsProviderAdminTab.AdminTab(tabGroup));
+            }
+
+            // Navigate to a specific tab if requested via OpenToTab
+            if (!string.IsNullOrEmpty(_pendingTabName))
+            {
+                NavigateToTab(tabGroup, _pendingTabName);
+                _pendingTabName = null;
+            }
 
             panel.Descriptor.ForceRebuild();
         }
@@ -124,34 +169,7 @@ namespace Basis.BasisUI
 
             RectTransform container = descriptor.ContentParent;
 
-            PanelElementDescriptor generalGroup =
-                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
-            generalGroup.SetIcon(AddressableAssets.Sprites.Settings);
-            generalGroup.SetTitle("Gameplay & Input");
-            generalGroup.SetDescription("General controls and comfort settings.");
-
-            PanelToggle toggleInvertMouse = PanelToggle.CreateNewEntry(generalGroup);
-            toggleInvertMouse.Descriptor.SetTitle("Invert Mouse");
-            toggleInvertMouse.AssignBinding(BasisSettingsDefaults.InvertMouse);
-
-            PanelSlider mousesensitivty = PanelSlider.CreateEntryAndBind(
-                generalGroup,
-                PanelSlider.SliderSettings.Advanced("Mouse Sensitivity", 0, 2f, false, 2, ValueDisplayMode.Percentage),
-                BasisSettingsDefaults.mousesensitivty);
-
-            PanelDropdown dropdownDominantHand = PanelDropdown.CreateNewEntry(generalGroup);
-            dropdownDominantHand.Descriptor.SetTitle("Dominant Hand");
-            dropdownDominantHand.AssignEntries(new List<string> { BasisDominantHand.Right, BasisDominantHand.Left });
-            dropdownDominantHand.AssignBinding(BasisSettingsDefaults.DominantHand);
-
-            PanelToggle smoothlocomotion = PanelToggle.CreateNewEntry(generalGroup);
-            smoothlocomotion.Descriptor.SetTitle("Use Snap Turn Locomotion");
-            smoothlocomotion.AssignBinding(BasisSettingsDefaults.usesnapturn);
-
-            PanelSlider sliderSnapTurnAngle = PanelSlider.CreateEntryAndBind(
-                generalGroup,
-                PanelSlider.SliderSettings.Advanced("Snap Turn Angle", 0, 120, true, 0, ValueDisplayMode.Degrees),
-                BasisSettingsDefaults.SnapTurnAngle);
+            SettingsProviderPlatform.BuildDeviceModeUI(container);
 
             PanelElementDescriptor rangeGroup =
                 PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
@@ -162,6 +180,43 @@ namespace Basis.BasisUI
                 rangeGroup,
                 PanelSlider.SliderSettings.Distance("Avatar Visibility Range", 100),
                 BasisSettingsDefaults.AvatarRange);
+            
+            PanelToggle toggleLimitAvatars = PanelToggle.CreateNewEntry(rangeGroup);
+            toggleLimitAvatars.AssignBinding(BasisSettingsDefaults.UseMaxVisibleAvatars);
+
+            toggleLimitAvatars.Descriptor.SetTitle("Limit Avatars");
+
+
+            PanelSlider sliderMaxVisibleAvatars = PanelSlider.CreateEntryAndBind(
+                rangeGroup,
+                PanelSlider.SliderSettings.Advanced("Max Avatars", 0, 250, true, 0, ValueDisplayMode.Raw),
+                BasisSettingsDefaults.MaxVisibleAvatars);
+
+            sliderMaxVisibleAvatars.Descriptor.SetActive(toggleLimitAvatars.Value);
+
+            toggleLimitAvatars.OnValueChanged += (val) =>
+            {
+                sliderMaxVisibleAvatars.Descriptor.SetActive(val);
+                rangeGroup.ForceRebuild();
+            };
+
+            PanelToggle toggleViewCone = PanelToggle.CreateNewEntry(rangeGroup);
+            toggleViewCone.AssignBinding(BasisSettingsDefaults.UseViewConeAvatars);
+            toggleViewCone.Descriptor.SetTitle("View Cone Avatars");
+            toggleViewCone.Descriptor.SetDescription("Only show avatars in the direction you are looking.");
+
+            PanelSlider sliderViewConeAngle = PanelSlider.CreateEntryAndBind(
+                rangeGroup,
+                PanelSlider.SliderSettings.Advanced("View Cone Angle", 30, 360, true, 0, ValueDisplayMode.Raw),
+                BasisSettingsDefaults.ViewConeAngle);
+
+            sliderViewConeAngle.Descriptor.SetActive(toggleViewCone.Value);
+
+            toggleViewCone.OnValueChanged += (val) =>
+            {
+                sliderViewConeAngle.Descriptor.SetActive(val);
+                rangeGroup.ForceRebuild();
+            };
 
             PanelSlider sliderHearingRange = PanelSlider.CreateEntryAndBind(
                 rangeGroup,
@@ -175,64 +230,7 @@ namespace Basis.BasisUI
                 BasisSettingsDefaults.MicrophoneRange);
 #endif
 
-            PanelElementDescriptor generalGroupDeadZone =
-                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
-
-            generalGroupDeadZone.SetTitle("General");
-            generalGroupDeadZone.SetDescription("Basic filtering applied to the whole stick. (excluding look)");
-
-            PanelSlider controllerDeadZoneSlider = PanelSlider.CreateEntryAndBind(
-                generalGroupDeadZone,
-                PanelSlider.SliderSettings.Advanced("Radial Dead Zone", 0f, 1f, false, 3, ValueDisplayMode.Percentage),
-                BasisSettingsDefaults.ControllerDeadZone);
-
-            PanelElementDescriptor horizontalGroup =
-                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
-
-            horizontalGroup.SetTitle("Horizontal (Yaw) Comfort");
-            horizontalGroup.SetDescription("Prevents forward/back stick pressure from causing accidental left/right drift (\"butterfly wings\").");
-
-            PanelSlider minHorizontalDeadZoneSlider = PanelSlider.CreateEntryAndBind(
-                horizontalGroup,
-                PanelSlider.SliderSettings.Advanced("X Dead Zone (Min)", 0f, 1f, false, 3, ValueDisplayMode.Percentage),
-                BasisSettingsDefaults.Basexdeadzone);
-
-            PanelSlider horizontalGateStrengthSlider = PanelSlider.CreateEntryAndBind(
-                horizontalGroup,
-                PanelSlider.SliderSettings.Advanced("X Gate (At Full Y)", 0f, 1f, false, 3, ValueDisplayMode.Percentage),
-                BasisSettingsDefaults.Extraxdeadzoneatfully);
-
-            PanelSlider wingCurveSlider = PanelSlider.CreateEntryAndBind(
-                horizontalGroup,
-                PanelSlider.SliderSettings.Advanced("Gate Curve", 0f, 3f, false, 3, ValueDisplayMode.Percentage),
-                BasisSettingsDefaults.Wingexponent);
-
-            PanelElementDescriptor verticalGroup =
-                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
-
-            verticalGroup.SetTitle("Vertical (Pitch / Other)");
-            verticalGroup.SetDescription("look joystick Y Dead Zone");
-
-            PanelSlider verticalDeadZoneSlider = PanelSlider.CreateEntryAndBind(
-                verticalGroup,
-                PanelSlider.SliderSettings.Advanced("Look Y Dead Zone", 0f, 1f, false, 3, ValueDisplayMode.Percentage),
-                BasisSettingsDefaults.Ydeadzone);
-
-            controllerDeadZoneSlider.OnValueChanged += _ => UpdatePreview();
-            minHorizontalDeadZoneSlider.OnValueChanged += _ => UpdatePreview();
-            horizontalGateStrengthSlider.OnValueChanged += _ => UpdatePreview();
-            verticalDeadZoneSlider.OnValueChanged += _ => UpdatePreview();
-            wingCurveSlider.OnValueChanged += _ => UpdatePreview();
-
-            PanelElementDescriptor debugGroup =
-    PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
-            debugGroup.SetTitle("Avatar Download");
-            debugGroup.SetDescription("Configuration settings for Avatar Downloads.");
-
-            PanelSlider AvatarDownloadSize = PanelSlider.CreateEntryAndBind(
-    debugGroup.ContentParent,
-    PanelSlider.SliderSettings.Advanced("Avatar Download Size", 5, 1024, false, 0, ValueDisplayMode.MemorySize),
-    BasisSettingsDefaults.AvatarDownloadSize);
+            SettingsProviderPlatform.BuildAutoSwapUI(container);
 
             // One reset button for this whole page
             AddResetPageButton(container, "General", ResetGeneralDefaults);
@@ -240,30 +238,17 @@ namespace Basis.BasisUI
             return tab;
         }
 
-        private static void UpdatePreview()
-        {
-            // wire up to butterflygatepreview one day
-        }
-
         private static void ResetGeneralDefaults()
         {
-            BasisSettingsDefaults.InvertMouse.ResetToDefault();
-            BasisSettingsDefaults.mousesensitivty.ResetToDefault();
-            BasisSettingsDefaults.usesnapturn.ResetToDefault();
-            BasisSettingsDefaults.SnapTurnAngle.ResetToDefault();
-
             BasisSettingsDefaults.AvatarRange.ResetToDefault();
+            BasisSettingsDefaults.MaxVisibleAvatars.ResetToDefault();
+            BasisSettingsDefaults.UseViewConeAvatars.ResetToDefault();
+            BasisSettingsDefaults.ViewConeAngle.ResetToDefault();
             BasisSettingsDefaults.HearingRange.ResetToDefault();
+            BasisSettingsDefaults.SwapMode.ResetToDefault();
 #if !BASIS_DISABLE_MICROPHONE
             BasisSettingsDefaults.MicrophoneRange.ResetToDefault();
 #endif
-
-            BasisSettingsDefaults.ControllerDeadZone.ResetToDefault();
-            BasisSettingsDefaults.Basexdeadzone.ResetToDefault();
-            BasisSettingsDefaults.Extraxdeadzoneatfully.ResetToDefault();
-            BasisSettingsDefaults.Wingexponent.ResetToDefault();
-            BasisSettingsDefaults.Ydeadzone.ResetToDefault();
-            BasisSettingsDefaults.AvatarDownloadSize.ResetToDefault();
         }
 
         // ------------------
@@ -271,11 +256,6 @@ namespace Basis.BasisUI
         // ------------------
         public static PanelTabPage AudioTab(PanelTabGroup tabGroup)
         {
-#if !BASIS_DISABLE_MICROPHONE
-            // Ensure current mode snapshot is loaded (and keeps SMDMicrophone.Current accurate)
-            SMDMicrophone.LoadInMicrophoneData(BasisDeviceManagement.StaticCurrentMode);
-#endif
-
             PanelTabPage tab = PanelTabPage.CreateVertical(tabGroup.Descriptor.ContentParent);
             PanelElementDescriptor descriptor = tab.Descriptor;
 
@@ -325,15 +305,51 @@ namespace Basis.BasisUI
                 PanelSlider.SliderSettings.Percentage("Prop Volume"),
                 BasisSettingsDefaults.PropVolume);
 
+            // Remote Players (Spatial Audio)
+            SettingsProviderRemoteAudio.BuildRemoteAudioUI(container);
+
+            // One reset button for this whole page
+            AddResetPageButton(container, "Audio", ResetAudioDefaults);
+            descriptor.ForceRebuild();
+            return tab;
+        }
+
+        private static void ResetAudioDefaults()
+        {
+            BasisSettingsDefaults.MainVolume.ResetToDefault();
+            BasisSettingsDefaults.MenuVolume.ResetToDefault();
+            BasisSettingsDefaults.WorldVolume.ResetToDefault();
+            BasisSettingsDefaults.MediaVolume.ResetToDefault();
+            BasisSettingsDefaults.VoiceVolume.ResetToDefault();
+            BasisSettingsDefaults.AvatarVolume.ResetToDefault();
+            BasisSettingsDefaults.PropVolume.ResetToDefault();
+            SettingsProviderRemoteAudio.ResetRemoteAudioToDefaults();
+        }
+
+        // ------------------
+        // MICROPHONE TAB
+        // ------------------
+        public static PanelTabPage MicrophoneTab(PanelTabGroup tabGroup)
+        {
 #if !BASIS_DISABLE_MICROPHONE
+            SMDMicrophone.LoadInMicrophoneData(BasisDeviceManagement.StaticCurrentMode);
+#endif
+
+            PanelTabPage tab = PanelTabPage.CreateVertical(tabGroup.Descriptor.ContentParent);
+            PanelElementDescriptor descriptor = tab.Descriptor;
+
+            descriptor.SetTitle("Microphone Settings");
+            RectTransform container = descriptor.ContentParent;
+
+#if !BASIS_DISABLE_MICROPHONE
+            // Snapshot
+            SMDMicrophone.MicSettings snap = SMDMicrophone.Current;
+
             // MICROPHONE GROUP
             PanelElementDescriptor microphoneGroup =
                 PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
             microphoneGroup.SetTitle("Microphone");
             microphoneGroup.SetDescription("Microphone Related Settings");
-
-            // Snapshot
-            SMDMicrophone.MicSettings snap = SMDMicrophone.Current;
 
             // Microphone Volume (0..1)
             sliderMicrophoneVolume = PanelSlider.CreateEntryAndBind(
@@ -342,10 +358,8 @@ namespace Basis.BasisUI
                BasisSettingsDefaults.MicrophoneVolume);
             sliderMicrophoneVolume.SetValueWithoutNotify(snap.Volume01);
 
-            // IMPORTANT: Use new setters (single-source-of-truth), not Save* and not Selected*
             void MicrophoneVolumeChanged(float value)
             {
-                // If mode changes while tab open, keep in sync:
                 if (SMDMicrophone.CurrentMode != BasisDeviceManagement.StaticCurrentMode)
                     SMDMicrophone.LoadInMicrophoneData(BasisDeviceManagement.StaticCurrentMode);
 
@@ -353,7 +367,7 @@ namespace Basis.BasisUI
             }
             sliderMicrophoneVolume.SliderComponent.onValueChanged.AddListener(MicrophoneVolumeChanged);
 
-            BasisLocalVolumeMeterUIDescriptor rangeGroup =
+            BasisLocalVolumeMeterUIDescriptor volumeMeter =
                 BasisLocalVolumeMeterUIDescriptor.CreateNew(
                     BasisLocalVolumeMeterUIDescriptor.ElementStyles.Horizontal,
                     microphoneGroup.ContentParent);
@@ -373,17 +387,14 @@ namespace Basis.BasisUI
             }
             dropdownMicrophoneSelection.OnValueChanged += MicrophoneSelectionChanged;
 
-            // Microphone Denoiser (binding can remain; it will call ValidSettingsChange which calls SetDenoiser)
             PanelToggle toggleMicrophoneDenoiser = PanelToggle.CreateNewEntry(microphoneGroup);
             toggleMicrophoneDenoiser.Descriptor.SetTitle("Microphone Denoiser");
             toggleMicrophoneDenoiser.AssignBinding(BasisSettingsDefaults.MicrophoneDenoiser);
 
-            // Automatic Gain Control (binding remains)
             PanelToggle toggleAGC = PanelToggle.CreateNewEntry(microphoneGroup);
             toggleAGC.Descriptor.SetTitle("Automatic Gain (AGC)");
             toggleAGC.AssignBinding(BasisSettingsDefaults.UseAutomaticGain);
 
-            // Microphone Mode (binding remains)
             PanelDropdown dropdownMicrophoneMode = PanelDropdown.CreateNewEntry(microphoneGroup);
             dropdownMicrophoneMode.Descriptor.SetTitle("Microphone Mode");
             dropdownMicrophoneMode.AssignEntries(new List<string>
@@ -393,7 +404,6 @@ namespace Basis.BasisUI
             });
             dropdownMicrophoneMode.AssignBinding(BasisSettingsDefaults.MicrophoneMode);
 
-            // Microphone Icon (binding remains)
             PanelDropdown dropdownMicrophoneIcon = PanelDropdown.CreateNewEntry(microphoneGroup);
             dropdownMicrophoneIcon.Descriptor.SetTitle("Microphone Icon");
             dropdownMicrophoneIcon.AssignEntries(new List<string>
@@ -404,20 +414,6 @@ namespace Basis.BasisUI
             });
             dropdownMicrophoneIcon.AssignBinding(BasisSettingsDefaults.MicrophoneIcon);
 
-            // Microphone Icon Position Offset
-            PanelSlider sliderMicIconOffsetX = PanelSlider.CreateEntryAndBind(
-                microphoneGroup,
-                PanelSlider.SliderSettings.Advanced("Mic Icon Horizontal Offset", -0.5f, 0.5f, false, 2, ValueDisplayMode.Raw),
-                BasisSettingsDefaults.MicrophoneIconOffsetX);
-            sliderMicIconOffsetX.Descriptor.SetDescription("Slide the microphone icon left or right.");
-
-            PanelSlider sliderMicIconOffsetY = PanelSlider.CreateEntryAndBind(
-                microphoneGroup,
-                PanelSlider.SliderSettings.Advanced("Mic Icon Vertical Offset", -0.5f, 0.5f, false, 2, ValueDisplayMode.Raw),
-                BasisSettingsDefaults.MicrophoneIconOffsetY);
-            sliderMicIconOffsetY.Descriptor.SetDescription("Slide the microphone icon up or down.");
-
-            // Mic Start Behavior dropdown
             PanelDropdown dropdownMicStartBehavior = PanelDropdown.CreateNewEntry(microphoneGroup);
             dropdownMicStartBehavior.Descriptor.SetTitle("Mic Start Behavior");
             dropdownMicStartBehavior.AssignEntries(new List<string>
@@ -571,28 +567,50 @@ namespace Basis.BasisUI
             sliderAgcMaxGain.OnValueChanged += AgcMaxGainChanged;
             sliderAgcAttack.OnValueChanged += AgcAttackChanged;
             sliderAgcRelease.OnValueChanged += AgcReleaseChanged;
+
+            // Mic Icon Position (advanced)
+            PanelElementDescriptor micIconGroup =
+                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
+            micIconGroup.SetTitle("Mic Icon Position");
+            micIconGroup.SetDescription("Adjust the microphone icon position on screen.");
+
+            PanelSlider sliderMicIconOffsetX = PanelSlider.CreateEntryAndBind(
+                micIconGroup,
+                PanelSlider.SliderSettings.Advanced("Horizontal Offset", -0.5f, 0.5f, false, 2, ValueDisplayMode.Raw),
+                BasisSettingsDefaults.MicrophoneIconOffsetX);
+
+            PanelSlider sliderMicIconOffsetY = PanelSlider.CreateEntryAndBind(
+                micIconGroup,
+                PanelSlider.SliderSettings.Advanced("Vertical Offset", -0.5f, 0.5f, false, 2, ValueDisplayMode.Raw),
+                BasisSettingsDefaults.MicrophoneIconOffsetY);
+
+            // Hide advanced groups by default
+            limiterGroup.SetActive(false);
+            denoiseGroup.SetActive(false);
+            agcGroup.SetActive(false);
+            micIconGroup.SetActive(false);
+
+            PanelToggle toggleAdvanced = PanelToggle.CreateNewEntry(microphoneGroup);
+            toggleAdvanced.Descriptor.SetTitle("Advanced");
+            toggleAdvanced.SetValueWithoutNotify(false);
+            toggleAdvanced.OnValueChanged += (val) =>
+            {
+                limiterGroup.SetActive(val);
+                denoiseGroup.SetActive(val);
+                agcGroup.SetActive(val);
+                micIconGroup.SetActive(val);
+                descriptor.ForceRebuild();
+            };
+
+            AddResetPageButton(container, "Microphone", ResetMicrophoneDefaults);
 #endif
-            // One reset button for this whole page
-            AddResetPageButton(container, "Audio", ResetAudioDefaults);
             descriptor.ForceRebuild();
             return tab;
         }
 
-        private static void ResetAudioDefaults()
+        private static void ResetMicrophoneDefaults()
         {
-            // Master
-            BasisSettingsDefaults.MainVolume.ResetToDefault();
-
-            // Mixer
-            BasisSettingsDefaults.MenuVolume.ResetToDefault();
-            BasisSettingsDefaults.WorldVolume.ResetToDefault();
-            BasisSettingsDefaults.MediaVolume.ResetToDefault();
-            BasisSettingsDefaults.VoiceVolume.ResetToDefault();
-            BasisSettingsDefaults.AvatarVolume.ResetToDefault();
-            BasisSettingsDefaults.PropVolume.ResetToDefault();
-
 #if !BASIS_DISABLE_MICROPHONE
-            // Mic (bindings)
             BasisSettingsDefaults.MicrophoneVolume.ResetToDefault();
             BasisSettingsDefaults.MicrophoneDenoiser.ResetToDefault();
             BasisSettingsDefaults.UseAutomaticGain.ResetToDefault();
@@ -600,8 +618,6 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.MicrophoneIcon.ResetToDefault();
             BasisSettingsDefaults.MicrophoneIconOffsetX.ResetToDefault();
             BasisSettingsDefaults.MicrophoneIconOffsetY.ResetToDefault();
-
-            // DSP
             BasisSettingsDefaults.LimitThreshold.ResetToDefault();
             BasisSettingsDefaults.LimitKnee.ResetToDefault();
             BasisSettingsDefaults.DenoiseWet.ResetToDefault();
@@ -610,8 +626,6 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.AgcMaxGainDb.ResetToDefault();
             BasisSettingsDefaults.AgcAttack.ResetToDefault();
             BasisSettingsDefaults.AgcRelease.ResetToDefault();
-
-            // Ensure UI reflects current microphone snapshot immediately (safe even if redundant)
             SyncUiFromSnapshot(SMDMicrophone.Current);
 #endif
         }
@@ -777,29 +791,34 @@ namespace Basis.BasisUI
 
             PanelSlider sliderFoveatedRendering = PanelSlider.CreateEntryAndBind(
                 advancedGroup.ContentParent,
-                new PanelSlider.SliderSettings("Foveated Rendering",
-                    "Blurs the edges of your view so things run faster.",
+                new PanelSlider.SliderSettings("Foveated Percentage",
+                    "",
                     0, 1, false, 1, ValueDisplayMode.Percentage),
                 BasisSettingsDefaults.FoveatedRendering);
 
             PanelSlider sliderFieldOfView = PanelSlider.CreateEntryAndBind(
                 advancedGroup.ContentParent,
                 new PanelSlider.SliderSettings("Field of View",
-                    "How wide you can see on desktop. VR sets this for you.",
+                    "",
                     BasisSettingsDefaults.FOV_MIN, BasisSettingsDefaults.FOV_MAX, true, 0, ValueDisplayMode.Degrees),
                 BasisSettingsDefaults.FieldOfView);
 
+            PanelElementDescriptor lodGroup =
+                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
+            lodGroup.SetTitle("LOD Bias");
+            lodGroup.SetDescription("Higher = less detail at distance, better performance.");
+
             PanelSlider sliderMeshLOD = PanelSlider.CreateEntryAndBind(
-                advancedGroup.ContentParent,
-                new PanelSlider.SliderSettings("Avatar Detail",
-                    "How detailed avatars look far away.",
+                lodGroup.ContentParent,
+                new PanelSlider.SliderSettings("Avatar",
+                    "",
                     0, 1, false, 3, ValueDisplayMode.Percentage),
                 BasisSettingsDefaults.AvatarMeshLOD);
 
             PanelSlider sliderGlobalMeshLOD = PanelSlider.CreateEntryAndBind(
-                advancedGroup.ContentParent,
-                new PanelSlider.SliderSettings("World Detail",
-                    "How detailed the world looks far away.",
+                lodGroup.ContentParent,
+                new PanelSlider.SliderSettings("World",
+                    "",
                     0, 100, true, 0, ValueDisplayMode.Percentage),
                 BasisSettingsDefaults.GlobalMeshLOD);
 
@@ -934,17 +953,23 @@ namespace Basis.BasisUI
 
             PanelElementDescriptor debugGroup =
                 PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
-            debugGroup.SetTitle("Debug Visuals");
-            debugGroup.SetDescription("Debug Systems running through visuals in 3D space");
+            debugGroup.SetTitle("Visual Helpers");
+            debugGroup.SetDescription("Toggle individual debug visualizations.");
 
-            PanelToggle toggleDebugVisuals = PanelToggle.CreateNewEntry(debugGroup.ContentParent);
-            toggleDebugVisuals.Descriptor.SetTitle("Debug Visuals Enabled");
-            toggleDebugVisuals.AssignBinding(BasisSettingsDefaults.DebugVisuals);
+            PanelToggle toggleBoneTracking = PanelToggle.CreateNewEntry(debugGroup.ContentParent);
+            toggleBoneTracking.Descriptor.SetTitle("Bone Tracking");
+            toggleBoneTracking.Descriptor.SetDescription("Show sphere gizmos at tracked bone positions.");
+            toggleBoneTracking.AssignBinding(BasisSettingsDefaults.DebugVisuals);
 
-            PanelDropdown Visual = PanelDropdown.CreateNewEntry(debugGroup.ContentParent);
-            Visual.Descriptor.SetTitle("Visual Helpers");
-            Visual.AssignEntries(new List<string> { "Off", "All Visuals", "Only Avatar Distance" });
-            Visual.AssignBinding(BasisSettingsDefaults.VisualState);
+            PanelToggle toggleAvatarDistance = PanelToggle.CreateNewEntry(debugGroup.ContentParent);
+            toggleAvatarDistance.Descriptor.SetTitle("Avatar Distance");
+            toggleAvatarDistance.Descriptor.SetDescription("Show avatar visibility range circle at your feet.");
+            bool avatarDistOn = !string.Equals(BasisSettingsDefaults.VisualState.RawValue, "off", StringComparison.OrdinalIgnoreCase);
+            toggleAvatarDistance.SetValueWithoutNotify(avatarDistOn);
+            toggleAvatarDistance.OnValueChanged += (val) =>
+            {
+                BasisSettingsDefaults.VisualState.SetValue(val ? "only avatar distance" : "off");
+            };
 
             PanelElementDescriptor infoGroup =
                 PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, container);
@@ -956,6 +981,9 @@ namespace Basis.BasisUI
             // One reset button for this whole page
             AddResetPageButton(container, "Developer", ResetDeveloperDefaults);
 
+            // Inline console
+            SettingsProviderConsoleTab.BuildConsoleUI(container);
+
             descriptor.ForceRebuild();
             return tab;
         }
@@ -963,7 +991,7 @@ namespace Basis.BasisUI
         private static void ResetDeveloperDefaults()
         {
             BasisSettingsDefaults.DebugVisuals.ResetToDefault();
-            BasisSettingsDefaults.VisualState.ResetToDefault();
+            BasisSettingsDefaults.VisualState.SetValue("off");
         }
 
         private static void CreateBuildInfoSection(RectTransform parent)

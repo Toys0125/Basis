@@ -409,6 +409,11 @@ public class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     /// <summary>Starts a 5-second countdown and triggers a capture at the end.</summary>
     public void Timer()
     {
+        // Notify remote clients so they replay the same tick/shutter timing
+        if (BasisNetworkConnection.LocalPlayerPeer != null)
+        {
+            BasisNetworkPIPCameraDriver.SendCountdown(5);
+        }
         StartCoroutine(DelayedAction(5));
     }
 
@@ -418,6 +423,12 @@ public class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         for (int i = (int)delaySeconds; i > 0; i--)
         {
             countdownText.text = i.ToString();
+
+            if (BasisDeviceManagement.Instance.CameraCountdownTickSound != null)
+            {
+                AudioSource.PlayClipAtPoint(BasisDeviceManagement.Instance.CameraCountdownTickSound, captureCamera.transform.position);
+            }
+
             yield return new WaitForSeconds(1f);
         }
 
@@ -436,6 +447,12 @@ public class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         {
             format = TextureFormat.RGBA32;
             renderFormat = RenderTextureFormat.ARGB32;
+        }
+
+        // Play shutter sound locally (network was already notified via SendCountdown)
+        if (BasisDeviceManagement.Instance.CameraShutterSound != null)
+        {
+            AudioSource.PlayClipAtPoint(BasisDeviceManagement.Instance.CameraShutterSound, captureCamera.transform.position);
         }
 
         StartCoroutine(TakeScreenshot(format, renderFormat));
@@ -474,6 +491,18 @@ public class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         {
             format = TextureFormat.RGBA32;
             renderFormat = RenderTextureFormat.ARGB32;
+        }
+
+        // Play shutter sound locally at the camera position
+        if (BasisDeviceManagement.Instance.CameraShutterSound != null)
+        {
+            AudioSource.PlayClipAtPoint(BasisDeviceManagement.Instance.CameraShutterSound, captureCamera.transform.position);
+        }
+
+        // Send shutter sound event over the network
+        if (BasisNetworkConnection.LocalPlayerPeer != null)
+        {
+            BasisNetworkPIPCameraDriver.SendShutterSound();
         }
 
         StartCoroutine(TakeScreenshot(format, renderFormat));

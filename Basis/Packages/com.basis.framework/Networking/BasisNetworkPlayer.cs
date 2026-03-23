@@ -43,7 +43,7 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
         };
         [SerializeField]
         public HumanPoseHandler PoseHandler;
-        public BasisPlayer Player;
+        public BasisPlayer Player {get; set; }
         public bool hasID = false;
         public bool HasReasonToSendAudio
         {
@@ -170,17 +170,8 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
                 recipientsSize = 0,
             };
             NetDataWriter netDataWriter = new NetDataWriter();
-            if (DeliveryMethod == DeliveryMethod.Unreliable)
-            {
-                netDataWriter.Put(BasisNetworkCommons.AvatarChannel);
-                AvatarDataMessage.Serialize(netDataWriter);
-                BasisNetworkConnection.LocalPlayerPeer.Send(netDataWriter, BasisNetworkCommons.FallChannel, DeliveryMethod);
-            }
-            else
-            {
-                AvatarDataMessage.Serialize(netDataWriter);
-                BasisNetworkConnection.LocalPlayerPeer.Send(netDataWriter, BasisNetworkCommons.AvatarChannel, DeliveryMethod);
-            }
+            AvatarDataMessage.Serialize(netDataWriter);
+            BasisNetworkConnection.LocalPlayerPeer.Send(netDataWriter, BasisNetworkCommons.AvatarChannel, DeliveryMethod);
             BasisNetworkProfiler.AddToCounter(BasisNetworkProfilerCounter.AvatarDataMessage, netDataWriter.Length);
         }
         public static bool AvatarToPlayer(BasisAvatar Avatar, out BasisPlayer BasisPlayer)
@@ -509,6 +500,21 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
                 if (Player != null)
                 {
                     return Player.DisplayName;
+                }
+                else
+                {
+                    return string.Empty;
+                }
+            }
+        }
+        
+        public string SafeDisplayName
+        {
+            get
+            {
+                if (Player != null)
+                {
+                    return Player.SafeDisplayName;
                 }
                 else
                 {

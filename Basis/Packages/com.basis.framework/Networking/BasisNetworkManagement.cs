@@ -5,6 +5,7 @@ using Basis.Scripts.Networking.Transmitters;
 using Basis.Scripts.Profiler;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -77,6 +78,12 @@ namespace Basis.Scripts.Networking
         /// </summary>
         public static ServerMetaDataMessage ServerMetaDataMessage = new ServerMetaDataMessage();
 
+        /// <summary>
+        /// Local player's effective permissions decoded from the server metadata.
+        /// </summary>
+        public static HashSet<string> LocalPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public static Action OnlocalPermissionsChanged;
         /// <summary>
         /// Event fired when an instance of this manager is enabled and initialized.
         /// </summary>
@@ -178,6 +185,7 @@ namespace Basis.Scripts.Networking
                 return;
             }
 
+            BasisRemoteNetworkDriver.BeginWrite();
             for (int Index = 0; Index < BasisNetworkPlayers.ReceiverCount; Index++)
             {
                 var rec = BasisNetworkPlayers.ReceiversSnapshot[Index];
@@ -189,6 +197,7 @@ namespace Basis.Scripts.Networking
                 }
             }
             BasisRemoteNetworkDriver.Compute();
+            Basis.Scripts.Networking.Receivers.BasisShoutAudioDriver.DrainAll();
             BasisNetworkProfiler.Update();
 
             if (HasRequested)
@@ -213,6 +222,7 @@ namespace Basis.Scripts.Networking
             }
 
             BasisRemoteNetworkDriver.Apply();
+            BasisRemoteNetworkDriver.BeginRead();
             for (int Index = 0; Index < BasisNetworkPlayers.ReceiverCount; Index++)
             {
                 BasisNetworkPlayers.ReceiversSnapshot[Index].Apply();

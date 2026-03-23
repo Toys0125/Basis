@@ -3,17 +3,18 @@ using Basis.Network.Server.Generic;
 using Basis.Network.Server.Ownership;
 using BasisNetworkCore;
 using BasisNetworkCore.Pooling;
-using BasisNetworkServer.BasisNetworking;
 using BasisNetworkServer;
+using BasisNetworkServer.BasisNetworking;
 using BasisNetworkServer.BasisNetworkingReductionSystem;
 using BasisNetworkServer.Security;
+using BasisPermissions;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using static Basis.Network.Core.Serializable.SerializableBasis;
 using static BasisNetworkCore.Serializable.SerializableBasis;
+using static BasisPermissions.PermissionManager;
 using static SerializableBasis;
 
 namespace BasisServerHandle
@@ -63,6 +64,12 @@ namespace BasisServerHandle
                     return;
                 }
                 int id = peer.Id;
+
+                // Clean up stored metadata before the UUID mapping is removed
+                if (NetworkServer.AuthIdentity.NetIDToUUID(peer, out string disconnectedUuid))
+                {
+                    PermissionIntegration.RemovePlayerMeta(disconnectedUuid);
+                }
 
                 NetworkServer.AuthIdentity.RemoveConnection(id);
                 BasisNetworkOwnership.RemovePlayerOwnership(id);
@@ -214,6 +221,7 @@ namespace BasisServerHandle
                 //instead we can make sure all additional clients have them correct.
                 //this only occurs if the server is doing Auth checks.
                 ReadyMessage.playerMetaDataMessage.playerUUID = UUID;
+                PermissionIntegration.StorePlayerMeta(UUID, ReadyMessage.playerMetaDataMessage);
 
                Configuration Config = NetworkServer.Configuration;
                 //lets dump to the local client there data after the server has had its way
@@ -225,7 +233,9 @@ namespace BasisServerHandle
                     IncreaseRate = Config.BSRSIncreaseRate,
                     SlowestSendRate = Config.BSRSlowestSendRate,
                     PeerLimit = Config.PeerLimit,
+
                 };
+                ServerMetaDataMessage.SetPermissions(PermissionIntegration.Manager.GetAllAllowedRules(UUID), PermissionIntegration.Manager.GetAllDeniedRules(UUID));
                 NetDataWriter Writer = NetworkServer.RentWriter();
                 ServerMetaDataMessage.Serialize(Writer);
                 NetworkServer.TrySend(newPeer, Writer, BasisNetworkCommons.metaDataChannel, DeliveryMethod.ReliableOrdered);
@@ -255,6 +265,7 @@ namespace BasisServerHandle
                 BasisNetworkOwnership.SendOutOwnershipInformation(newPeer);
                 BasisNetworkPIPCamera.SendPIPStateToPeer(newPeer);
                 BasisNetworkContentShare.SendAllSpheresToPeer(newPeer);
+                SendShoutStateToPeer(newPeer);
             }
             else
             {
@@ -310,6 +321,82 @@ namespace BasisServerHandle
             SendVoiceMessageToClients(serverAudio, BasisNetworkCommons.VoiceChannel, peer, DeliveryMethod.Unreliable);
 
             ThreadSafeMessagePool<AudioSegmentDataMessage>.Return(audioSegment);
+        }
+
+        /// <summary>
+        /// Handles shout voice sent by a client on ShoutVoiceChannel (channel 0).
+        /// Only processes if the sender is authorized for shout mode.
+        /// Broadcasts to ALL connected peers.
+        /// </summary>
+        public static void HandleShoutVoiceMessage(NetPacketReader reader, NetPeer peer)
+        {
+            if (!BasisSavedState.IsInShoutMode(peer.Id))
+            {
+                BNL.LogError($"Peer {peer.Id} sent shout voice but is not in shout mode. Ignoring.");
+                reader.Recycle();
+                return;
+            }
+
+            AudioSegmentDataMessage audioSegment = ThreadSafeMessagePool<AudioSegmentDataMessage>.Rent();
+            audioSegment.Deserialize(reader);
+            reader.Recycle();
+
+            ServerAudioSegmentMessage serverAudio = new ServerAudioSegmentMessage
+            {
+                audioSegmentData = audioSegment,
+                playerIdMessage = new PlayerIdMessage
+                {
+                    playerID = (ushort)peer.Id,
+                },
+            };
+
+            var writer = NetworkServer.RentWriter();
+            serverAudio.Serialize(writer);
+
+            NetworkServer.BroadcastMessageToClients(writer, BasisNetworkCommons.ShoutVoiceChannel, peer, NetworkServer.PeerSnapshot, DeliveryMethod.Unreliable);
+
+            NetworkServer.ReturnWriter(writer);
+            ThreadSafeMessagePool<AudioSegmentDataMessage>.Return(audioSegment);
+        }
+
+        /// <summary>
+        /// Broadcasts a shout mode state change to all clients via the AdminChannel.
+        /// </summary>
+        public static void BroadcastShoutModeState(ushort targetPlayerId, bool enabled)
+        {
+            var writer = NetworkServer.RentWriter();
+            AdminRequestMode mode = enabled ? AdminRequestMode.EnableShoutMode : AdminRequestMode.DisableShoutMode;
+            new AdminRequest().Serialize(writer, mode);
+            writer.Put(targetPlayerId);
+
+            NetPeer[] peers = NetworkServer.PeerSnapshot;
+            foreach (var client in peers)
+            {
+                BasisNetworkStatistics.RecordOutbound(BasisNetworkCommons.AdminChannel, writer.Length);
+                client.Send(writer, BasisNetworkCommons.AdminChannel, DeliveryMethod.ReliableOrdered);
+            }
+
+            NetworkServer.ReturnWriter(writer);
+        }
+
+        /// <summary>
+        /// Sends current shout mode states to a newly connected peer.
+        /// </summary>
+        public static void SendShoutStateToPeer(NetPeer newPeer)
+        {
+            int[] shoutPlayers = BasisSavedState.GetAllShoutModePlayers();
+            if (shoutPlayers.Length == 0) return;
+
+            var writer = NetworkServer.RentWriter();
+            foreach (int peerId in shoutPlayers)
+            {
+                writer.Reset();
+                new AdminRequest().Serialize(writer, AdminRequestMode.EnableShoutMode);
+                writer.Put((ushort)peerId);
+                BasisNetworkStatistics.RecordOutbound(BasisNetworkCommons.AdminChannel, writer.Length);
+                newPeer.Send(writer, BasisNetworkCommons.AdminChannel, DeliveryMethod.ReliableOrdered);
+            }
+            NetworkServer.ReturnWriter(writer);
         }
 
         [ThreadStatic] private static List<NetPeer> _voicePeerList;
@@ -543,18 +630,77 @@ namespace BasisServerHandle
                 return;
             }
             LocalLoadResource.Deserialize(Reader);
-            LocalLoadResource.IsAdminLocked = NetworkServer.AuthIdentity.IsNetPeerAdmin(uuid);
+            LocalLoadResource.IsAdminLocked = PermissionIntegration.HasValidRequirement(Peer, PermNodes.protection);
             LocalLoadResource.UUIDOfCreator = UUID;
             Reader.Recycle();
-            //returns a message with the ushort back to the client, or it sends it to everyone if its new.
-            BasisNetworkResourceManagement.LoadResource(LocalLoadResource);
-            //we need to convert the string int a  ushort.
+
+            switch (LocalLoadResource.Mode)
+            {
+                case 0:
+                    if (PermissionIntegration.HasValidRequirement(UUID, PermNodes.ResourceLoadProp) == false)
+                    {
+                        BNL.LogError($"Invalid Request To Load Gameobject From {UUID}");
+                        return;
+                    }
+                    break;
+                case 1:
+                    if (PermissionIntegration.HasValidRequirement(UUID, PermNodes.ResourceLoadWorld) == false)
+                    {
+                        BNL.LogError($"Invalid Request To Load Scene From {UUID}");
+                        return;
+                    }
+                    break;
+                default:
+                    BNL.LogError($"Missing Mode {LocalLoadResource.Mode}");
+                    break;
+            }
+            // Route based on load strategy
+            switch (LocalLoadResource.LoadStrategy)
+            {
+                case 0:
+                    BasisNetworkResourceManagement.LoadResource(LocalLoadResource);
+                    break;
+                case 2: // Synchronized
+                    BasisNetworkPreloadResourceManagement.StartSynchronizedLoad(LocalLoadResource);
+                    break;
+                default:
+                    BNL.LogError("Falling Back to Resource Load, Unsupport Load Strategy");
+                    BasisNetworkResourceManagement.LoadResource(LocalLoadResource);
+                    break;
+            }
         }
-        public static void UnloadResource(NetPacketReader Reader, NetPeer Peer, string UUID)
+        public static void HandlePreloadReady(NetPacketReader Reader, NetPeer Peer)
+        {
+            PreloadReadyMessage readyMsg = new PreloadReadyMessage();
+            readyMsg.Deserialize(Reader);
+            Reader.Recycle();
+            BasisNetworkPreloadResourceManagement.HandleClientReady(readyMsg.LoadedNetID, Peer.Id, readyMsg.IsReady);
+        }
+        public static void UnloadResource(NetPacketReader Reader, NetPeer Peer)
         {
             UnLoadResource UnLoadResource = new UnLoadResource();
             UnLoadResource.Deserialize(Reader);
             Reader.Recycle();
+
+            switch (UnLoadResource.Mode)
+            {
+                case 0:
+                    if (PermissionIntegration.HasValidRequirement(Peer, PermNodes.ResourceUnloadProp) == false)
+                    {
+                        return;
+                    }
+                    break;
+                case 1:
+                    if (PermissionIntegration.HasValidRequirement(Peer, PermNodes.ResourceUnloadWorld) == false)
+                    {
+                        return;
+                    }
+                    break;
+                default:
+                    BNL.LogError($"Missing Mode {UnLoadResource.Mode}");
+                    break;
+            }
+
             //returns a message with the ushort back to the client, or it sends it to everyone if its new.
             BasisNetworkResourceManagement.UnloadResource(UnLoadResource, Peer);
             //we need to convert the string int a  ushort.
@@ -564,15 +710,8 @@ namespace BasisServerHandle
         {
             if (NetworkServer.Configuration.DisableWriteUnlessAdminPersistentFlag)
             {
-                if (NetworkServer.AuthIdentity.NetIDToUUID(peer, out string uuid) == false)
+                if (PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
                 {
-                    BNL.LogError($"User UUID not found for peer: {peer}");
-                    return;
-                }
-
-                if (NetworkServer.AuthIdentity.IsNetPeerAdmin(uuid) == false)
-                {
-                    BNL.LogError($"Unauthorized admin access attempt by UUID: {uuid}");
                     return;
                 }
             }
@@ -588,15 +727,8 @@ namespace BasisServerHandle
         {
             if(NetworkServer.Configuration.DisableReadUnlessAdminPersistentFlag)
             {
-                if (NetworkServer.AuthIdentity.NetIDToUUID(peer, out string uuid) == false)
+                if(!PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
                 {
-                    BNL.LogError($"User UUID not found for peer: {peer}");
-                    return;
-                }
-
-                if (NetworkServer.AuthIdentity.IsNetPeerAdmin(uuid) == false)
-                {
-                    BNL.LogError($"Unauthorized admin access attempt by UUID: {uuid}");
                     return;
                 }
             }

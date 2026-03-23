@@ -56,13 +56,6 @@ namespace Basis.BasisUI
             new ItemKey
             {
                 Mode = BundledContentHolder.Mode.Avatar,
-                Url = "https://cdn.yewnyx.net/basis/2026-02-25/space_noet/95d4459279004b39928bc292f11bbac020260225.BEE",
-                Pass = "b6e0ac7b08a23fc1cb0b6a0103f26d1f3eff8c2889ffb5c8bdcaa17a538e58b8",
-                EmbeddedSettings = EmbeddedSettings.BEEUrl,
-            },
-            new ItemKey
-            {
-                Mode = BundledContentHolder.Mode.Avatar,
                 Url = "https://cdn.yewnyx.net/basis/2026-02-25/spaceman/f78971c1c553483a9bbe155d60f14d4e20260225.BEE",
                 Pass = "091b548e5e036a2d1829b41f829a0dab3f30a41d4d01eb9822b316fedb2934dd",
                 EmbeddedSettings = EmbeddedSettings.BEEUrl,
@@ -77,22 +70,8 @@ namespace Basis.BasisUI
             new ItemKey
             {
                 Mode = BundledContentHolder.Mode.Avatar,
-                Url = "https://cdn.yewnyx.net/basis/2026-02-25/yun_noet/77414044b3514656bebdcca7420809d520260225.BEE",
-                Pass = "dffe7a0b96cf6a8d23fcb72c03c625466a3f8bd0a14b826a6a017548b54f2105",
-                EmbeddedSettings = EmbeddedSettings.BEEUrl,
-            },
-            new ItemKey
-            {
-                Mode = BundledContentHolder.Mode.Avatar,
                 Url = "https://BasisFramework.b-cdn.net/Version2/Avatars/Public/leona/leona_ft/a6db519231784d34bfdc47c27e6b8d4820260226.BEE",
                 Pass = "1717b718e26eabb7d9ae1a8e2046f17d90ed4e81a548aea28e05a589ccae52e5",
-                EmbeddedSettings = EmbeddedSettings.BEEUrl,
-            },
-            new ItemKey
-            {
-                Mode = BundledContentHolder.Mode.Avatar,
-                Url = "https://BasisFramework.b-cdn.net/Version2/Avatars/Public/leona/leona_noft/a95144717c494123a2998692dc261c2d20260226.BEE",
-                Pass = "f76d53b10777997fbed8600f32687e9f5bfcc4d27ff22643b9b59074e916abe9",
                 EmbeddedSettings = EmbeddedSettings.BEEUrl,
             },
         };

@@ -7,6 +7,7 @@ using Basis.Scripts.Drivers;
 using Basis.Scripts.Networking;
 using Basis.Scripts.Networking.NetworkedAvatar;
 using Basis.Scripts.Networking.Transmitters;
+using Basis.BasisUI;
 using Basis.Scripts.UI;
 using Basis.Scripts.UI.NamePlate;
 using GatorDragonGames.JigglePhysics;
@@ -205,6 +206,8 @@ public class BasisEventDriver : MonoBehaviour
             BasisLocalPlayer.Instance.Simulate(DeltaTime);//update local player
             BasisLocalCameraDriver.Instance.Simulate();
         }
+        BasisBlendShapeDriver.Simulate(); // capture + encode local face-tracking blendshapes
+        BasisBlendShapeDriver.Apply();    // apply remote face-tracking blendshapes to meshes
         BasisAvatarDriver.ScheduleReadBlendShapes();
         // JigglePhysics: schedule/complete passes
         JigglePhysics.ScheduleSimulate(fixedTimeAsDouble, TimeAsDouble, fixedDeltaTime); //schedule jiggles
@@ -217,6 +220,7 @@ public class BasisEventDriver : MonoBehaviour
 
         BasisRemoteNamePlateDriver.CompleteNamePlates();//just colors
         BasisJoinLeaveNotification.Simulate(TimeAsDouble);//fade and expire join/leave HUD notifications
+        IndividualPlayerProvider.SimulateBeacon(DeltaTime);//update player highlight beacon position
         if (SMModuleDebugOptions.UseGizmos)
         {
             JigglePhysics.ScheduleRender();
