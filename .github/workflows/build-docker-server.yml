@@ -146,6 +146,10 @@ jobs:
           rm -rf ${projectPath}/Packages/com.valvesoftware.unity.openvr
           rm -rf ${projectPath}/Packages/com.basis.openvr
           rm -rf ${projectPath}/Packages/com.basis.openxr
+      - name: "Strip sample content for headless builds"
+        shell: bash
+        run: |
+          python3 .github/scripts/sanitize_headless_ci.py "${projectPath}"
       - name: "Build Unity project"
         timeout-minutes: 100
         uses: Toys0125/unity-builder@Compiled-with-Unity-Version-Check
