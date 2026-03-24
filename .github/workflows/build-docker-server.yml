@@ -139,16 +139,16 @@ jobs:
           path: ${{ env.projectPath }}/Library
           key: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-${{ hashFiles(env.projectPath) }}
           restore-keys: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-
-      - name: "Sanitize headless project (Linux)"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          python3 .github/scripts/sanitize_headless_ci.py "${projectPath}"
-      - name: "Sanitize headless project (Windows)"
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          python .github/scripts/sanitize_headless_ci.py "${env:projectPath}"
+      # - name: "Sanitize headless project (Linux)"
+      #   if: runner.os == 'Linux'
+      #   shell: bash
+      #   run: |
+      #     python3 .github/scripts/sanitize_headless_ci.py "${projectPath}"
+      # - name: "Sanitize headless project (Windows)"
+      #   if: runner.os == 'Windows'
+      #   shell: pwsh
+      #   run: |
+      #     python .github/scripts/sanitize_headless_ci.py "${env:projectPath}"
       - name: "Build Unity project"
         timeout-minutes: 100
         uses: Toys0125/unity-builder@Compiled-with-Unity-Version-Check
