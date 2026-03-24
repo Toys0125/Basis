@@ -144,6 +144,25 @@ jobs:
         shell: bash
         run: |
           python3 .github/scripts/sanitize_headless_ci.py "${projectPath}"
+      - name: "Disable OpenVR editor setup for Windows headless builds"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $settingsPath = Join-Path $env:projectPath 'ProjectSettings/EditorBuildSettings.asset'
+          $settingsLines = Get-Content $settingsPath
+          $settingsLines |
+            Where-Object { $_ -notmatch '^\s*Unity\.XR\.OpenVR\.Settings:' } |
+            Set-Content $settingsPath
+
+          @(
+            'Assets/XR/Settings/OpenVRSettings.asset',
+            'Assets/XR/Settings/OpenVRSettings.asset.meta'
+          ) | ForEach-Object {
+            $path = Join-Path $env:projectPath $_
+            if (Test-Path $path) {
+              Remove-Item $path -Force
+            }
+          }
       # - name: "Sanitize headless project (Windows)"
       #   if: runner.os == 'Windows'
       #   shell: pwsh
