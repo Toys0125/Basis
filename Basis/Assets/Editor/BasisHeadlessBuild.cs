@@ -59,12 +59,12 @@ public static class BasisHeadlessBuild
 
         AddressableAssetSettings addressableSettings = AddressableAssetSettingsDefaultObject.Settings;
         bool restoreBuildAddressablesWithPlayerBuild = false;
-        bool originalBuildAddressablesWithPlayerBuild = false;
+        AddressableAssetSettings.PlayerBuildOption originalBuildAddressablesWithPlayerBuild = AddressableAssetSettings.PlayerBuildOption.PreferencesValue;
         if (addressableSettings != null)
         {
             originalBuildAddressablesWithPlayerBuild = addressableSettings.BuildAddressablesWithPlayerBuild;
             restoreBuildAddressablesWithPlayerBuild = true;
-            addressableSettings.BuildAddressablesWithPlayerBuild = false;
+            addressableSettings.BuildAddressablesWithPlayerBuild = AddressableAssetSettings.PlayerBuildOption.DoNotBuildWithPlayer;
             Debug.Log($"[BasisHeadlessBuild] Overriding BuildAddressablesWithPlayerBuild: {originalBuildAddressablesWithPlayerBuild} -> {addressableSettings.BuildAddressablesWithPlayerBuild}");
         }
         else
