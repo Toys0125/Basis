@@ -107,7 +107,7 @@ jobs:
             artifactName: LinuxHeadless
             buildMethod: BasisHeadlessBuild.BuildLinuxServer
           - targetPlatform: StandaloneWindows64
-            buildPlatform: windows-latest
+            buildPlatform: ubuntu-latest
             buildName: HeadlessWindowsServer
             buildOutput: WindowsServer
             artifactName: WindowsHeadless
