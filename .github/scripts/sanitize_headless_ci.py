@@ -7,14 +7,32 @@ from pathlib import Path
 
 
 PACKAGE_DIRS_TO_REMOVE = (
+    "Packages/com.valvesoftware.unity.openvr",
+    "Packages/com.basis.openvr",
+    "Packages/com.basis.openxr",
     "Packages/com.basis.examples",
     "Packages/com.basis.pooltable",
+)
+
+PACKAGE_DEPENDENCIES_TO_REMOVE = (
+    "com.unity.xr.openxr",
+    "com.valvesoftware.unity.openvr",
 )
 
 ADDRESS_PREFIXES_TO_REMOVE = (
     "Packages/com.basis.examples/",
     "Packages/com.basis.pooltable/",
     "Packages/com.basis.tests/",
+)
+
+XR_CONFIG_OBJECT_KEYS_TO_REMOVE = (
+    "Unity.XR.OpenVR.Settings",
+    "com.unity.xr.management.loader_settings",
+    "com.unity.xr.openxr.settings4",
+)
+
+XR_ASSET_PATHS_TO_REMOVE = (
+    "Assets/XR",
 )
 
 
@@ -48,6 +66,79 @@ def should_remove_entry(address: str, guid: str, guid_to_asset_path: dict[str, s
 
     asset_path = guid_to_asset_path.get(guid, "")
     return asset_path.startswith(PACKAGE_DIRS_TO_REMOVE)
+
+
+def remove_manifest_dependencies(project_root: Path) -> list[str]:
+    manifest_path = project_root / "Packages/manifest.json"
+    lines = manifest_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    output: list[str] = []
+    removed_dependencies: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        removed_dependency = None
+        for dependency in PACKAGE_DEPENDENCIES_TO_REMOVE:
+            if stripped.startswith(f'"{dependency}"'):
+                removed_dependency = dependency
+                break
+
+        if removed_dependency is not None:
+            removed_dependencies.append(removed_dependency)
+            continue
+
+        output.append(line)
+
+    if removed_dependencies:
+        manifest_path.write_text("".join(output), encoding="utf-8")
+
+    return removed_dependencies
+
+
+def strip_editor_build_settings(project_root: Path) -> list[str]:
+    settings_path = project_root / "ProjectSettings/EditorBuildSettings.asset"
+    lines = settings_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    output: list[str] = []
+    removed_keys: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        removed_key = None
+        for key in XR_CONFIG_OBJECT_KEYS_TO_REMOVE:
+            if stripped.startswith(f"{key}:"):
+                removed_key = key
+                break
+
+        if removed_key is not None:
+            removed_keys.append(removed_key)
+            continue
+
+        output.append(line)
+
+    if removed_keys:
+        settings_path.write_text("".join(output), encoding="utf-8")
+
+    return removed_keys
+
+
+def remove_project_paths(project_root: Path, relative_paths: tuple[str, ...]) -> list[Path]:
+    removed_paths: list[Path] = []
+
+    for relative_path in relative_paths:
+        target_path = project_root / relative_path
+        meta_path = target_path.with_name(f"{target_path.name}.meta")
+
+        if target_path.is_dir():
+            shutil.rmtree(target_path)
+            removed_paths.append(target_path)
+        elif target_path.exists():
+            target_path.unlink()
+            removed_paths.append(target_path)
+
+        if meta_path.exists():
+            meta_path.unlink()
+            removed_paths.append(meta_path)
+
+    return removed_paths
 
 
 def strip_addressable_entries(asset_path: Path, guid_to_asset_path: dict[str, str]) -> list[str]:
@@ -106,6 +197,18 @@ def main() -> int:
 
     guid_to_asset_path = build_guid_index(project_root)
 
+    removed_dependencies = remove_manifest_dependencies(project_root)
+    if removed_dependencies:
+        print(f"Removed {len(removed_dependencies)} manifest dependencies from {project_root / 'Packages/manifest.json'}")
+        for dependency in removed_dependencies:
+            print(f"  - {dependency}")
+
+    removed_config_keys = strip_editor_build_settings(project_root)
+    if removed_config_keys:
+        print(f"Removed {len(removed_config_keys)} XR config objects from {project_root / 'ProjectSettings/EditorBuildSettings.asset'}")
+        for key in removed_config_keys:
+            print(f"  - {key}")
+
     asset_groups_dir = project_root / "Assets/AddressableAssetsData/AssetGroups"
     removed_total = 0
     for asset_path in sorted(asset_groups_dir.glob("*.asset")):
@@ -115,6 +218,10 @@ def main() -> int:
             print(f"Removed {len(removed)} Addressables entries from {asset_path}")
             for entry in removed:
                 print(f"  - {entry}")
+
+    removed_xr_paths = remove_project_paths(project_root, XR_ASSET_PATHS_TO_REMOVE)
+    for path in removed_xr_paths:
+        print(f"Removed XR path: {path}")
 
     for relative_dir in PACKAGE_DIRS_TO_REMOVE:
         package_dir = project_root / relative_dir

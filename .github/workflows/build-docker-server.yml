@@ -139,39 +139,12 @@ jobs:
           path: ${{ env.projectPath }}/Library
           key: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-${{ hashFiles(env.projectPath) }}
           restore-keys: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-
-      - name: "Remove OpenXR/OpenVR packages for headless builds (Linux)"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          jq 'del(.dependencies["com.unity.xr.openxr"]) | del(.dependencies["com.valvesoftware.unity.openvr"])' < ${projectPath}/Packages/manifest.json > manifest.json.tmp && mv manifest.json.tmp ${projectPath}/Packages/manifest.json
-          rm -rf ${projectPath}/Packages/com.valvesoftware.unity.openvr
-          rm -rf ${projectPath}/Packages/com.basis.openvr
-          rm -rf ${projectPath}/Packages/com.basis.openxr
-      - name: "Remove OpenXR/OpenVR packages for headless builds (Windows)"
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $manifestPath = Join-Path $env:projectPath 'Packages/manifest.json'
-          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-          $manifest.dependencies.PSObject.Properties.Remove('com.unity.xr.openxr')
-          $manifest.dependencies.PSObject.Properties.Remove('com.valvesoftware.unity.openvr')
-          $manifest | ConvertTo-Json -Depth 100 | Set-Content $manifestPath
-          @(
-            'Packages/com.valvesoftware.unity.openvr',
-            'Packages/com.basis.openvr',
-            'Packages/com.basis.openxr'
-          ) | ForEach-Object {
-            $path = Join-Path $env:projectPath $_
-            if (Test-Path $path) {
-              Remove-Item $path -Recurse -Force
-            }
-          }
-      - name: "Strip sample content for headless builds (Linux)"
+      - name: "Sanitize headless project (Linux)"
         if: runner.os == 'Linux'
         shell: bash
         run: |
           python3 .github/scripts/sanitize_headless_ci.py "${projectPath}"
-      - name: "Strip sample content for headless builds (Windows)"
+      - name: "Sanitize headless project (Windows)"
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
