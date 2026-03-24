@@ -56,75 +56,52 @@ public static class BasisHeadlessBuild
 
         EnsureBuildDirectory(buildPath);
         LogEnabledScenes();
-        BuildAddressablesWithDiagnostics(target);
 
-        BuildPlayerOptions options = new BuildPlayerOptions
+        AddressableAssetSettings addressableSettings = AddressableAssetSettingsDefaultObject.Settings;
+        bool restoreBuildAddressablesWithPlayerBuild = false;
+        bool originalBuildAddressablesWithPlayerBuild = false;
+        if (addressableSettings != null)
         {
-            scenes = EditorBuildSettings.scenes.Where(scene => scene.enabled).Select(scene => scene.path).ToArray(),
-            locationPathName = buildPath,
-            target = target,
-            targetGroup = targetGroup,
-            subtarget = (int)standaloneSubtarget,
-            options = BuildOptions.None
-        };
-
-        BuildReport report = BuildPipeline.BuildPlayer(options);
-        Debug.Log($"[BasisHeadlessBuild] Build result={report.summary.result}");
-        Debug.Log($"[BasisHeadlessBuild] Build output path={report.summary.outputPath}");
-        Debug.Log($"[BasisHeadlessBuild] Build totalErrors={report.summary.totalErrors}");
-        Debug.Log($"[BasisHeadlessBuild] Build totalWarnings={report.summary.totalWarnings}");
-
-        if (report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
-        {
-            throw new BuildFailedException($"Player build failed: {report.summary.result}");
+            originalBuildAddressablesWithPlayerBuild = addressableSettings.BuildAddressablesWithPlayerBuild;
+            restoreBuildAddressablesWithPlayerBuild = true;
+            addressableSettings.BuildAddressablesWithPlayerBuild = false;
+            Debug.Log($"[BasisHeadlessBuild] Overriding BuildAddressablesWithPlayerBuild: {originalBuildAddressablesWithPlayerBuild} -> {addressableSettings.BuildAddressablesWithPlayerBuild}");
         }
-    }
-
-    private static void BuildAddressablesWithDiagnostics(BuildTarget target)
-    {
-        AddressableAssetSettings settings = AddressableAssetSettingsDefaultObject.Settings;
-        if (settings == null)
+        else
         {
-            throw new BuildFailedException("Addressables settings not found.");
-        }
-
-        Debug.Log($"[BasisHeadlessBuild] Addressables active profile={settings.activeProfileId}");
-        Debug.Log($"[BasisHeadlessBuild] Addressables player data builder index={settings.ActivePlayerDataBuilderIndex}");
-
-        foreach (AddressableAssetGroup group in settings.groups.Where(group => group != null))
-        {
-            List<AddressableAssetEntry> entries = group.entries.ToList();
-            List<string> missingAssets = entries
-                .Select(entry => entry.AssetPath)
-                .Where(assetPath => string.IsNullOrWhiteSpace(assetPath) || (!AssetDatabase.IsValidFolder(assetPath) && AssetDatabase.LoadMainAssetAtPath(assetPath) == null))
-                .Distinct()
-                .ToList();
-
-            Debug.Log($"[BasisHeadlessBuild] Addressables group='{group.Name}' entries={entries.Count} schemas={group.Schemas.Count} readOnly={group.ReadOnly}");
-            if (missingAssets.Count > 0)
-            {
-                foreach (string assetPath in missingAssets)
-                {
-                    Debug.LogError($"[BasisHeadlessBuild] Addressables group='{group.Name}' missing asset path='{assetPath}'");
-                }
-            }
+            Debug.LogWarning("[BasisHeadlessBuild] Addressables settings not found; continuing without Addressables override.");
         }
 
         try
         {
-            AddressableAssetSettings.BuildPlayerContent(out AddressablesPlayerBuildResult result);
-            Debug.Log($"[BasisHeadlessBuild] Addressables result.Error='{result.Error}'");
-            Debug.Log($"[BasisHeadlessBuild] Addressables outputPath='{result.OutputPath}'");
-            if (!string.IsNullOrEmpty(result.Error))
+            BuildPlayerOptions options = new BuildPlayerOptions
             {
-                throw new BuildFailedException($"Addressables build returned error: {result.Error}");
+                scenes = EditorBuildSettings.scenes.Where(scene => scene.enabled).Select(scene => scene.path).ToArray(),
+                locationPathName = buildPath,
+                target = target,
+                targetGroup = targetGroup,
+                subtarget = (int)standaloneSubtarget,
+                options = BuildOptions.None
+            };
+
+            BuildReport report = BuildPipeline.BuildPlayer(options);
+            Debug.Log($"[BasisHeadlessBuild] Build result={report.summary.result}");
+            Debug.Log($"[BasisHeadlessBuild] Build output path={report.summary.outputPath}");
+            Debug.Log($"[BasisHeadlessBuild] Build totalErrors={report.summary.totalErrors}");
+            Debug.Log($"[BasisHeadlessBuild] Build totalWarnings={report.summary.totalWarnings}");
+
+            if (report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
+            {
+                throw new BuildFailedException($"Player build failed: {report.summary.result}");
             }
         }
-        catch (Exception ex)
+        finally
         {
-            Debug.LogError($"[BasisHeadlessBuild] Addressables build threw for target={target}");
-            LogExceptionChain(ex);
-            throw;
+            if (restoreBuildAddressablesWithPlayerBuild)
+            {
+                addressableSettings.BuildAddressablesWithPlayerBuild = originalBuildAddressablesWithPlayerBuild;
+                Debug.Log($"[BasisHeadlessBuild] Restored BuildAddressablesWithPlayerBuild={addressableSettings.BuildAddressablesWithPlayerBuild}");
+            }
         }
     }
 
@@ -133,19 +110,6 @@ public static class BasisHeadlessBuild
         foreach (EditorBuildSettingsScene scene in EditorBuildSettings.scenes)
         {
             Debug.Log($"[BasisHeadlessBuild] Scene enabled={scene.enabled} path={scene.path}");
-        }
-    }
-
-    private static void LogExceptionChain(Exception ex)
-    {
-        int depth = 0;
-        Exception current = ex;
-        while (current != null)
-        {
-            Debug.LogError($"[BasisHeadlessBuild] Exception[{depth}] {current.GetType().FullName}: {current.Message}");
-            Debug.LogError(current.StackTrace ?? "<no stack trace>");
-            current = current.InnerException;
-            depth++;
         }
     }
 
