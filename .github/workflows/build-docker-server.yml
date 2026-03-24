@@ -170,7 +170,7 @@ jobs:
           python .github/scripts/sanitize_headless_ci.py "${env:projectPath}"
       - name: "Build Unity project"
         timeout-minutes: 100
-        uses: Toys0125/unity-builder@chore/pin-container-image-version-3.2.2
+        uses: BasisVR/unity-builder@main
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
