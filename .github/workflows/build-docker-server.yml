@@ -107,7 +107,7 @@ jobs:
             artifactName: LinuxHeadless
             buildMethod: BasisHeadlessBuild.BuildLinuxServer
           - targetPlatform: StandaloneWindows64
-            buildPlatform: ubuntu-latest
+            buildPlatform: windows-latest
             buildName: HeadlessWindowsServer
             buildOutput: WindowsServer
             artifactName: WindowsHeadless
@@ -140,16 +140,27 @@ jobs:
           key: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-${{ hashFiles(env.projectPath) }}
           restore-keys: Library-${{ env.projectPath }}-${{ matrix.targetPlatform }}-
       - name: "Remove OpenXR/OpenVR packages for headless builds"
-        shell: bash
+        shell: pwsh
         run: |
-          jq 'del(.dependencies["com.unity.xr.openxr"]) | del(.dependencies["com.valvesoftware.unity.openvr"])' < ${projectPath}/Packages/manifest.json > manifest.json.tmp && mv manifest.json.tmp ${projectPath}/Packages/manifest.json
-          rm -rf ${projectPath}/Packages/com.valvesoftware.unity.openvr
-          rm -rf ${projectPath}/Packages/com.basis.openvr
-          rm -rf ${projectPath}/Packages/com.basis.openxr
+          $manifestPath = Join-Path $env:projectPath 'Packages/manifest.json'
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          $manifest.dependencies.PSObject.Properties.Remove('com.unity.xr.openxr')
+          $manifest.dependencies.PSObject.Properties.Remove('com.valvesoftware.unity.openvr')
+          $manifest | ConvertTo-Json -Depth 100 | Set-Content $manifestPath
+          @(
+            'Packages/com.valvesoftware.unity.openvr',
+            'Packages/com.basis.openvr',
+            'Packages/com.basis.openxr'
+          ) | ForEach-Object {
+            $path = Join-Path $env:projectPath $_
+            if (Test-Path $path) {
+              Remove-Item $path -Recurse -Force
+            }
+          }
       - name: "Strip sample content for headless builds"
-        shell: bash
+        shell: pwsh
         run: |
-          python3 .github/scripts/sanitize_headless_ci.py "${projectPath}"
+          python .github/scripts/sanitize_headless_ci.py "${env:projectPath}"
       - name: "Build Unity project"
         timeout-minutes: 100
         uses: Toys0125/unity-builder@Compiled-with-Unity-Version-Check
