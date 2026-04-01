@@ -52,6 +52,7 @@ public static class BasisHeadlessAssetStripper
 
         GameObject[] roots = scene.GetRootGameObjects();
         StripSummary summary = StripRoots(roots);
+        ClearSkyboxData();
         ClearBakedLightingData();
         LogSummary(StripTargetKind.WorldScene, string.IsNullOrEmpty(scene.path) ? scene.name : scene.path, summary);
         return summary;
@@ -230,7 +231,7 @@ public static class BasisHeadlessAssetStripper
         return removedCount;
     }
 
-    private static void DestroyObject(Object obj)
+    private static void DestroyObject(UnityEngine.Object obj)
     {
         if (obj == null)
         {
@@ -239,11 +240,11 @@ public static class BasisHeadlessAssetStripper
 
         if (Application.isPlaying)
         {
-            Object.Destroy(obj);
+            UnityEngine.Object.Destroy(obj);
         }
         else
         {
-            Object.DestroyImmediate(obj);
+            UnityEngine.Object.DestroyImmediate(obj);
         }
     }
 
@@ -308,5 +309,17 @@ public static class BasisHeadlessAssetStripper
         {
             LightmapSettings.lightProbes = null;
         }
+    }
+
+    private static void ClearSkyboxData()
+    {
+        Material skyboxMaterial = RenderSettings.skybox;
+        if (skyboxMaterial == null)
+        {
+            return;
+        }
+
+        ClearKnownTextures(skyboxMaterial);
+        RenderSettings.skybox = null;
     }
 }
