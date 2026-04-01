@@ -349,13 +349,22 @@ namespace Basis.Scripts.Drivers
                 Render.forceMatrixRecalculationPerRender = true;
                 Render.gameObject.layer = layer;
                 Render.forceMeshLod = 0;
+#if !UNITY_SERVER
                 MaterialCorrection(Render, BundledContentHolder.Instance.UrpShader);
+#else
+                Render.shadowCastingMode = ShadowCastingMode.Off;
+                Render.receiveShadows = false;
+                Render.lightProbeUsage = LightProbeUsage.Off;
+                Render.reflectionProbeUsage = ReflectionProbeUsage.Off;
+#endif
             }
+#if !UNITY_SERVER
             if (FaceMesh != null)
             {
                 FaceMesh.shadowCastingMode = ShadowCastingMode.Off;
                 EnsureShadowOnlyClone(FaceMesh, layer);
             }
+#endif
         }
         /// <summary>
         /// Fix renderers + repair broken shaders by swapping to a URP shader and copying over textures/colors.
@@ -368,7 +377,14 @@ namespace Basis.Scripts.Drivers
                 r.updateWhenOffscreen = false;
                 r.forceMatrixRecalculationPerRender = false;
                 r.gameObject.layer = layer;
+#if !UNITY_SERVER
                 MaterialCorrection(r, BundledContentHolder.Instance.UrpShader);
+#else
+                r.shadowCastingMode = ShadowCastingMode.Off;
+                r.receiveShadows = false;
+                r.lightProbeUsage = LightProbeUsage.Off;
+                r.reflectionProbeUsage = ReflectionProbeUsage.Off;
+#endif
             }
         }
         private struct BasisShadowCloneEntry

@@ -61,6 +61,10 @@ public static class BasisSceneFactory
     }
     private static async void LoadLoadingScene()
     {
+#if UNITY_SERVER
+        BasisDebug.Log("Skipping BasisLoadingScene load on headless/server build.", BasisDebug.LogTag.Scene);
+        return;
+#endif
         if (_isLoadingLoadingScene)
         {
             BasisDebug.Log("Loading scene load already in progress, skipping.", BasisDebug.LogTag.Scene);
