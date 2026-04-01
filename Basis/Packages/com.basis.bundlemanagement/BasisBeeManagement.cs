@@ -67,6 +67,7 @@ public static class BasisBeeManagement
                 if (assetBundle != null && assetBundle.Contains(AssetToLoadName))
                 {
                     wrapper.AssetBundle = assetBundle;
+                    wrapper.IsBundleBackingStoreReleased = false;
                     BasisDebug.Log($"we already have this AssetToLoadName in our loaded bundles using that instead! {AssetToLoadName}");
                     await SaveMetaIfNeeded(wrapper, shouldUseOnDiskMeta, didForceRedownload, output.Item1.Platform);
                     return;
@@ -100,6 +101,7 @@ public static class BasisBeeManagement
             }
 
             wrapper.AssetBundle = bundleRequest.assetBundle;
+            wrapper.IsBundleBackingStoreReleased = false;
 
             await SaveMetaIfNeeded(wrapper, shouldUseOnDiskMeta, didForceRedownload, output.Item1.Platform);
         }

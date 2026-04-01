@@ -9,6 +9,8 @@ public class BasisTrackedBundleWrapper
     public BasisLoadableBundle LoadableBundle;
     [SerializeField]
     public AssetBundle AssetBundle;
+    [SerializeField]
+    public bool IsBundleBackingStoreReleased = false;
     private int _requestedTimes = 0;
     public bool DidErrorOccur = false;
     public static TimeSpan TimeSpan = TimeSpan.FromSeconds(BasisBeeConstants.TimeUntilMemoryRemoval);
@@ -43,11 +45,6 @@ public class BasisTrackedBundleWrapper
     // it will remove other duplicate scenes?
     public async Task<bool> UnloadIfReady()
     {
-        if (AssetBundle == null)
-        {
-            BasisDebug.LogError("Asset Bundle was null this should never occur");
-            return false;
-        }
         if (Volatile.Read(ref _requestedTimes) <= 0)
         {
             await Task.Delay(TimeSpan);
@@ -55,11 +52,19 @@ public class BasisTrackedBundleWrapper
             {
                 if (AssetBundle == null)
                 {
-                    BasisDebug.LogError("Already Unloaded this bundle, check logic could be ok if you loaded this a few times and unloaded it quickly aswell.");
+                    if (IsBundleBackingStoreReleased)
+                    {
+                        BasisDebug.Log("Bundle backing store was already released.");
+                        return true;
+                    }
+
+                    BasisDebug.LogError("Asset Bundle was null this should never occur");
                     return false;
                 }
                 BasisDebug.Log("Unloading Bundle " + AssetBundle.name);
                 AssetBundle.Unload(true);
+                AssetBundle = null;
+                IsBundleBackingStoreReleased = true;
                 return true;
             }
             else
@@ -93,6 +98,20 @@ public class BasisTrackedBundleWrapper
         } while (Interlocked.CompareExchange(ref _requestedTimes, current - 1, current) != current);
 
        // BasisDebug.Log($"DeIncremented Asset Load {LoadableBundle.BasisLocalEncryptedBundle.DownloadedBeeFileLocation}");
+        return true;
+    }
+
+    public bool ReleaseBundleBackingStore()
+    {
+        if (AssetBundle == null)
+        {
+            return false;
+        }
+
+        BasisDebug.Log("Releasing bundle backing store " + AssetBundle.name);
+        AssetBundle.Unload(false);
+        AssetBundle = null;
+        IsBundleBackingStoreReleased = true;
         return true;
     }
 }

@@ -15,11 +15,14 @@ public enum StripTargetKind
 public struct StripSummary
 {
     public int renderersVisited;
+    public int renderersDisabledOrRemoved;
     public int materialsProcessed;
     public int texturesCleared;
+    public int meshFiltersCleared;
     public int audioSourcesRemoved;
     public int audioFiltersRemoved;
     public int lightsDisabled;
+    public int fxComponentsRemoved;
     public int reflectionProbesRemoved;
     public int lightProbeGroupsRemoved;
     public int lightProbeProxyVolumesRemoved;
@@ -51,7 +54,7 @@ public static class BasisHeadlessAssetStripper
         }
 
         GameObject[] roots = scene.GetRootGameObjects();
-        StripSummary summary = StripRoots(roots);
+        StripSummary summary = StripRoots(roots, StripTargetKind.WorldScene);
         ClearSkyboxData();
         ClearBakedLightingData();
         LogSummary(StripTargetKind.WorldScene, string.IsNullOrEmpty(scene.path) ? scene.name : scene.path, summary);
@@ -65,12 +68,12 @@ public static class BasisHeadlessAssetStripper
             return default;
         }
 
-        StripSummary summary = StripRoots(new[] { root });
+        StripSummary summary = StripRoots(new[] { root }, targetKind);
         LogSummary(targetKind, root.name, summary);
         return summary;
     }
 
-    private static StripSummary StripRoots(GameObject[] roots)
+    private static StripSummary StripRoots(GameObject[] roots, StripTargetKind targetKind)
     {
         StripSummary summary = default;
         HashSet<Material> processedMaterials = new HashSet<Material>();
@@ -111,6 +114,39 @@ public static class BasisHeadlessAssetStripper
                     summary.materialsProcessed++;
                     summary.texturesCleared += ClearKnownTextures(material);
                 }
+
+                if (targetKind == StripTargetKind.LocalAvatar)
+                {
+                    renderer.enabled = false;
+                    summary.renderersDisabledOrRemoved++;
+                }
+                else if (ShouldRemoveRenderer(renderer))
+                {
+                    DestroyObject(renderer);
+                    summary.renderersDisabledOrRemoved++;
+                }
+            }
+
+            if (targetKind != StripTargetKind.LocalAvatar)
+            {
+                MeshFilter[] meshFilters = root.GetComponentsInChildren<MeshFilter>(true);
+                for (int filterIndex = 0; filterIndex < meshFilters.Length; filterIndex++)
+                {
+                    MeshFilter meshFilter = meshFilters[filterIndex];
+                    if (meshFilter == null || meshFilter.sharedMesh == null)
+                    {
+                        continue;
+                    }
+
+                    // Preserve the mesh asset when the same object uses it for movement/collision.
+                    if (meshFilter.TryGetComponent<MeshCollider>(out MeshCollider meshCollider) && meshCollider.sharedMesh != null)
+                    {
+                        continue;
+                    }
+
+                    meshFilter.sharedMesh = null;
+                    summary.meshFiltersCleared++;
+                }
             }
 
             AudioSource[] audioSources = root.GetComponentsInChildren<AudioSource>(true);
@@ -135,6 +171,8 @@ public static class BasisHeadlessAssetStripper
             summary.audioFiltersRemoved += DestroyComponents(root.GetComponentsInChildren<AudioChorusFilter>(true));
             summary.audioFiltersRemoved += DestroyComponents(root.GetComponentsInChildren<AudioDistortionFilter>(true));
             summary.audioFiltersRemoved += DestroyComponents(root.GetComponentsInChildren<AudioReverbFilter>(true));
+            summary.fxComponentsRemoved += DestroyComponents(root.GetComponentsInChildren<ParticleSystem>(true));
+            summary.fxComponentsRemoved += DestroyComponents(root.GetComponentsInChildren<LODGroup>(true));
 
             Light[] lights = root.GetComponentsInChildren<Light>(true);
             for (int lightIndex = 0; lightIndex < lights.Length; lightIndex++)
@@ -231,6 +269,16 @@ public static class BasisHeadlessAssetStripper
         return removedCount;
     }
 
+    private static bool ShouldRemoveRenderer(Renderer renderer)
+    {
+        return renderer is MeshRenderer ||
+               renderer is SkinnedMeshRenderer ||
+               renderer is SpriteRenderer ||
+               renderer is TrailRenderer ||
+               renderer is LineRenderer ||
+               renderer is ParticleSystemRenderer;
+    }
+
     private static void DestroyObject(UnityEngine.Object obj)
     {
         if (obj == null)
@@ -253,11 +301,14 @@ public static class BasisHeadlessAssetStripper
         BasisDebug.Log(
             $"Headless strip complete for {targetKind} '{targetName}': " +
             $"renderers={summary.renderersVisited}, " +
+            $"renderersDisabledOrRemoved={summary.renderersDisabledOrRemoved}, " +
             $"materials={summary.materialsProcessed}, " +
             $"texturesCleared={summary.texturesCleared}, " +
+            $"meshFiltersCleared={summary.meshFiltersCleared}, " +
             $"audioSourcesRemoved={summary.audioSourcesRemoved}, " +
             $"audioFiltersRemoved={summary.audioFiltersRemoved}, " +
             $"lightsDisabled={summary.lightsDisabled}, " +
+            $"fxComponentsRemoved={summary.fxComponentsRemoved}, " +
             $"reflectionProbesRemoved={summary.reflectionProbesRemoved}, " +
             $"lightProbeGroupsRemoved={summary.lightProbeGroupsRemoved}, " +
             $"lightProbeProxyVolumesRemoved={summary.lightProbeProxyVolumesRemoved}, " +

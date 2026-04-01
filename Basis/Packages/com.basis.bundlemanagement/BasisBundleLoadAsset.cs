@@ -108,6 +108,7 @@ public static class BasisBundleLoadAsset
                     BasisDebug.Log("Scene set as active: " + loadedScene.name);
                 }
                 BasisDebug.Log("Scene loaded: " + loadedScene.name + " (MakeActive=" + MakeActiveScene + ", Incremented=" + AssignedIncrement + ")");
+                bundle.ReleaseBundleBackingStore();
                 progressCallback.ReportProgress(UniqueID, 100, "loading scene"); // Set progress to 100 when done
                 return loadedScene;
             }
