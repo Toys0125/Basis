@@ -8,7 +8,6 @@ using Basis.Scripts.Device_Management.Devices.Headless;
 using Basis.Scripts.Drivers;
 using Basis.Scripts.Networking;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -45,6 +44,9 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
     public static bool ReconnectEnabled = true;
     public static int ReconnectDelaySeconds = 5;
     public static int MaxReconnectAttempts = 10;
+    public static bool StripWorldAssetsOnLoad = true;
+    public static bool StripLocalAvatarAssetsOnLoad = true;
+    public static bool StripSpawnedPropAssetsOnLoad = true;
 
     private BasisHeadlessHealthCheck healthCheck;
     private CancellationTokenSource reconnectCts;
@@ -52,92 +54,20 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
     private bool hasLoadedStartupContent;
     private bool reconnectScheduled;
     private bool configuredAvatarApplied;
+    private GameObject lastStrippedLocalAvatarRoot;
 
     /// <summary>
-    /// Scene change hook used in headless to aggressively strip visuals and free memory.
+    /// Scene load hook used in headless to aggressively strip world content and free memory.
     /// </summary>
-    private void OnSceneLoadeded(Scene arg0, Scene arg1)
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
-        RemoveAllMaterialTextures();
-        RemoveAllReflectionProbes();
-        RemoveAllText();
-        Resources.UnloadUnusedAssets();
-    }
-
-    /// <summary>
-    /// Iterates all renderers and clears common texture slots on their materials.
-    /// </summary>
-    private void RemoveAllMaterialTextures()
-    {
-        Renderer[] renderers = FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-        HashSet<Material> processedMats = new HashSet<Material>();
-
-        foreach (Renderer renderer in renderers)
+        if (!StripWorldAssetsOnLoad || !scene.IsValid())
         {
-            foreach (Material mat in renderer.materials)
-            {
-                if (mat == null || processedMats.Contains(mat))
-                {
-                    continue;
-                }
-
-                ShaderUtilSafe.ClearAllKnownTextures(mat);
-                processedMats.Add(mat);
-            }
+            return;
         }
 
-        Debug.Log("All textures cleared from all materials.");
-    }
-
-    /// <summary>
-    /// Utility to clear commonly-used texture properties without Editor-only APIs.
-    /// </summary>
-    public static class ShaderUtilSafe
-    {
-        private static readonly string[] commonTextureProps =
-        {
-            "_MainTex", "_BaseMap", "_BumpMap", "_EmissionMap", "_MetallicGlossMap",
-            "_ParallaxMap", "_OcclusionMap", "_DetailMask", "_DetailAlbedoMap", "_DetailNormalMap"
-        };
-
-        public static void ClearAllKnownTextures(Material material)
-        {
-            foreach (string prop in commonTextureProps)
-            {
-                if (material.HasProperty(prop))
-                {
-                    material.SetTexture(prop, null);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Destroys all ReflectionProbe GameObjects in the scene.
-    /// </summary>
-    private void RemoveAllReflectionProbes()
-    {
-        ReflectionProbe[] probes = FindObjectsByType<ReflectionProbe>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-        foreach (ReflectionProbe probe in probes)
-        {
-            Destroy(probe.gameObject);
-        }
-
-        Debug.Log("All reflection probes removed from scene.");
-    }
-
-    /// <summary>
-    /// Destroys all Canvas components (to remove headless UI).
-    /// </summary>
-    private void RemoveAllText()
-    {
-        Canvas[] canvases = FindObjectsByType<Canvas>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-        foreach (Canvas canvas in canvases)
-        {
-            Destroy(canvas);
-        }
-
-        Debug.Log("All reflection probes removed from scene.");
+        BasisHeadlessAssetStripper.StripScene(scene);
+        BasisHeadlessAssetStripper.ScheduleMemoryCleanup();
     }
 
     /// <summary>
@@ -159,6 +89,9 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         bool defaultReconnectEnabled = ReconnectEnabled;
         int defaultReconnectDelaySeconds = ReconnectDelaySeconds;
         int defaultMaxReconnectAttempts = MaxReconnectAttempts;
+        bool defaultStripWorldAssetsOnLoad = StripWorldAssetsOnLoad;
+        bool defaultStripLocalAvatarAssetsOnLoad = StripLocalAvatarAssetsOnLoad;
+        bool defaultStripSpawnedPropAssetsOnLoad = StripSpawnedPropAssetsOnLoad;
 
         string envPassword = ReadEnvironmentString("Password");
         string envIp = ReadEnvironmentString("Ip");
@@ -172,6 +105,9 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         bool? envReconnectEnabled = ReadEnvironmentBool("ReconnectEnabled");
         int? envReconnectDelaySeconds = ReadEnvironmentInt("ReconnectDelaySeconds");
         int? envMaxReconnectAttempts = ReadEnvironmentInt("MaxReconnectAttempts");
+        bool? envStripWorldAssetsOnLoad = ReadEnvironmentBool("StripWorldAssetsOnLoad");
+        bool? envStripLocalAvatarAssetsOnLoad = ReadEnvironmentBool("StripLocalAvatarAssetsOnLoad");
+        bool? envStripSpawnedPropAssetsOnLoad = ReadEnvironmentBool("StripSpawnedPropAssetsOnLoad");
 
         XElement root = null;
         if (File.Exists(filePath))
@@ -194,7 +130,10 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
                 defaultHealthPath,
                 defaultReconnectEnabled,
                 defaultReconnectDelaySeconds,
-                defaultMaxReconnectAttempts);
+                defaultMaxReconnectAttempts,
+                defaultStripWorldAssetsOnLoad,
+                defaultStripLocalAvatarAssetsOnLoad,
+                defaultStripSpawnedPropAssetsOnLoad);
         }
 
         Password = envPassword ?? root?.Element("Password")?.Value ?? defaultPassword;
@@ -209,6 +148,9 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         ReconnectEnabled = envReconnectEnabled ?? ReadXmlBool(root?.Element("ReconnectEnabled")?.Value, defaultReconnectEnabled);
         ReconnectDelaySeconds = Mathf.Max(1, envReconnectDelaySeconds ?? ReadXmlInt(root?.Element("ReconnectDelaySeconds")?.Value, defaultReconnectDelaySeconds));
         MaxReconnectAttempts = Mathf.Max(0, envMaxReconnectAttempts ?? ReadXmlInt(root?.Element("MaxReconnectAttempts")?.Value, defaultMaxReconnectAttempts));
+        StripWorldAssetsOnLoad = envStripWorldAssetsOnLoad ?? ReadXmlBool(root?.Element("StripWorldAssetsOnLoad")?.Value, defaultStripWorldAssetsOnLoad);
+        StripLocalAvatarAssetsOnLoad = envStripLocalAvatarAssetsOnLoad ?? ReadXmlBool(root?.Element("StripLocalAvatarAssetsOnLoad")?.Value, defaultStripLocalAvatarAssetsOnLoad);
+        StripSpawnedPropAssetsOnLoad = envStripSpawnedPropAssetsOnLoad ?? ReadXmlBool(root?.Element("StripSpawnedPropAssetsOnLoad")?.Value, defaultStripSpawnedPropAssetsOnLoad);
         NormalizeConfiguredAvatarFields();
     }
 
@@ -225,7 +167,10 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         string healthPath,
         bool reconnectEnabled,
         int reconnectDelaySeconds,
-        int maxReconnectAttempts)
+        int maxReconnectAttempts,
+        bool stripWorldAssetsOnLoad,
+        bool stripLocalAvatarAssetsOnLoad,
+        bool stripSpawnedPropAssetsOnLoad)
     {
         try
         {
@@ -241,7 +186,10 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
                 new XElement("HealthPath", BasisHeadlessHealthCheck.NormalizePath(healthPath)),
                 new XElement("ReconnectEnabled", reconnectEnabled),
                 new XElement("ReconnectDelaySeconds", reconnectDelaySeconds),
-                new XElement("MaxReconnectAttempts", maxReconnectAttempts)
+                new XElement("MaxReconnectAttempts", maxReconnectAttempts),
+                new XElement("StripWorldAssetsOnLoad", stripWorldAssetsOnLoad),
+                new XElement("StripLocalAvatarAssetsOnLoad", stripLocalAvatarAssetsOnLoad),
+                new XElement("StripSpawnedPropAssetsOnLoad", stripSpawnedPropAssetsOnLoad)
             );
             new XDocument(defaultConfig).Save(filePath);
         }
@@ -402,6 +350,7 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         {
             EnsureHeadlessInput();
             _ = ApplyConfiguredAvatarAsync();
+            TryStripCurrentLocalAvatar();
         }
         else
         {
@@ -422,7 +371,7 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
             BasisNetworkManagement.OnEnableInstanceCreate += ConnectToNetwork;
         }
 
-        SceneManager.activeSceneChanged += OnSceneLoadeded;
+        SceneManager.sceneLoaded += OnSceneLoaded;
         BasisDebug.Log(nameof(StartSDK), BasisDebug.LogTag.Device);
     }
 
@@ -432,7 +381,7 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         BasisNetworkConnection.HeadlessReconnectSuppressed = true;
         BasisNetworkConnection.OnDisconnectedAfterReboot -= OnDisconnectedAfterReboot;
         BasisNetworkManagement.OnEnableInstanceCreate -= ConnectToNetwork;
-        SceneManager.activeSceneChanged -= OnSceneLoadeded;
+        SceneManager.sceneLoaded -= OnSceneLoaded;
         CancelReconnectLoop();
         StopHealthEndpoint();
         BasisHeadlessRuntimeStatus.MarkStopping();
@@ -444,6 +393,7 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         BasisLocalPlayer.OnLocalPlayerInitalized -= OnLocalPlayerReadyForHeadless;
         EnsureHeadlessInput();
         _ = ApplyConfiguredAvatarAsync();
+        TryStripCurrentLocalAvatar();
     }
 
     private void EnsureHeadlessInput()
@@ -512,11 +462,36 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         {
             BasisDebug.Log($"Loading headless avatar from {avatarSource}: {avatarLocation} (mode {avatarLoadMode})", BasisDebug.LogTag.Avatar);
             await BasisLocalPlayer.Instance.CreateAvatar(avatarLoadMode, bundle);
+            TryStripCurrentLocalAvatar();
         }
         catch (Exception ex)
         {
             BasisDebug.LogError($"Failed to load headless avatar from {avatarSource} '{avatarLocation}': {ex.Message}", BasisDebug.LogTag.Avatar);
         }
+    }
+
+    private void TryStripCurrentLocalAvatar()
+    {
+        if (!StripLocalAvatarAssetsOnLoad || BasisLocalPlayer.Instance?.BasisAvatar == null)
+        {
+            return;
+        }
+
+        GameObject avatarRoot = BasisLocalPlayer.Instance.BasisAvatar.gameObject;
+        if (avatarRoot == null)
+        {
+            BasisDebug.LogWarning("Headless local avatar stripping skipped: avatar root is null.", BasisDebug.LogTag.Avatar);
+            return;
+        }
+
+        if (lastStrippedLocalAvatarRoot == avatarRoot)
+        {
+            return;
+        }
+
+        lastStrippedLocalAvatarRoot = avatarRoot;
+        BasisHeadlessAssetStripper.StripGameObject(avatarRoot, StripTargetKind.LocalAvatar);
+        BasisHeadlessAssetStripper.ScheduleMemoryCleanup();
     }
 
     private static bool TryResolveHeadlessAvatarSelection(out string avatarLocation, out byte avatarLoadMode, out string avatarPassword, out string avatarSource)

@@ -212,6 +212,13 @@ public static class BasisNetworkSpawnItem
 
 
         reference.name = localLoadResource.LoadedNetID;
+#if UNITY_SERVER
+        if (BasisHeadlessManagement.StripSpawnedPropAssetsOnLoad)
+        {
+            BasisHeadlessAssetStripper.StripGameObject(reference, StripTargetKind.SpawnedProp);
+            BasisHeadlessAssetStripper.ScheduleMemoryCleanup();
+        }
+#endif
         if (reference.TryGetComponent<BasisNetworkContentBase>(out BasisNetworkContentBase BasisContentBase))
         {
             BasisContentBase.AssignNetworkGUIDIdentifier(localLoadResource.LoadedNetID);
