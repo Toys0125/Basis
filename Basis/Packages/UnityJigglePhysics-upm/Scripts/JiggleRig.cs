@@ -37,9 +37,12 @@ public class JiggleRig : MonoBehaviour, IJiggleParameterProvider {
     
     #if !JIGGLEPHYSICS_DISABLE_ON_DISABLE
     private void OnDisable() {
-        OnRemove();
     }
     #endif
+
+    private void OnDestroy() {
+        OnRemove();
+    }
 
     public void OnInitialize() {
         if (jiggleRigData.rootBone == null) {
@@ -48,7 +51,9 @@ public class JiggleRig : MonoBehaviour, IJiggleParameterProvider {
 
         jiggleRigData.RegenerateCacheLookup();
 
-        segment ??= new JiggleTreeSegment(this);
+        if (segment == null || segment.IsDisposed) {
+            segment = new JiggleTreeSegment(this);
+        }
         segment.SetDirty();
         if (!addedToJiggleTreeSegments) {
             JigglePhysics.AddJiggleTreeSegment(segment);
@@ -60,6 +65,7 @@ public class JiggleRig : MonoBehaviour, IJiggleParameterProvider {
         if (segment != null && addedToJiggleTreeSegments) {
             JigglePhysics.RemoveJiggleTreeSegment(segment);
             addedToJiggleTreeSegments = false;
+            segment = null;
         }
     }
 
