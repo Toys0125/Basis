@@ -18,8 +18,8 @@ namespace HVR.Basis.Comms
 
         public void Awake()
         {
-            _comms = HVRCommsUtil.GetAvatar(this).GetComponentInChildren<HVRAvatarComms>(true);
-            if(_comms == null)
+            TryResolveComms();
+            if (_comms == null)
             {
                 BasisDebug.LogError("missing Comms Component network transmission of data for HVR related systems");
                 _networkReady = false;
@@ -28,14 +28,14 @@ namespace HVR.Basis.Comms
 
         public override void OnNetworkMessageReceived(ushort remoteUser, byte[] buffer, DeliveryMethod deliveryMethod)
         {
-            if (!_networkReady) return;
+            if (!_networkReady || !TryResolveComms()) return;
 
             _comms.WhenNetworkMessageReceived(index, remoteUser, buffer, deliveryMethod);
         }
 
         public override void OnNetworkMessageServerReductionSystem(byte[] buffer)
         {
-            if (!_networkReady) return;
+            if (!_networkReady || !TryResolveComms()) return;
 
             _comms.WhenNetworkMessageServerReductionSystem(index, buffer);
         }
@@ -46,7 +46,24 @@ namespace HVR.Basis.Comms
 
         public void OnHVRReadyBothAvatarAndNetwork(bool isWearer)
         {
-            _networkReady = true;
+            _networkReady = TryResolveComms();
+        }
+
+        private bool TryResolveComms()
+        {
+            if (_comms != null)
+            {
+                return true;
+            }
+
+            var avatar = HVRCommsUtil.GetAvatar(this);
+            if (avatar == null)
+            {
+                return false;
+            }
+
+            _comms = avatar.GetComponentInChildren<HVRAvatarComms>(true);
+            return _comms != null;
         }
     }
 }

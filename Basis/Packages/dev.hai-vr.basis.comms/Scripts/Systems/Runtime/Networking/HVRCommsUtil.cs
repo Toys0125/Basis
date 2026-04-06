@@ -50,7 +50,10 @@ namespace HVR.Basis.Comms
     {
         public const string ActivityAddress = "HVR/Internal/FaceTrackingActive";
         public static readonly int ActivityAddressId = HVRAddress.AddressToId(ActivityAddress);
-        public const float InactivityTimeoutSeconds = 0.5f;
+        // Face tracking samples arrive on a background OSC thread but are applied on Unity's main thread.
+        // In crowded sessions the main thread can stall long enough to create false "tracker stopped"
+        // transitions, so this timeout needs enough headroom for transient frame hitches.
+        public const float InactivityTimeoutSeconds = 2f;
 
         [HideInInspector] [SerializeField] private BasisAvatar avatar;
         [HideInInspector] [SerializeField] private AcquisitionService acquisition;
