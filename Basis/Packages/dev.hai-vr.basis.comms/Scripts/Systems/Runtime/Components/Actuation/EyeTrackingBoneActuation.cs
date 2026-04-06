@@ -20,7 +20,7 @@ namespace HVR.Basis.Comms
         private const string EyeRightX = "FT/v2/EyeRightX";
         private const string EyeY = "FT/v2/EyeY";
         private const string EyeTrackingActive = "HVR/Internal/EyeTrackingActive";
-        private const float EyeParameterInactivityTimeoutSeconds = 0.5f;
+        private const float EyeParameterInactivityTimeoutSeconds = 2f;
 
         private const int LeftEyeFeatureIndex = 0;
         private const int RightEyeFeatureIndex = 1;
