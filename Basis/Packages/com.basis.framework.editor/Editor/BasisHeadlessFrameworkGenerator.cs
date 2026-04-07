@@ -1,8 +1,10 @@
+#if UNITY_SERVER
 using System.IO;
 using Basis.Scripts.UI.NamePlate;
 using UnityEditor;
 using UnityEditor.AddressableAssets;
 using UnityEditor.AddressableAssets.Settings;
+using UnityEditor.AddressableAssets.Settings.GroupSchemas;
 using UnityEditor.Build;
 using UnityEngine;
 
@@ -11,8 +13,26 @@ public static class BasisHeadlessFrameworkGenerator
     private const string SourceFrameworkPrefabPath = "Packages/com.basis.framework/Prefabs/BasisFramework.prefab";
     private const string GeneratedFrameworkPrefabPath = "Assets/Basis/Generated/BasisFramework Headless.prefab";
     private const string HeadlessFrameworkAddress = "BasisFrameworkHeadless";
+    private const string HeadlessFrameworkGroupName = "Basis Headless Assets";
     private const string GeneratorStampKey = "Basis.HeadlessFrameworkGenerator.Stamp";
     private const int GeneratorVersion = 1;
+
+    public static void PrepareForBuild(bool includeHeadlessAssets)
+    {
+        if (includeHeadlessAssets)
+        {
+            EnsureGeneratedAssets();
+            return;
+        }
+
+        if (AssetDatabase.LoadAssetAtPath<GameObject>(GeneratedFrameworkPrefabPath) != null)
+        {
+            EnsureAddressableEntry(false);
+            return;
+        }
+
+        SetHeadlessGroupIncludeInBuild(false);
+    }
 
     public static void EnsureGeneratedAssets()
     {
@@ -32,7 +52,7 @@ public static class BasisHeadlessFrameworkGenerator
             EditorPrefs.SetString(GeneratorStampKey, sourceStamp);
         }
 
-        EnsureAddressableEntry();
+        EnsureAddressableEntry(true);
     }
 
     private static void GenerateHeadlessFrameworkPrefab()
@@ -105,7 +125,7 @@ public static class BasisHeadlessFrameworkGenerator
         }
     }
 
-    private static void EnsureAddressableEntry()
+    private static void EnsureAddressableEntry(bool includeInBuild)
     {
         AddressableAssetSettings settings = AddressableAssetSettingsDefaultObject.Settings;
         if (settings == null)
@@ -120,7 +140,8 @@ public static class BasisHeadlessFrameworkGenerator
         }
 
         AddressableAssetEntry sourceEntry = settings.FindAssetEntry(AssetDatabase.AssetPathToGUID(SourceFrameworkPrefabPath));
-        AddressableAssetGroup group = sourceEntry?.parentGroup ?? settings.DefaultGroup;
+        AddressableAssetGroup sourceGroup = sourceEntry?.parentGroup ?? settings.DefaultGroup;
+        AddressableAssetGroup group = GetOrCreateHeadlessGroup(settings, sourceGroup);
         if (group == null)
         {
             throw new BuildFailedException("Unable to resolve an Addressables group for the generated headless framework.");
@@ -133,9 +154,64 @@ public static class BasisHeadlessFrameworkGenerator
         }
 
         entry.address = HeadlessFrameworkAddress;
+        SetHeadlessGroupIncludeInBuild(group, includeInBuild);
 
         EditorUtility.SetDirty(group);
         EditorUtility.SetDirty(settings);
         AssetDatabase.SaveAssets();
     }
+
+    private static AddressableAssetGroup GetOrCreateHeadlessGroup(AddressableAssetSettings settings, AddressableAssetGroup sourceGroup)
+    {
+        AddressableAssetGroup group = settings.FindGroup(HeadlessFrameworkGroupName);
+        if (group != null)
+        {
+            return group;
+        }
+
+        if (sourceGroup?.Schemas != null && sourceGroup.Schemas.Count > 0)
+        {
+            return settings.CreateGroup(HeadlessFrameworkGroupName, false, false, true, sourceGroup.Schemas);
+        }
+
+        return settings.CreateGroup(
+            HeadlessFrameworkGroupName,
+            false,
+            false,
+            true,
+            null,
+            typeof(BundledAssetGroupSchema),
+            typeof(ContentUpdateGroupSchema));
+    }
+
+    private static void SetHeadlessGroupIncludeInBuild(bool includeInBuild)
+    {
+        AddressableAssetSettings settings = AddressableAssetSettingsDefaultObject.Settings;
+        if (settings == null)
+        {
+            return;
+        }
+
+        AddressableAssetGroup group = settings.FindGroup(HeadlessFrameworkGroupName);
+        if (group == null)
+        {
+            return;
+        }
+
+        SetHeadlessGroupIncludeInBuild(group, includeInBuild);
+        EditorUtility.SetDirty(group);
+        EditorUtility.SetDirty(settings);
+        AssetDatabase.SaveAssets();
+    }
+
+    private static void SetHeadlessGroupIncludeInBuild(AddressableAssetGroup group, bool includeInBuild)
+    {
+        BundledAssetGroupSchema schema = group.GetSchema<BundledAssetGroupSchema>();
+        if (schema != null && schema.IncludeInBuild != includeInBuild)
+        {
+            schema.IncludeInBuild = includeInBuild;
+            EditorUtility.SetDirty(schema);
+        }
+    }
 }
+#endif

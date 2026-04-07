@@ -13,7 +13,7 @@ using UnityEngine;
 public static class BasisHeadlessBuild
 {
     private const string AddressablesBuildWithPlayerPreferenceKey = "Addressables.BuildAddressablesWithPlayerBuild";
-
+#if UNITY_SEVER
     public static void BuildLinuxServer()
     {
         BuildServer(BuildTarget.StandaloneLinux64);
@@ -55,6 +55,7 @@ public static class BasisHeadlessBuild
 
         StandaloneBuildSubtarget standaloneSubtarget = ParseStandaloneSubtarget(standaloneSubtargetArg);
         EditorUserBuildSettings.standaloneBuildSubtarget = standaloneSubtarget;
+        bool includeHeadlessAssets = standaloneSubtarget == StandaloneBuildSubtarget.Server;
         if (target == BuildTarget.StandaloneLinux64)
         {
             int linuxArchitecture = ParseLinuxArchitecture(linuxArchitectureArg);
@@ -66,6 +67,7 @@ public static class BasisHeadlessBuild
 
         EnsureBuildDirectory(buildPath);
         LogEnabledScenes();
+        BasisHeadlessFrameworkGenerator.PrepareForBuild(includeHeadlessAssets);
 
         AddressableAssetSettings addressableSettings = AddressableAssetSettingsDefaultObject.Settings;
         bool restoreBuildAddressablesWithPlayerBuild = false;
@@ -85,8 +87,6 @@ public static class BasisHeadlessBuild
         {
             Debug.LogWarning("[BasisHeadlessBuild] Addressables settings not found; continuing without Addressables override.");
         }
-
-        BasisHeadlessFrameworkGenerator.EnsureGeneratedAssets();
 
         try
         {
@@ -120,7 +120,6 @@ public static class BasisHeadlessBuild
             }
         }
     }
-
     private static bool ShouldBuildAddressablesWithPlayerBuild(AddressableAssetSettings.PlayerBuildOption option)
     {
         switch (option)
@@ -219,4 +218,5 @@ public static class BasisHeadlessBuild
 
         return null;
     }
+#endif
 }

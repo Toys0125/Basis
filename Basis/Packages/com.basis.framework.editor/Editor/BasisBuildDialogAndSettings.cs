@@ -40,11 +40,12 @@ public class BasisBuildDialogAndSettings : IPreprocessBuildWithReport
 
     public void OnPreprocessBuild(BuildReport report)
     {
-        if (EditorUserBuildSettings.standaloneBuildSubtarget == StandaloneBuildSubtarget.Server)
-        {
-            BasisHeadlessFrameworkGenerator.EnsureGeneratedAssets();
-        }
-
+        #if UNITY_SERVER
+        bool includeHeadlessAssets =
+            report.summary.platformGroup == BuildTargetGroup.Standalone &&
+            EditorUserBuildSettings.standaloneBuildSubtarget == StandaloneBuildSubtarget.Server;
+        BasisHeadlessFrameworkGenerator.PrepareForBuild(includeHeadlessAssets);
+        #endif
         // 0) Generate link.xml
         BasisLinkGenerator.GenerateLinkXml();
 
