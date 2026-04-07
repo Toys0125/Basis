@@ -13,7 +13,7 @@ using UnityEngine;
 public static class BasisHeadlessBuild
 {
     private const string AddressablesBuildWithPlayerPreferenceKey = "Addressables.BuildAddressablesWithPlayerBuild";
-#if UNITY_SEVER
+#if UNITY_SERVER
     public static void BuildLinuxServer()
     {
         BuildServer(BuildTarget.StandaloneLinux64);
