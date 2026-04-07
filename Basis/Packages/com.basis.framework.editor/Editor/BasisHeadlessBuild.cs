@@ -86,6 +86,8 @@ public static class BasisHeadlessBuild
             Debug.LogWarning("[BasisHeadlessBuild] Addressables settings not found; continuing without Addressables override.");
         }
 
+        BasisHeadlessFrameworkGenerator.EnsureGeneratedAssets();
+
         try
         {
             BuildPlayerOptions options = new BuildPlayerOptions

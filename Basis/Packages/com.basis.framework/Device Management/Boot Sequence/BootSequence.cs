@@ -35,6 +35,11 @@ namespace Basis.Scripts.Boot_Sequence
         public static string BasisFramework = "BasisFramework";
 
         /// <summary>
+        /// Addressables key for the headless-safe framework prefab generated for dedicated server builds.
+        /// </summary>
+        public static string HeadlessBasisFramework = "BasisFrameworkHeadless";
+
+        /// <summary>
         /// Guard to ensure we only hook global events once.
         /// </summary>
         public static bool HasEvents = false;
@@ -127,24 +132,34 @@ namespace Basis.Scripts.Boot_Sequence
         /// </summary>
         public static async Task OnAddressablesInitializationComplete()
         {
+            string frameworkAddress = GetFrameworkAddress();
             GameObject SingleUse = new GameObject();
             SingleUse.SetActive(false);
             // Instantiate the system GameObject via your driver. Keep a reference so we can ReleaseInstance later.
             var go = await AddressableResourceProcess.LoadSystemGameobject(SingleUse,
-                BasisFramework,
+                frameworkAddress,
                 new UnityEngine.ResourceManagement.ResourceProviders.InstantiationParameters());
 
             if (go != null)
             {
-                go.name = BasisFramework;
+                go.name = frameworkAddress;
                 _basisInstance = go;
                 LoadedBootManager = go;
             }
             else
             {
-                Debug.LogWarning("[BootSequence] AddressableResourceProcess returned null instance.");
+                Debug.LogWarning($"[BootSequence] AddressableResourceProcess returned null instance for '{frameworkAddress}'.");
             }
             GameObject.DestroyImmediate(SingleUse);
+        }
+
+        private static string GetFrameworkAddress()
+        {
+#if UNITY_SERVER
+            return HeadlessBasisFramework;
+#else
+            return BasisFramework;
+#endif
         }
 
         // === Cleanup paths ===

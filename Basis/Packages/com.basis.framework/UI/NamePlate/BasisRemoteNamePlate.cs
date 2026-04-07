@@ -70,6 +70,13 @@ namespace Basis.Scripts.UI.NamePlate
         /// </summary>
         public void Initalize(BasisRemotePlayer RemotePlayer)
         {
+            if (BasisRemoteNamePlateDriver.Instance == null || LoadingText == null)
+            {
+                BasisDebug.LogWarning("Skipping remote nameplate initialization because the nameplate driver or TMP loading text is unavailable.", BasisDebug.LogTag.Remote);
+                gameObject.SetActive(false);
+                return;
+            }
+
             BasisRemotePlayer = RemotePlayer;
             BasisRemotePlayer.RemoteNamePlate = this;
             BasisRemotePlayer.ProgressReportAvatarLoad.OnProgressReport += ProgressReport;

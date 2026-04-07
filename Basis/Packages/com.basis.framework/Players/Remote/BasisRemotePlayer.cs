@@ -174,6 +174,11 @@ namespace Basis.Scripts.BasisSdk.Players
             UUID = PlayerMetaDataMessage.playerUUID;
             IsLocal = false;
 
+#if UNITY_SERVER
+            RemoteNamePlate = null;
+            return;
+#endif
+
             GameObject data = GameObject.Instantiate(LoadFromHandle(LoadableNamePlatename), transform);
             if (data.TryGetComponent(out RemoteNamePlate))
             {
