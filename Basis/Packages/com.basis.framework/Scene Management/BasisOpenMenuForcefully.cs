@@ -7,6 +7,9 @@ public class BasisOpenMenuForcefully : MonoBehaviour
     public bool OpenServerMenu = true;
     public void Start()
     {
+#if UNITY_SERVER
+        return;
+#endif
         if(BasisDeviceManagement.OnInitializationComplete)
         {
             OpenMenu();
@@ -22,6 +25,9 @@ public class BasisOpenMenuForcefully : MonoBehaviour
     }
     public void OpenMenu()
     {
+#if UNITY_SERVER
+        return;
+#endif
         BasisMainMenu.Open();
         if (OpenServerMenu)
         {
