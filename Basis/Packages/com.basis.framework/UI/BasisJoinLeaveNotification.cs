@@ -1,5 +1,6 @@
 using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Players;
+using Basis.Scripts.Device_Management;
 using Basis.Scripts.Drivers;
 using Basis.Scripts.Networking.NetworkedAvatar;
 using Basis.Scripts.UI.NamePlate;
@@ -61,6 +62,12 @@ namespace Basis.Scripts.UI
 
         public static void Create()
         {
+#if UNITY_SERVER || UNITY_EDITOR
+            if (IsHeadlessRuntime())
+            {
+                return;
+            }
+#endif
             if (initialized)
             {
                 return;
@@ -286,6 +293,9 @@ namespace Basis.Scripts.UI
 
         private static void ShowNotification(string message, Color color)
         {
+            #if UNITY_SERVER || UNITY_EDITOR
+            if (IsHeadlessRuntime()) return;
+            #endif
             if (!initialized)
             {
                 return;
@@ -329,6 +339,12 @@ namespace Basis.Scripts.UI
             RepositionAll();
         }
 
+#if UNITY_SERVER || UNITY_EDITOR
+        private static bool IsHeadlessRuntime()
+        {
+            return string.Equals(BasisDeviceManagement.StaticCurrentMode, BasisConstants.Headless, System.StringComparison.Ordinal);
+        }
+#endif
         private static Mesh GetOrCreateMesh(float halfWidth, float halfHeight)
         {
             int qw = Mathf.CeilToInt(halfWidth * 2f);
