@@ -1,19 +1,22 @@
 #if UNITY_SERVER
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using Basis.Network.Core;
 using Basis.Scripts.Networking;
 using OpusSharp.Core;
 using UnityEngine;
+using UnityEngine.Networking;
 using static SerializableBasis;
 
 /// <summary>
-/// Headless audio clip player for stress testing. Loads .wav files from a directory,
+/// Headless audio clip player for stress testing. Loads audio files from a directory,
 /// picks one randomly, Opus-encodes it, and sends it over the network as voice audio.
 /// Self-contained: has its own Opus encoder and sends directly via the network peer.
 ///
-/// Place .wav files in: {Application.dataPath}/AudioClips/
+/// Place .wav or .mp3 files in: {Application.dataPath}/AudioClips/
 /// If the directory is missing or empty, no audio is sent (silent headless as usual).
 ///
 /// Designed for testing what 1000+ simultaneous audio sources sound and look like.
@@ -32,28 +35,32 @@ public static class BasisAudioClipPlayer
     private static AudioSegmentDataMessage segment;
     private static NetDataWriter writer;
     private static byte sequenceNumber;
+    private static int initializationVersion;
 
     private const int SampleRate = 48000;
     private const int Channels = 1;
     private const float FrameDurationSeconds = 0.02f; // 20ms
     private static readonly int FrameSize = (int)(FrameDurationSeconds * SampleRate); // 960
+    private static readonly string[] SupportedExtensions = { ".wav", ".mp3" };
 
     /// <summary>
-    /// Directory to scan for .wav files. Defaults to {Application.dataPath}/AudioClips/
+    /// Directory to scan for supported audio files. Defaults to {Application.dataPath}/AudioClips/
     /// </summary>
     public static string ClipDirectory;
 
     /// <summary>
     /// Attempts to initialize the clip player. If the AudioClips directory exists and
-    /// contains .wav files, a random clip is loaded and streamed as voice audio.
+    /// contains supported audio files, a random clip is loaded and streamed as voice audio.
     /// If the directory is missing or empty, this is a no-op (silent headless as usual).
     /// </summary>
-    public static bool TryInitialize()
+    public static async Task<bool> TryInitializeAsync()
     {
         if (IsActive)
         {
             return true;
         }
+
+        int initVersion = Interlocked.Increment(ref initializationVersion);
 
         string dir = ClipDirectory ?? Path.Combine(Application.dataPath, "AudioClips");
         BasisDebug.Log($"[AudioClipPlayer] Booting up. AudioClips directory: {dir}", BasisDebug.LogTag.Device);
@@ -72,20 +79,40 @@ public static class BasisAudioClipPlayer
             return false;
         }
 
-        string[] files = Directory.GetFiles(dir, "*.wav");
-        if (files.Length == 0)
+        List<string> files = new List<string>();
+        foreach (string file in Directory.EnumerateFiles(dir))
         {
-            BasisDebug.LogError($"[AudioClipPlayer] failed to find and .wav", BasisDebug.LogTag.Device);
+            string extension = Path.GetExtension(file);
+            for (int i = 0; i < SupportedExtensions.Length; i++)
+            {
+                if (extension.Equals(SupportedExtensions[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    files.Add(file);
+                    break;
+                }
+            }
+        }
+
+        if (files.Count == 0)
+        {
+            BasisDebug.LogError("[AudioClipPlayer] Failed to find any supported audio clips (.wav, .mp3).", BasisDebug.LogTag.Device);
             return false;
         }
 
-        string chosen = files[UnityEngine.Random.Range(0, files.Length)];
+        string chosen = files[UnityEngine.Random.Range(0, files.Count)];
         BasisDebug.Log($"[AudioClipPlayer] Loading: {Path.GetFileName(chosen)}", BasisDebug.LogTag.Device);
 
-        clipSamples = LoadWavAsMono48k(chosen);
+        clipSamples = await LoadAudioFileAsMono48kAsync(chosen);
         if (clipSamples == null || clipSamples.Length == 0)
         {
             BasisDebug.LogError($"[AudioClipPlayer] Failed to load: {chosen}", BasisDebug.LogTag.Device);
+            return false;
+        }
+
+        if (initVersion != Volatile.Read(ref initializationVersion))
+        {
+            BasisDebug.LogWarning("[AudioClipPlayer] Ignoring stale audio clip initialization request.", BasisDebug.LogTag.Device);
+            clipSamples = null;
             return false;
         }
 
@@ -124,6 +151,7 @@ public static class BasisAudioClipPlayer
     /// </summary>
     public static void DeInitialize()
     {
+        Interlocked.Increment(ref initializationVersion);
         shouldRun = false;
         IsActive = false;
 
@@ -225,85 +253,120 @@ public static class BasisAudioClipPlayer
         }
     }
 
-    /// <summary>
-    /// Loads a PCM WAV file and returns 48kHz mono float samples.
-    /// Supports 8-bit, 16-bit, 24-bit, and 32-bit PCM WAV formats.
-    /// Non-48kHz files are resampled via linear interpolation.
-    /// </summary>
-    private static float[] LoadWavAsMono48k(string path)
+    private static async Task<float[]> LoadAudioFileAsMono48kAsync(string path)
+    {
+        AudioType audioType = GetAudioType(path);
+        if (audioType == AudioType.UNKNOWN)
+        {
+            BasisDebug.LogWarning($"[AudioClipPlayer] Unsupported audio type: {Path.GetExtension(path)}", BasisDebug.LogTag.Device);
+            return null;
+        }
+
+        string fileUri = new Uri(path).AbsoluteUri;
+        AudioClip clip = null;
+
+        using (UnityWebRequest request = UnityWebRequestMultimedia.GetAudioClip(fileUri, audioType))
+        {
+            try
+            {
+                // Keep DownloadHandlerAudioClip in its default non-streaming mode because this path
+                // needs AudioClip.GetData() to extract PCM for the Opus encoder.
+                UnityWebRequestAsyncOperation operation = request.SendWebRequest();
+                await AwaitAsyncOperation(operation);
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    BasisDebug.LogError($"[AudioClipPlayer] Audio load failed for {path}: {request.error}", BasisDebug.LogTag.Device);
+                    return null;
+                }
+
+                clip = DownloadHandlerAudioClip.GetContent(request);
+                if (clip == null)
+                {
+                    BasisDebug.LogError($"[AudioClipPlayer] UnityWebRequest returned a null AudioClip for {path}", BasisDebug.LogTag.Device);
+                    return null;
+                }
+
+                if (clip.samples <= 0 || clip.channels <= 0)
+                {
+                    BasisDebug.LogError($"[AudioClipPlayer] Loaded clip has invalid sample metadata: {path}", BasisDebug.LogTag.Device);
+                    return null;
+                }
+
+                int sampleCount = clip.samples * clip.channels;
+                float[] interleavedSamples = new float[sampleCount];
+                if (!clip.GetData(interleavedSamples, 0))
+                {
+                    BasisDebug.LogError($"[AudioClipPlayer] Failed to read sample data from {path}", BasisDebug.LogTag.Device);
+                    return null;
+                }
+
+                BasisDebug.Log($"[AudioClipPlayer] Loaded clip metadata: {clip.frequency}Hz, {clip.channels}ch, {clip.samples} frames", BasisDebug.LogTag.Device);
+                return ConvertToMono48k(interleavedSamples, clip.channels, clip.frequency);
+            }
+            catch (Exception ex)
+            {
+                BasisDebug.LogError($"[AudioClipPlayer] Audio load error: {ex.Message}", BasisDebug.LogTag.Device);
+                return null;
+            }
+            finally
+            {
+                if (clip != null)
+                {
+                    UnityEngine.Object.Destroy(clip);
+                }
+            }
+        }
+    }
+
+    private static AudioType GetAudioType(string path)
+    {
+        string extension = Path.GetExtension(path);
+        if (extension.Equals(".wav", StringComparison.OrdinalIgnoreCase))
+        {
+            return AudioType.WAV;
+        }
+
+        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            return AudioType.MPEG;
+        }
+
+        return AudioType.UNKNOWN;
+    }
+
+    private static Task AwaitAsyncOperation(AsyncOperation operation)
+    {
+        if (operation.isDone)
+        {
+            return Task.CompletedTask;
+        }
+
+        TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        operation.completed += _ => tcs.TrySetResult(true);
+        return tcs.Task;
+    }
+
+    private static float[] ConvertToMono48k(float[] interleavedSamples, int channels, int sampleRate)
     {
         try
         {
-            byte[] fileBytes = File.ReadAllBytes(path);
-            if (fileBytes.Length < 44)
-                return null;
+            int totalFrames = interleavedSamples.Length / channels;
+            float[] monoSamples = channels == 1 ? interleavedSamples : new float[totalFrames];
 
-            if (fileBytes[0] != 'R' || fileBytes[1] != 'I' || fileBytes[2] != 'F' || fileBytes[3] != 'F')
-                return null;
-            if (fileBytes[8] != 'W' || fileBytes[9] != 'A' || fileBytes[10] != 'V' || fileBytes[11] != 'E')
-                return null;
-
-            int pos = 12;
-            int channels = 0;
-            int sampleRate = 0;
-            int bitsPerSample = 0;
-            int dataOffset = 0;
-            int dataSize = 0;
-
-            while (pos < fileBytes.Length - 8)
+            if (channels > 1)
             {
-                string chunkId = System.Text.Encoding.ASCII.GetString(fileBytes, pos, 4);
-                int chunkSize = BitConverter.ToInt32(fileBytes, pos + 4);
-
-                if (chunkId == "fmt ")
+                for (int i = 0; i < totalFrames; i++)
                 {
-                    int audioFormat = BitConverter.ToInt16(fileBytes, pos + 8);
-                    if (audioFormat != 1)
+                    float sum = 0f;
+                    int baseIndex = i * channels;
+                    for (int ch = 0; ch < channels; ch++)
                     {
-                        BasisDebug.LogWarning("[AudioClipPlayer] Only PCM WAV files are supported.", BasisDebug.LogTag.Device);
-                        return null;
+                        sum += interleavedSamples[baseIndex + ch];
                     }
-                    channels = BitConverter.ToInt16(fileBytes, pos + 10);
-                    sampleRate = BitConverter.ToInt32(fileBytes, pos + 12);
-                    bitsPerSample = BitConverter.ToInt16(fileBytes, pos + 22);
+
+                    monoSamples[i] = sum / channels;
                 }
-                else if (chunkId == "data")
-                {
-                    dataOffset = pos + 8;
-                    dataSize = chunkSize;
-                    break;
-                }
-
-                pos += 8 + chunkSize;
-                if (chunkSize % 2 != 0) pos++;
-            }
-
-            if (dataOffset == 0 || dataSize == 0 || channels == 0 || sampleRate == 0 || bitsPerSample == 0)
-                return null;
-
-            int bytesPerSample = bitsPerSample / 8;
-            int totalFrames = dataSize / (bytesPerSample * channels);
-
-            float[] monoSamples = new float[totalFrames];
-            for (int i = 0; i < totalFrames; i++)
-            {
-                float sum = 0;
-                for (int ch = 0; ch < channels; ch++)
-                {
-                    int offset = dataOffset + (i * channels + ch) * bytesPerSample;
-                    if (offset + bytesPerSample > fileBytes.Length) break;
-
-                    float sample = bitsPerSample switch
-                    {
-                        8 => (fileBytes[offset] - 128) / 128f,
-                        16 => BitConverter.ToInt16(fileBytes, offset) / 32768f,
-                        24 => DecodeInt24(fileBytes, offset) / 8388608f,
-                        32 => BitConverter.ToInt32(fileBytes, offset) / 2147483648f,
-                        _ => 0f
-                    };
-                    sum += sample;
-                }
-                monoSamples[i] = sum / channels;
             }
 
             if (sampleRate != SampleRate)
@@ -316,16 +379,9 @@ public static class BasisAudioClipPlayer
         }
         catch (Exception ex)
         {
-            BasisDebug.LogError($"[AudioClipPlayer] WAV load error: {ex.Message}", BasisDebug.LogTag.Device);
+            BasisDebug.LogError($"[AudioClipPlayer] Sample conversion error: {ex.Message}", BasisDebug.LogTag.Device);
             return null;
         }
-    }
-
-    private static int DecodeInt24(byte[] data, int offset)
-    {
-        int val = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16);
-        if ((val & 0x800000) != 0) val |= unchecked((int)0xFF000000);
-        return val;
     }
 
     private static float[] Resample(float[] source, int sourceSampleRate, int targetSampleRate)

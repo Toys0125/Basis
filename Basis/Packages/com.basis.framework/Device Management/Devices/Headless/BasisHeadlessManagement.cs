@@ -557,8 +557,8 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
     {
         EnsureHeadlessInput();
 
-        // If AudioClips directory has .wav files, stream a random one as voice audio
-        BasisAudioClipPlayer.TryInitialize();
+        // If AudioClips directory has supported audio files, stream a random one as voice audio.
+        _ = BasisAudioClipPlayer.TryInitializeAsync();
 
         _ = ApplyConfiguredAvatarAsync();
     }
