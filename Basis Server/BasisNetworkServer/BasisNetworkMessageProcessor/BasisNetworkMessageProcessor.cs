@@ -15,9 +15,50 @@ using static BasisPermissions.PermissionManager;
 public static class BasisNetworkMessageProcessor
 {
     private const int MaxErrorsBeforeWarning = 50;
+    private const int MaxDeferredPreAuthMessagesPerPeer = 16;
     private static readonly ConcurrentDictionary<int, int> _peerErrorCounts = new();
+    private static readonly ConcurrentDictionary<int, ConcurrentQueue<DeferredPreAuthMessage>> _deferredPreAuthMessages = new();
+
+    private readonly struct DeferredPreAuthMessage
+    {
+        public DeferredPreAuthMessage(byte channel, byte[] payload)
+        {
+            Channel = channel;
+            Payload = payload;
+        }
+
+        public byte Channel { get; }
+        public byte[] Payload { get; }
+    }
 
     public static void ClearPeerErrors(int peerId) => _peerErrorCounts.TryRemove(peerId, out _);
+    public static void ClearDeferredPreAuthMessages(int peerId) => _deferredPreAuthMessages.TryRemove(peerId, out _);
+
+    public static void ReplayDeferredPreAuthMessages(NetPeer peer)
+    {
+        if (!_deferredPreAuthMessages.TryRemove(peer.Id, out var queue))
+        {
+            return;
+        }
+
+        while (queue.TryDequeue(out DeferredPreAuthMessage deferred))
+        {
+            NetDataReader deferredReader = new NetDataReader(deferred.Payload);
+            switch (deferred.Channel)
+            {
+                case BasisNetworkCommons.netIDAssignChannel:
+                    BasisServerHandleEvents.NetIDAssign(deferredReader, peer);
+                    break;
+                case BasisNetworkCommons.GetCurrentOwnerRequestChannel:
+                    if (PermissionIntegration.HasValidRequirement(peer, PermNodes.OwnershipGet))
+                    {
+                        BasisNetworkOwnership.OwnershipResponse(deferredReader, peer);
+                    }
+                    break;
+            }
+        }
+    }
+
     public static void ProcessMessage(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
     {
         BasisNetworkStatistics.RecordInbound(channel, reader.AvailableBytes);
@@ -26,6 +67,12 @@ public static class BasisNetworkMessageProcessor
             if (channel != BasisNetworkCommons.AuthIdentityChannel &&
                 !NetworkServer.AuthenticatedPeers.ContainsKey(peer.Id))
             {
+                if (TryQueueDeferredPreAuthMessage(peer, reader, channel))
+                {
+                    reader.Recycle();
+                    return;
+                }
+
                 int errorCount = _peerErrorCounts.AddOrUpdate(peer.Id, 1, (_, c) => c + 1);
                 if (errorCount <= 5 || errorCount % 100 == 0)
                 {
@@ -270,5 +317,24 @@ public static class BasisNetworkMessageProcessor
         {
             action();
         }
+    }
+
+    private static bool TryQueueDeferredPreAuthMessage(NetPeer peer, NetPacketReader reader, byte channel)
+    {
+        if (channel != BasisNetworkCommons.netIDAssignChannel &&
+            channel != BasisNetworkCommons.GetCurrentOwnerRequestChannel)
+        {
+            return false;
+        }
+
+        ConcurrentQueue<DeferredPreAuthMessage> queue = _deferredPreAuthMessages.GetOrAdd(peer.Id, _ => new ConcurrentQueue<DeferredPreAuthMessage>());
+        if (queue.Count >= MaxDeferredPreAuthMessagesPerPeer)
+        {
+            BNL.LogError($"Dropped deferred pre-auth channel {channel} from peer {peer.Id}: queue limit reached.");
+            return true;
+        }
+
+        queue.Enqueue(new DeferredPreAuthMessage(channel, reader.GetRemainingBytes()));
+        return true;
     }
 }
