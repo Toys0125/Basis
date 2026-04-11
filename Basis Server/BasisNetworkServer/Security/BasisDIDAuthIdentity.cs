@@ -324,6 +324,12 @@ namespace BasisDidLink
 
         public bool NetIDToUUID(NetPeer Peer, out string UUID)
         {
+            if (!NetworkServer.AuthenticatedPeers.ContainsKey(Peer.Id))
+            {
+                UUID = string.Empty;
+                return false;
+            }
+
             if (AuthIdentity.TryGetValue(Peer.Id, out OnAuth OnAuth))
             {
                 UUID = OnAuth.Did.V;
@@ -337,7 +343,7 @@ namespace BasisDidLink
         {
             foreach (KeyValuePair<int, OnAuth> Pair in AuthIdentity)
             {
-                if (Pair.Value.Did.V == UUID)
+                if (Pair.Value.Did.V == UUID && NetworkServer.AuthenticatedPeers.ContainsKey(Pair.Key))
                 {
                     Peer = Pair.Key;
                     return true;
