@@ -23,6 +23,18 @@ public static class BasisNetworkMessageProcessor
         BasisNetworkStatistics.RecordInbound(channel, reader.AvailableBytes);
         try
         {
+            if (channel != BasisNetworkCommons.AuthIdentityChannel &&
+                !NetworkServer.AuthenticatedPeers.ContainsKey(peer.Id))
+            {
+                int errorCount = _peerErrorCounts.AddOrUpdate(peer.Id, 1, (_, c) => c + 1);
+                if (errorCount <= 5 || errorCount % 100 == 0)
+                {
+                    BNL.LogError($"Rejected pre-auth channel {channel} from peer {peer.Id}.");
+                }
+                reader.Recycle();
+                return;
+            }
+
             switch (channel)
             {
                 case BasisNetworkCommons.ShoutVoiceChannel:
