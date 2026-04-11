@@ -18,6 +18,11 @@ public static partial class SerializableBasis
     /// </summary>
     public struct ContentShareMessage
     {
+        public const int MaxSphereNetIdLength = 128;
+        public const int MaxContentUrlLength = 2048;
+        public const int MaxUnlockPasswordLength = 256;
+        public const int MaxSerializedBytes = 4096;
+
         /// <summary>
         /// Unique ID for this sphere instance (GUID string).
         /// </summary>
@@ -65,6 +70,35 @@ public static partial class SerializableBasis
             writer.Put(PositionX);
             writer.Put(PositionY);
             writer.Put(PositionZ);
+        }
+
+        public bool IsValid(out string error)
+        {
+            if (!IsValidSphereNetID(SphereNetID))
+            {
+                error = "SphereNetID length is invalid.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(ContentURL) || ContentURL.Length > MaxContentUrlLength)
+            {
+                error = "ContentURL length is invalid.";
+                return false;
+            }
+
+            if ((UnlockPassword?.Length ?? 0) > MaxUnlockPasswordLength)
+            {
+                error = "UnlockPassword length is invalid.";
+                return false;
+            }
+
+            error = string.Empty;
+            return true;
+        }
+
+        public static bool IsValidSphereNetID(string sphereNetId)
+        {
+            return !string.IsNullOrWhiteSpace(sphereNetId) && sphereNetId.Length <= MaxSphereNetIdLength;
         }
     }
 
