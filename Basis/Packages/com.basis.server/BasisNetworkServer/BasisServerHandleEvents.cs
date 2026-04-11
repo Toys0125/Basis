@@ -821,8 +821,9 @@ namespace BasisServerHandle
         {
             if (NetworkServer.Configuration.DisableWriteUnlessAdminPersistentFlag)
             {
-                if (PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
+                if (!PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
                 {
+                    reader.Recycle();
                     return;
                 }
             }
@@ -840,6 +841,7 @@ namespace BasisServerHandle
             {
                 if(!PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
                 {
+                    reader.Recycle();
                     return;
                 }
             }
