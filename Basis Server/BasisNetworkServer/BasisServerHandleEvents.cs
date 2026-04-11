@@ -713,11 +713,14 @@ namespace BasisServerHandle
         }
         #endregion
         #region Network ID Generation
-        public static void NetIDAssign(NetPacketReader Reader, NetPeer Peer)
+        public static void NetIDAssign(NetDataReader Reader, NetPeer Peer)
         {
             NetIDMessage ServerUniqueIDMessage = new NetIDMessage();
             ServerUniqueIDMessage.Deserialize(Reader);
-            Reader.Recycle();
+            if (Reader is NetPacketReader PacketReader)
+            {
+                PacketReader.Recycle();
+            }
             //returns a message with the ushort back to the client, or it sends it to everyone if its new.
             BasisNetworkIDDatabase.AddOrFindNetworkID(Peer, ServerUniqueIDMessage.playerID);
             //we need to convert the string int a  ushort.
