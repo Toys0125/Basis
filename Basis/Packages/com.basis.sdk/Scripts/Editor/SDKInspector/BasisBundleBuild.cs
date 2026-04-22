@@ -658,7 +658,7 @@ public static class BasisBundleBuild
                 throw new FileNotFoundException("File not found", p);
             dataLen += new FileInfo(p).Length;
         }
-        long totalLen = 8L + headerLen + dataLen; // 8 bytes: header length prefix
+        long totalLen = BasisBeeConstants.MagicHeaderSize + BasisBeeConstants.RemoteHeaderSize + headerLen + dataLen;
 
         // --- big reusable buffer from the pool ---
         const int BufferSize = 8 * 1024 * 1024;  // try 4–8 MiB; 8 MiB if RAM allows
@@ -677,7 +677,10 @@ public static class BasisBundleBuild
                 // pre-size once — reduces fragmentation and page faults
                 output.SetLength(totalLen);
 
-                // write 8-byte length + header
+                // write magic prefix + 8-byte connector length + encrypted connector
+                await output.WriteAsync(BasisBeeConstants.MagicBytes, 0, BasisBeeConstants.MagicHeaderSize, ct);
+                bytesDone += BasisBeeConstants.MagicHeaderSize;
+
                 await output.WriteAsync(lenBytes, 0, lenBytes.Length, ct);
                 bytesDone += lenBytes.Length;
 

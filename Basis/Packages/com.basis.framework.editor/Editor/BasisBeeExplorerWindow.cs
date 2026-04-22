@@ -332,15 +332,15 @@ public class BasisBeeExplorerWindow : EditorWindow
                 return;
             }
 
-            // Disk format failed, try remote format (8-byte Int64 header)
-            Debug.Log("BEE Explorer: Disk format failed, trying remote format (8-byte header)...");
-            EditorUtility.DisplayProgressBar("BEE Explorer", "Trying remote format (8-byte header)...", 0.4f);
+            // Disk format failed, try remote format (optional magic prefix + 8-byte Int64 header)
+            Debug.Log("BEE Explorer: Disk format failed, trying remote format...");
+            EditorUtility.DisplayProgressBar("BEE Explorer", "Trying remote format...", 0.4f);
 
             bool remoteOk = await TryReadRemoteFormat(progressCallback, ct);
             if (remoteOk)
             {
                 hasLoaded = true;
-                statusMessage = "Loaded (remote format, 8-byte header).";
+                statusMessage = "Loaded (remote format).";
                 LoadThumbnail();
                 return;
             }
@@ -369,7 +369,7 @@ public class BasisBeeExplorerWindow : EditorWindow
     }
 
     /// <summary>
-    /// Reads a BEE file in the remote format: 8-byte Int64 header + connector + sequential platform sections.
+    /// Reads a BEE file in the remote format: optional magic prefix + 8-byte Int64 header + connector + sequential platform sections.
     /// </summary>
     private async Task<bool> TryReadRemoteFormat(BasisProgressReport progressCallback, CancellationToken ct)
     {
@@ -381,6 +381,22 @@ public class BasisBeeExplorerWindow : EditorWindow
             {
                 Debug.LogWarning("BEE Explorer: File too small for remote header.");
                 return false;
+            }
+
+            bool hasMagic = false;
+            if (fs.Length >= BasisBeeConstants.MagicHeaderSize + BasisBeeConstants.RemoteHeaderSize)
+            {
+                byte[] prefixBytes = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, ct);
+                if (prefixBytes.Length != BasisBeeConstants.MagicHeaderSize)
+                    return false;
+
+                hasMagic = prefixBytes[0] == BasisBeeConstants.MagicBytes[0] &&
+                           prefixBytes[1] == BasisBeeConstants.MagicBytes[1] &&
+                           prefixBytes[2] == BasisBeeConstants.MagicBytes[2] &&
+                           prefixBytes[3] == BasisBeeConstants.MagicBytes[3];
+
+                if (!hasMagic)
+                    fs.Position = 0;
             }
 
             // Read 8-byte Int64 connector length
@@ -430,7 +446,8 @@ public class BasisBeeExplorerWindow : EditorWindow
             if (connector.BasisBundleGenerated != null && connector.BasisBundleGenerated.Length > 0)
             {
                 remoteSections = new SectionLocation[connector.BasisBundleGenerated.Length];
-                long sectionOffset = BasisBeeConstants.RemoteHeaderSize + connectorLength;
+                long headerOffset = hasMagic ? BasisBeeConstants.MagicHeaderSize : 0;
+                long sectionOffset = headerOffset + BasisBeeConstants.RemoteHeaderSize + connectorLength;
 
                 for (int i = 0; i < connector.BasisBundleGenerated.Length; i++)
                 {
