@@ -8,8 +8,8 @@ using UnityEngine;
 
 public class BasisBeeExplorerWindow : EditorWindow
 {
-    private const string DiskFormatLabel = "Disk (BEE 4-byte header)";
-    private const string RemoteFormatLabel = "Remote (BEE 8-byte header)";
+    private const string DiskFormatLabel = "Disk (BEE 4-byte header; older files may omit it)";
+    private const string RemoteFormatLabel = "Remote (BEE 8-byte header; older files may omit it)";
 
     private string beeFilePath = "";
     private string password = "";
