@@ -359,9 +359,9 @@ public static class BasisIOManagement
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
         const int minConnector = 1;
-        if (connectorSize < minConnector || connectorSize > remainingPossible)
+        if (connectorSize < minConnector || connectorSize > BasisBeeConstants.MaxConnectorBytes || connectorSize > remainingPossible)
         {
-            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
+            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte, no more than {BasisBeeConstants.MaxConnectorBytes} bytes, and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
         }
 
         // Read connector bytes
@@ -428,8 +428,8 @@ public static class BasisIOManagement
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
         const int minConnector = 1;
-        if (connectorSize < minConnector || connectorSize > remainingPossible)
-            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
+        if (connectorSize < minConnector || connectorSize > BasisBeeConstants.MaxConnectorBytes || connectorSize > remainingPossible)
+            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte, no more than {BasisBeeConstants.MaxConnectorBytes} bytes, and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
 
         // Read connector bytes
         byte[] connectorBytes = await ReadExactAsync(fs, connectorSize, cancellationToken);
@@ -808,17 +808,26 @@ public static class BasisIOManagement
 
     private static async Task<bool> TryReadMagicAsync(Stream fs, CancellationToken ct)
     {
+        long originalPosition = fs.Position;
         byte[] prefix = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, ct);
         if (prefix.Length != BasisBeeConstants.MagicHeaderSize)
+        {
+            fs.Position = originalPosition;
             return false;
+        }
 
-        bool hasMagic = prefix[0] == (byte)'B' &&
-                        prefix[1] == (byte)'E' &&
-                        prefix[2] == (byte)'E' &&
-                        prefix[3] == (byte)' ';
+        bool hasMagic = true;
+        for (int i = 0; i < BasisBeeConstants.MagicHeaderSize; i++)
+        {
+            if (prefix[i] != BasisBeeConstants.MagicBytes[i])
+            {
+                hasMagic = false;
+                break;
+            }
+        }
 
         if (!hasMagic)
-            fs.Position = 0;
+            fs.Position = originalPosition;
 
         return hasMagic;
     }

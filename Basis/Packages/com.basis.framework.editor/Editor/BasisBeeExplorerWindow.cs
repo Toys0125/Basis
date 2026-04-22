@@ -8,6 +8,9 @@ using UnityEngine;
 
 public class BasisBeeExplorerWindow : EditorWindow
 {
+    private const string DiskFormatLabel = "Disk (BEE 4-byte header)";
+    private const string RemoteFormatLabel = "Remote (BEE 8-byte header)";
+
     private string beeFilePath = "";
     private string password = "";
     private bool showPassword = false;
@@ -123,7 +126,7 @@ public class BasisBeeExplorerWindow : EditorWindow
         // Header row
         EditorGUILayout.BeginHorizontal();
         EditorGUILayout.LabelField("Connector Metadata", EditorStyles.boldLabel);
-        string formatLabel = detectedFormat == BeeFileFormat.Disk ? "Disk (4-byte header)" : "Remote (8-byte header)";
+        string formatLabel = detectedFormat == BeeFileFormat.Disk ? DiskFormatLabel : RemoteFormatLabel;
         EditorGUILayout.LabelField($"Format: {formatLabel}", GUILayout.Width(180));
         if (GUILayout.Button("Close", GUILayout.Width(60)))
         {
@@ -316,7 +319,7 @@ public class BasisBeeExplorerWindow : EditorWindow
             CancellationToken ct = default;
 
             // Try disk format first (4-byte Int32 header)
-            EditorUtility.DisplayProgressBar("BEE Explorer", "Trying disk format (4-byte header)...", 0.2f);
+            EditorUtility.DisplayProgressBar("BEE Explorer", $"Trying {DiskFormatLabel}...", 0.2f);
             BeeResult<BasisIOManagement.BeeReadResult> diskResult = await BasisIOManagement.ReadBEEFileEx(
                 beeFilePath, password, progressCallback, ct);
 
@@ -327,20 +330,20 @@ public class BasisBeeExplorerWindow : EditorWindow
                 remoteSections = null;
                 detectedFormat = BeeFileFormat.Disk;
                 hasLoaded = true;
-                statusMessage = "Loaded (disk format, 4-byte header).";
+                statusMessage = $"Loaded {DiskFormatLabel}.";
                 LoadThumbnail();
                 return;
             }
 
             // Disk format failed, try remote format (optional magic prefix + 8-byte Int64 header)
             Debug.Log("BEE Explorer: Disk format failed, trying remote format...");
-            EditorUtility.DisplayProgressBar("BEE Explorer", "Trying remote format...", 0.4f);
+            EditorUtility.DisplayProgressBar("BEE Explorer", $"Trying {RemoteFormatLabel}...", 0.4f);
 
             bool remoteOk = await TryReadRemoteFormat(progressCallback, ct);
             if (remoteOk)
             {
                 hasLoaded = true;
-                statusMessage = "Loaded (remote format).";
+                statusMessage = $"Loaded {RemoteFormatLabel}.";
                 LoadThumbnail();
                 return;
             }
