@@ -345,21 +345,26 @@ public static class BasisIOManagement
 
         using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 96 * 1024, useAsync: true);
 
-        if (fs.Length < BasisBeeConstants.DiskHeaderSize)
+        // Check for optional magic header before minimum length validation
+        bool hasMagic = await TryReadMagicAsync(fs, cancellationToken);
+        long minimumLength = BasisBeeConstants.DiskHeaderSize +
+                             (hasMagic ? BasisBeeConstants.MagicHeaderSize : 0);
+        if (fs.Length < minimumLength)
         {
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: File too small to contain header. Size={fs.Length} bytes.");
         }
 
         // Read Int32 connector size (little-endian)
-        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.DiskHeaderSize, cancellationToken);
-        if (sizeBytes.Length != BasisBeeConstants.DiskHeaderSize)
+        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, cancellationToken);
+        if (sizeBytes.Length != BasisBeeConstants.MagicHeaderSize)
         {
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Failed to read connector size (header). Got {sizeBytes.Length} bytes.");
         }
 
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
-        if (connectorSize <= 0 || connectorSize > remainingPossible)
+        long minConnector = hasMagic ? 0 : 1;
+        if (connectorSize <= minConnector || connectorSize > remainingPossible)
         {
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Remaining file bytes: {remainingPossible}. File may be corrupt.");
         }
@@ -413,17 +418,22 @@ public static class BasisIOManagement
 
         using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 96 * 1024, useAsync: true);
 
-        if (fs.Length < BasisBeeConstants.DiskHeaderSize)
+        // Check for optional magic header before minimum length validation
+        bool hasMagic = await TryReadMagicAsync(fs, cancellationToken);
+        long minimumLength = BasisBeeConstants.DiskHeaderSize +
+                             (hasMagic ? BasisBeeConstants.MagicHeaderSize : 0);
+        if (fs.Length < minimumLength)
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: File too small to contain header. Size={fs.Length} bytes.");
 
         // Read Int32 connector size (little-endian)
-        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.DiskHeaderSize, cancellationToken);
-        if (sizeBytes.Length != BasisBeeConstants.DiskHeaderSize)
+        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, cancellationToken);
+        if (sizeBytes.Length != BasisBeeConstants.MagicHeaderSize)
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Failed to read connector size (header). Got {sizeBytes.Length} bytes.");
 
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
-        if (connectorSize <= 0 || connectorSize > remainingPossible)
+        long minConnector = hasMagic ? 0 : 1;
+        if (connectorSize <= minConnector || connectorSize > remainingPossible)
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Remaining file bytes: {remainingPossible}. File may be corrupt.");
 
         // Read connector bytes
@@ -638,6 +648,9 @@ public static class BasisIOManagement
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
+        // Write magic prefix before the size header
+        await fs.WriteAsync(BasisBeeConstants.MagicBytes, 0, BasisBeeConstants.MagicHeaderSize).ConfigureAwait(false);
+
         // Header: little-endian Int32 of connector size
         byte[] sizeLE = GetBytesInt32LE(connectorBytes.Length);
 
@@ -645,7 +658,7 @@ public static class BasisIOManagement
         bool writeSection = !IgnoreSectionBytes && (sectionBytes?.Length ?? 0) > 0;
 
         // Compute total size we expect to write
-        long totalSize = sizeLE.Length + connectorBytes.Length + (writeSection ? sectionBytes.Length : 0);
+        long totalSize = BasisBeeConstants.MagicHeaderSize + sizeLE.Length + connectorBytes.Length + (writeSection ? sectionBytes.Length : 0);
 
         // Auto-tune buffer: min 32KB, max 1MB
         int buffer = Clamp((int)(totalSize / 8), 32 * 1024, 1 * 1024 * 1024);
@@ -798,6 +811,23 @@ public static class BasisIOManagement
         if (value < min) return min;
         if (value > max) return max;
         return value;
+    }
+
+    private static async Task<bool> TryReadMagicAsync(Stream fs, CancellationToken ct)
+    {
+        byte[] prefix = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, ct);
+        if (prefix.Length != BasisBeeConstants.MagicHeaderSize)
+            return false;
+
+        bool hasMagic = prefix[0] == (byte)'B' &&
+                        prefix[1] == (byte)'E' &&
+                        prefix[2] == (byte)'E' &&
+                        prefix[3] == (byte)' ';
+
+        if (!hasMagic)
+            fs.Position = 0;
+
+        return hasMagic;
     }
 
     /// <summary>
