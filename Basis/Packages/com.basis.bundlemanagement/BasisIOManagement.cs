@@ -355,18 +355,18 @@ public static class BasisIOManagement
         }
 
         // Read Int32 connector size (little-endian)
-        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, cancellationToken);
-        if (sizeBytes.Length != BasisBeeConstants.MagicHeaderSize)
+        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.DiskHeaderSize, cancellationToken);
+        if (sizeBytes.Length != BasisBeeConstants.DiskHeaderSize)
         {
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Failed to read connector size (header). Got {sizeBytes.Length} bytes.");
         }
 
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
-        long minConnector = hasMagic ? 0 : 1;
-        if (connectorSize <= minConnector || connectorSize > remainingPossible)
+        const int minConnector = 1;
+        if (connectorSize < minConnector || connectorSize > remainingPossible)
         {
-            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Remaining file bytes: {remainingPossible}. File may be corrupt.");
+            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
         }
 
         // Read connector bytes
@@ -426,15 +426,15 @@ public static class BasisIOManagement
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: File too small to contain header. Size={fs.Length} bytes.");
 
         // Read Int32 connector size (little-endian)
-        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, cancellationToken);
-        if (sizeBytes.Length != BasisBeeConstants.MagicHeaderSize)
+        byte[] sizeBytes = await ReadExactAsync(fs, BasisBeeConstants.DiskHeaderSize, cancellationToken);
+        if (sizeBytes.Length != BasisBeeConstants.DiskHeaderSize)
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Failed to read connector size (header). Got {sizeBytes.Length} bytes.");
 
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
-        long minConnector = hasMagic ? 0 : 1;
-        if (connectorSize <= minConnector || connectorSize > remainingPossible)
-            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Remaining file bytes: {remainingPossible}. File may be corrupt.");
+        const int minConnector = 1;
+        if (connectorSize < minConnector || connectorSize > remainingPossible)
+            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
 
         // Read connector bytes
         byte[] connectorBytes = await ReadExactAsync(fs, connectorSize, cancellationToken);
@@ -648,9 +648,6 @@ public static class BasisIOManagement
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
-        // Write magic prefix before the size header
-        await fs.WriteAsync(BasisBeeConstants.MagicBytes, 0, BasisBeeConstants.MagicHeaderSize).ConfigureAwait(false);
-
         // Header: little-endian Int32 of connector size
         byte[] sizeLE = GetBytesInt32LE(connectorBytes.Length);
 
@@ -670,6 +667,7 @@ public static class BasisIOManagement
         {
             using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer, useAsync: true))
             {
+                await fs.WriteAsync(BasisBeeConstants.MagicBytes, 0, BasisBeeConstants.MagicHeaderSize).ConfigureAwait(false);
                 await fs.WriteAsync(sizeLE, 0, sizeLE.Length).ConfigureAwait(false);
                 await fs.WriteAsync(connectorBytes, 0, connectorBytes.Length).ConfigureAwait(false);
 
