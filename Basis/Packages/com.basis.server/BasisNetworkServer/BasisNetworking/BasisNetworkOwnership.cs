@@ -26,11 +26,14 @@ namespace Basis.Network.Server.Ownership
             }
             NetworkServer.ReturnWriter(Writer);
         }
-        public static void OwnershipResponse(NetPacketReader Reader, NetPeer Peer)
+        public static void OwnershipResponse(NetDataReader Reader, NetPeer Peer)
         {
             OwnershipTransferMessage ownershipTransferMessage = new OwnershipTransferMessage();
             ownershipTransferMessage.Deserialize(Reader);
-            Reader.Recycle();
+            if (Reader is NetPacketReader PacketReader)
+            {
+                PacketReader.Recycle();
+            }
             //if we are not aware of this ownershipID lets only give back to that client that its been assigned to them
             //the goal here is to make it so ownership understanding has to be requested.
             //once a ownership has been requested there good for life or when a ownership switch happens.

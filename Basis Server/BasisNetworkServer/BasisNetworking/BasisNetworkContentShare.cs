@@ -11,6 +11,9 @@ using static SerializableBasis;
 /// </summary>
 public static class BasisNetworkContentShare
 {
+    public const int MaxActiveSpheres = 1024;
+    public const int MaxSpheresPerPeer = 32;
+
     /// <summary>
     /// All active content share spheres keyed by SphereNetID.
     /// Value is the full message including creator player ID.
@@ -24,12 +27,38 @@ public static class BasisNetworkContentShare
     /// </summary>
     public static void HandleContentShareDrop(NetPacketReader reader, NetPeer peer)
     {
+        if (reader.AvailableBytes > ContentShareMessage.MaxSerializedBytes)
+        {
+            BNL.LogError($"Rejected oversized content share from peer {peer.Id}.");
+            reader.Recycle();
+            return;
+        }
+
         ContentShareMessage msg = new ContentShareMessage();
         msg.Deserialize(reader);
         reader.Recycle();
 
+        if (!msg.IsValid(out string validationError))
+        {
+            BNL.LogError($"Rejected invalid content share from peer {peer.Id}: {validationError}");
+            return;
+        }
+
         if (!PermissionIntegration.HasValidRequirement(peer, PermNodes.ContentShareCreate))
         {
+            return;
+        }
+
+        if (ActiveSpheres.Count >= MaxActiveSpheres)
+        {
+            BNL.LogError($"Rejected content share from peer {peer.Id}: global sphere limit reached.");
+            return;
+        }
+
+        int peerSphereCount = ActiveSpheres.Count(kvp => kvp.Value.playerIdMessage.playerID == (ushort)peer.Id);
+        if (peerSphereCount >= MaxSpheresPerPeer)
+        {
+            BNL.LogError($"Rejected content share from peer {peer.Id}: peer sphere limit reached.");
             return;
         }
 
@@ -102,6 +131,12 @@ public static class BasisNetworkContentShare
         ContentShareCleanupMessage msg = new ContentShareCleanupMessage();
         msg.Deserialize(reader);
         reader.Recycle();
+
+        if (!ContentShareMessage.IsValidSphereNetID(msg.SphereNetID))
+        {
+            BNL.LogError($"Rejected invalid content share cleanup from peer {peer.Id}.");
+            return;
+        }
 
         if (!ActiveSpheres.TryGetValue(msg.SphereNetID, out ServerContentShareMessage existing))
         {

@@ -66,6 +66,7 @@ namespace BasisServerHandle
                     return;
                 }
                 int id = peer.Id;
+                BasisNetworkMessageProcessor.ClearDeferredPreAuthMessages(id);
 
                 // Clean up stored metadata before the UUID mapping is removed
                 if (NetworkServer.AuthIdentity.NetIDToUUID(peer, out string disconnectedUuid))
@@ -247,6 +248,7 @@ namespace BasisServerHandle
             if (NetworkServer.AuthenticatedPeers.TryAdd(PeerId, newPeer))
             {
                 NetworkServer.RebuildPeerSnapshot();
+                BasisNetworkMessageProcessor.ReplayDeferredPreAuthMessages(newPeer);
                 BNL.Log($"Peer connected: {newPeer.Id}");
                 //never ever assume the UUID provided by the user is good always recalc on the server.
                 //this means that as long as they pass auth but locally have a bad UUID that only they locally are effected.
@@ -746,11 +748,14 @@ namespace BasisServerHandle
         }
         #endregion
         #region Network ID Generation
-        public static void NetIDAssign(NetPacketReader Reader, NetPeer Peer)
+        public static void NetIDAssign(NetDataReader Reader, NetPeer Peer)
         {
             NetIDMessage ServerUniqueIDMessage = new NetIDMessage();
             ServerUniqueIDMessage.Deserialize(Reader);
-            Reader.Recycle();
+            if (Reader is NetPacketReader PacketReader)
+            {
+                PacketReader.Recycle();
+            }
             //returns a message with the ushort back to the client, or it sends it to everyone if its new.
             BasisNetworkIDDatabase.AddOrFindNetworkID(Peer, ServerUniqueIDMessage.playerID);
             //we need to convert the string int a  ushort.
@@ -859,8 +864,9 @@ namespace BasisServerHandle
         {
             if (NetworkServer.Configuration.DisableWriteUnlessAdminPersistentFlag)
             {
-                if (PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
+                if (!PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
                 {
+                    reader.Recycle();
                     return;
                 }
             }
@@ -878,6 +884,7 @@ namespace BasisServerHandle
             {
                 if(!PermissionIntegration.HasValidRequirement(peer, PermNodes.ConfigurationEditor))
                 {
+                    reader.Recycle();
                     return;
                 }
             }
