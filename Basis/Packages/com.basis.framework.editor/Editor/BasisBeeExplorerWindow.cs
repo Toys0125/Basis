@@ -8,8 +8,16 @@ using UnityEngine;
 
 public class BasisBeeExplorerWindow : EditorWindow
 {
-    private const string DiskFormatLabel = "Disk (BEE 4-byte header; older files may omit it)";
-    private const string RemoteFormatLabel = "Remote (BEE 8-byte header; older files may omit it)";
+    #if BASIS_BEE_REQUIRE_MAGIC_HEADER
+    private static string DiskFormatLabel => "Disk (BEE 4-byte header; magic header required)"
+
+    private static string RemoteFormatLabel => "Remote (BEE 8-byte header; magic header required)";
+    #else
+    private static string DiskFormatLabel => "Disk (BEE 4-byte header; older files may omit it)";
+
+    private static string RemoteFormatLabel => "Remote (BEE 8-byte header; older files may omit it)";
+    #endif
+    
 
     private string beeFilePath = "";
     private string password = "";
@@ -335,7 +343,7 @@ public class BasisBeeExplorerWindow : EditorWindow
                 return;
             }
 
-            // Disk format failed, try remote format (optional magic prefix + 8-byte Int64 header)
+            // Disk format failed, try remote format.
             Debug.Log("BEE Explorer: Disk format failed, trying remote format...");
             EditorUtility.DisplayProgressBar("BEE Explorer", $"Trying {RemoteFormatLabel}...", 0.4f);
 
@@ -372,7 +380,8 @@ public class BasisBeeExplorerWindow : EditorWindow
     }
 
     /// <summary>
-    /// Reads a BEE file in the remote format: optional magic prefix + 8-byte Int64 header + connector + sequential platform sections.
+    /// Reads a BEE file in the remote format using the active magic-header policy,
+    /// then an 8-byte Int64 header + connector + sequential platform sections.
     /// </summary>
     private async Task<bool> TryReadRemoteFormat(BasisProgressReport progressCallback, CancellationToken ct)
     {
@@ -387,7 +396,7 @@ public class BasisBeeExplorerWindow : EditorWindow
             }
 
             bool hasMagic = false;
-            if (fs.Length >= BasisBeeConstants.MagicHeaderSize + BasisBeeConstants.RemoteHeaderSize)
+            if (fs.Length >= BasisBeeConstants.MagicHeaderSize)
             {
                 byte[] prefixBytes = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, ct);
                 if (prefixBytes.Length != BasisBeeConstants.MagicHeaderSize)
@@ -399,7 +408,20 @@ public class BasisBeeExplorerWindow : EditorWindow
                            prefixBytes[3] == BasisBeeConstants.MagicBytes[3];
 
                 if (!hasMagic)
+                {
+                    if (BasisIOManagement.RequiresBeeMagicHeader)
+                    {
+                        Debug.LogWarning("BEE Explorer: Missing required BEE magic header for remote format.");
+                        return false;
+                    }
+
                     fs.Position = 0;
+                }
+            }
+            else if (BasisIOManagement.RequiresBeeMagicHeader)
+            {
+                Debug.LogWarning("BEE Explorer: File too small to contain required BEE magic header.");
+                return false;
             }
 
             // Read 8-byte Int64 connector length
