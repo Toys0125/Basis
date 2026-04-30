@@ -1,5 +1,6 @@
 using Basis.BasisUI;
 using Basis.Network.Core;
+using Basis.Scripts.Avatar;
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Drivers;
@@ -7,6 +8,7 @@ using Basis.Scripts.Networking.NetworkedAvatar;
 using Basis.Scripts.Networking.Transmitters;
 using Basis.Scripts.UI.UI_Panels;
 using BasisNetworkClient;
+using Basis.Scripts.Avatar;
 using System;
 using System.Text;
 using System.Threading;
@@ -47,6 +49,16 @@ namespace Basis.Scripts.Networking
 
             PlayerIdentity identity = BasisPlayerIdentityRegistry.ResolveActive();
             string uuid = identity?.Uuid ?? string.Empty;
+            var basisLocalPlayer = BasisLocalPlayer.Instance;
+            basisLocalPlayer.UUID = uuid;
+
+            if (!BasisAvatarFactory.EnsureAvatarNetworkGUID(basisLocalPlayer.BasisAvatar, out string avatarNetworkGuid))
+            {
+                BasisDebug.LogError("Unable to start network connection because the local avatar has no network GUID.", BasisDebug.LogTag.Networking);
+                return;
+            }
+
+            byte[] avatarBytes = BasisBundleConversionNetwork.ConvertBasisLoadableBundleToBytes(basisLocalPlayer.AvatarMetaData);
 
             BasisTransportConfigStore.Get<LNLTransportConfig>(BasisNetworkStackRegistry.LiteNetLibId).UseNativeSockets = false;
 
@@ -79,11 +91,6 @@ namespace Basis.Scripts.Networking
             BasisDebug.Log($"Connecting with Port {port} IpString {ipString}");
             BasisP2PManager.StampServerEndpoint(ipString, port);
 
-            var basisLocalPlayer = BasisLocalPlayer.Instance;
-            basisLocalPlayer.UUID = uuid;
-
-            byte[] avatarBytes = BasisBundleConversionNetwork.ConvertBasisLoadableBundleToBytes(basisLocalPlayer.AvatarMetaData);
-
             var readyMessage = new ReadyMessage
             {
                 clientAvatarChangeMessage = new ClientAvatarChangeMessage
@@ -91,6 +98,7 @@ namespace Basis.Scripts.Networking
                     byteArray = avatarBytes,
                     loadMode = basisLocalPlayer.AvatarLoadMode,
                     LocalAvatarIndex = 0,
+                    AvatarNetworkGuid = avatarNetworkGuid,
                 },
                 playerMetaDataMessage = new ClientMetaDataMessage
                 {
