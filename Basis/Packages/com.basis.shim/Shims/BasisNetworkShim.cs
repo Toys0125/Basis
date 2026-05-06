@@ -7,21 +7,38 @@ using Cilbox;
 
 namespace Basis.Shims
 {
-    public class BasisNetworkShim : BasisNetworkBehaviour, IBasisNetworkShimCompatible, CilboxShimI
+	public class BasisNetworkShim : BasisNetworkBehaviour, IBasisNetworkShimCompatible, CilboxShimI
 	{
-		public delegate void NetworkReadyEvent();
-		public delegate void ServerOwnershipDestroyedEvent();
-		public delegate void OwnershipTransferEvent(BasisNetworkPlayer NewOwner);
-		public delegate void NetworkMessageEvent(ushort PlayerID, byte[] buffer, DeliveryMethod DeliveryMethod);
-		public delegate void PlayerJoinedEvent(BasisNetworkPlayer player);
-		public delegate void PlayerLeftEvent(BasisNetworkPlayer player);
-
-		public new NetworkReadyEvent NetworkReady { set; get; }
-		public new OwnershipTransferEvent OwnershipTransfer { set; get; }
-		public new ServerOwnershipDestroyedEvent ServerOwnershipDestroyed { set; get; }
-		public new NetworkMessageEvent NetworkMessageReceived { set; get; }
-		public new PlayerLeftEvent PlayerLeft { set; get; }
-		public new PlayerJoinedEvent PlayerJoined { set; get; }
+		public override NetworkReadyEvent NetworkReady
+		{
+			get => base.NetworkReady;
+			set => base.NetworkReady = value;
+		}
+		public override OwnershipTransferEvent OwnershipTransfer
+		{
+			get => base.OwnershipTransfer;
+			set => base.OwnershipTransfer = value;
+		}
+		public override ServerOwnershipDestroyedEvent ServerOwnershipDestroyed
+		{
+			get => base.ServerOwnershipDestroyed;
+			set => base.ServerOwnershipDestroyed = value;
+		}
+		public override NetworkMessageEvent NetworkMessageReceived
+		{
+			get => base.NetworkMessageReceived;
+			set => base.NetworkMessageReceived = value;
+		}
+		public override PlayerLeftEvent PlayerLeft
+		{
+			get => base.PlayerLeft;
+			set => base.PlayerLeft = value;
+		}
+		public override PlayerJoinedEvent PlayerJoined
+		{
+			get => base.PlayerJoined;
+			set => base.PlayerJoined = value;
+		}
 
 		bool IBasisNetworkShimCompatible.IsOwnedLocallyOnServer => IsOwnedLocallyOnServer;
 		bool IBasisNetworkShimCompatible.IsOwnedLocallyOnClient => IsOwnedLocallyOnClient;
