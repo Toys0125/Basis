@@ -318,7 +318,7 @@ namespace Basis
         }
         public virtual void RequestOwnershipIfNone()
         {
-            RequestWhoIsOwnershipAsync();
+            _ = RequestWhoIsOwnershipAsync();
         }
         public virtual void OnNetworkReady()
         {

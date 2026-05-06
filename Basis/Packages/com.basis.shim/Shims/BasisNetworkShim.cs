@@ -55,7 +55,7 @@ namespace Basis.Shims
 
         public override void RequestOwnershipIfNone()
         {
-	        RequestWhoIsOwnershipAsync();
+	        _ = RequestWhoIsOwnershipAsync();
         }
 	}
 }

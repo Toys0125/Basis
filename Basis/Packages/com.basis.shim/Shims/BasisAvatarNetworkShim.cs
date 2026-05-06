@@ -83,30 +83,25 @@ namespace Basis.Shims
             BasisDebug.LogError("Avatar network shim is not ready yet.", gameObject, BasisDebug.LogTag.Shims);
         }
 
-        public async void TakeOwnership()
+        public void TakeOwnership()
         {
-            await TakeOwnershipAsync();
+            // Avatar ownership is immutable and always follows the linked player.
         }
 
         public Task<BasisOwnershipResult> TakeOwnershipAsync(int Timeout = 5000)
         {
-            RefreshOwnerState();
             return Task.FromResult(new BasisOwnershipResult(IsLocalOwner(), CurrentOwnerId));
         }
 
         public Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timeout = 5000)
         {
-            RefreshOwnerState();
             bool hasOwner = CurrentOwnerId != 0 || currentOwnedPlayer != null;
             return Task.FromResult(new BasisOwnershipResult(hasOwner, CurrentOwnerId));
         }
 
         public void RequestOwnershipIfNone()
         {
-            if (CurrentOwnerId == 0)
-            {
-                RefreshOwnerState();
-            }
+            // Avatar ownership is always bound to the owning player.
         }
 
         public bool EnsureNetworkAssigned()
@@ -181,21 +176,6 @@ namespace Basis.Shims
             if (previousOwnerId != CurrentOwnerId || previousLocalOwnership != IsLocalOwner())
             {
                 OnOwnershipTransfer(currentOwnedPlayer);
-            }
-        }
-
-        private void RefreshOwnerState()
-        {
-            if (IsInitalized && NetworkedPlayer != null)
-            {
-                SyncOwnerState(NetworkedPlayer, NetworkedPlayer.IsLocal);
-                return;
-            }
-
-            if (TryResolveAvatar(out BasisAvatar avatar) && avatar.TryGetLinkedPlayer(out ushort playerId))
-            {
-                BasisNetworkPlayer.GetPlayerById(playerId, out BasisNetworkPlayer owner);
-                SyncOwnerState(owner, avatar.IsOwnedLocally);
             }
         }
 
