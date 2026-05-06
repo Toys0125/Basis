@@ -527,7 +527,8 @@ namespace Cilbox
 						MethodInfo closed = mi.MakeGenericMethod(genericArguments);
 						ParameterInfo[] closedPars = closed.GetParameters();
 						bool match = true;
-						for (int i = 0; i < parameters.Length; i++)
+						int parameterCount = parameters.Length;
+						for (int i = 0; i < parameterCount; i++)
 						{
 							if (closedPars[i].ParameterType != parameters[i])
 							{
