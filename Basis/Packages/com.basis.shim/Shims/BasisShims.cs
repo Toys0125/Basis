@@ -22,7 +22,6 @@ namespace Basis
 	public class SafeUtil
 	{
 		private const int AvatarNetworkShimBufferCapacity = byte.MaxValue + 1;
-		private static readonly List<BasisAvatarNetworkShim> AvatarNetworkShimBuffer = new List<BasisAvatarNetworkShim>(AvatarNetworkShimBufferCapacity);
 
 		[Obsolete("Use GetComponent instead. This is a shim for the old system and should be removed at a later point.")]
 
@@ -52,7 +51,7 @@ namespace Basis
 
 			return MakeNetworkShim( behaviour );
 		}
-
+		private static readonly List<BasisAvatarNetworkShim> AvatarNetworkShimBuffer = new List<BasisAvatarNetworkShim>(AvatarNetworkShimBufferCapacity);
 		public static IBasisNetworkShimCompatible MakeNetworkShim( MonoBehaviour mb )
 		{
 			GameObject avatar = BasisAvatar.GetGameObject( mb.gameObject );
