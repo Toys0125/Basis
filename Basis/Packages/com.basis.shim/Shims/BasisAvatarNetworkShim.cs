@@ -17,6 +17,7 @@ namespace Basis.Shims
         public ushort CurrentOwnerId;
         public BasisNetworkPlayer currentOwnedPlayer;
         [SerializeField] private MonoBehaviour ownerComponent;
+        private BasisAvatar cachedAvatar;
 
         public BasisNetworkShim.NetworkReadyEvent NetworkReady { set; get; }
         public BasisNetworkShim.OwnershipTransferEvent OwnershipTransfer { set; get; }
@@ -238,13 +239,32 @@ namespace Basis.Shims
 
         private bool TryResolveAvatar(out BasisAvatar avatar)
         {
-            avatar = GetComponent<BasisAvatar>();
-            if (avatar == null)
+            if (cachedAvatar != null)
             {
-                avatar = GetComponentInParent<BasisAvatar>(true);
+                avatar = cachedAvatar;
+                return true;
             }
 
-            return avatar != null;
+            if (TryGetComponent(out cachedAvatar))
+            {
+                avatar = cachedAvatar;
+                return true;
+            }
+
+            Transform current = transform.parent;
+            while (current != null)
+            {
+                if (current.TryGetComponent(out cachedAvatar))
+                {
+                    avatar = cachedAvatar;
+                    return true;
+                }
+
+                current = current.parent;
+            }
+
+            avatar = null;
+            return false;
         }
     }
 }

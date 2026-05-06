@@ -1,6 +1,7 @@
 using Basis.Shims;
 using Basis.Scripts.BasisSdk;
 using System;
+using System.Collections.Generic;
 using UnityEngine.Networking;
 using UnityEngine;
 using Cilbox;
@@ -20,13 +21,16 @@ namespace Basis
 
 	public class SafeUtil
 	{
+		private const int AvatarNetworkShimBufferCapacity = byte.MaxValue + 1;
+		private static readonly List<BasisAvatarNetworkShim> AvatarNetworkShimBuffer = new List<BasisAvatarNetworkShim>(AvatarNetworkShimBufferCapacity);
+
 		[Obsolete("Use GetComponent instead. This is a shim for the old system and should be removed at a later point.")]
 
 		public static IBasisNetworkShimCompatible MakeNetworkable( object o )
 		{
 			if (o is not MonoBehaviour behaviour)
 			{
-				Debug.LogError( $"Object {o} is not a MonoBehaviour and cannot be made networkable." );
+				BasisDebug.LogError( $"Object {o} is not a MonoBehaviour and cannot be made networkable.", BasisDebug.LogTag.Shims );
 				return null;
 			}
 
@@ -42,7 +46,7 @@ namespace Basis
 		{
 			if (o is not MonoBehaviour behaviour)
 			{
-				Debug.LogError( $"Object {o} is not a MonoBehaviour and cannot be made networkable." );
+				BasisDebug.LogError( $"Object {o} is not a MonoBehaviour and cannot be made networkable.", BasisDebug.LogTag.Shims );
 				return null;
 			}
 
@@ -54,14 +58,23 @@ namespace Basis
 			GameObject avatar = BasisAvatar.GetGameObject( mb.gameObject );
 			if( avatar != null )
 			{
-				BasisAvatarNetworkShim[] avatarShims = avatar.GetComponents<BasisAvatarNetworkShim>();
-				foreach( BasisAvatarNetworkShim existingShim in avatarShims )
+				avatar.GetComponents(AvatarNetworkShimBuffer);
+				try
 				{
-					if( existingShim.IsAssignedTo( mb ) )
+					int avatarShimCount = AvatarNetworkShimBuffer.Count;
+					for( int index = 0; index < avatarShimCount; index++ )
 					{
-						existingShim.EnsureNetworkAssigned();
-						return existingShim;
+						BasisAvatarNetworkShim existingShim = AvatarNetworkShimBuffer[index];
+						if( existingShim.IsAssignedTo( mb ) )
+						{
+							existingShim.EnsureNetworkAssigned();
+							return existingShim;
+						}
 					}
+				}
+				finally
+				{
+					AvatarNetworkShimBuffer.Clear();
 				}
 
 				BasisAvatarNetworkShim avatarShim = avatar.AddComponent<BasisAvatarNetworkShim>();
