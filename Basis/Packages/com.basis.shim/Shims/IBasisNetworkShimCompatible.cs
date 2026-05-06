@@ -21,8 +21,8 @@ namespace Basis.Shims
         bool IsLocalOwner();
         void SendCustomNetworkEvent(byte[] buffer = null, DeliveryMethod DeliveryMethod = DeliveryMethod.Unreliable, ushort[] Recipients = null);
         void TakeOwnership();
-        Task<BasisOwnershipResult> TakeOwnershipAsync(int Timout = 5000);
-        Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timout = 5000);
+        Task<BasisOwnershipResult> TakeOwnershipAsync(int Timeout = 5000);
+        Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timeout = 5000);
         void RequestOwnershipIfNone();
     }
 }

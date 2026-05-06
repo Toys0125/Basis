@@ -187,7 +187,7 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
 
             if (NetworkBehaviourCount > byte.MaxValue)
             {
-                BasisDebug.LogError($"To Many Mono Behaviours on this Avatar only supports up to 256 was {NetworkBehaviourCount + 1}!", BasisDebug.LogTag.Networking);
+                BasisDebug.LogError($"Too Many Mono Behaviours on this Avatar only supports up to 256 was {NetworkBehaviourCount + 1}!", BasisDebug.LogTag.Networking);
                 return false;
             }
 

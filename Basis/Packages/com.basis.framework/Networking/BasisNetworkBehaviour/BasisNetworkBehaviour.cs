@@ -298,12 +298,12 @@ namespace Basis
         /// </summary>
         /// <param name="Timout"></param>
         /// <returns></returns>
-        public virtual async Task<BasisOwnershipResult> TakeOwnershipAsync(int Timout = 5000)
+        public virtual async Task<BasisOwnershipResult> TakeOwnershipAsync(int Timeout = 5000)
         {
             IsOwnedLocallyOnClient = true;
             CurrentOwnerId = BasisNetworkPlayer.LocalPlayer.playerId;
             currentOwnedPlayer = BasisNetworkPlayer.LocalPlayer;
-            BasisOwnershipResult Result = await BasisNetworkOwnership.TakeOwnershipAsync(clientIdentifier, BasisNetworkConnection.LocalPlayerPeer.RemoteId, Timout);
+            BasisOwnershipResult Result = await BasisNetworkOwnership.TakeOwnershipAsync(clientIdentifier, BasisNetworkConnection.LocalPlayerPeer.RemoteId, Timeout);
             return Result;
         }
         /// <summary>
@@ -311,9 +311,9 @@ namespace Basis
         /// </summary>
         /// <param name="Timout"></param>
         /// <returns></returns>
-        public virtual async Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timout = 5000)
+        public virtual async Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timeout = 5000)
         {
-            BasisOwnershipResult Result = await BasisNetworkOwnership.RequestCurrentOwnershipAsync(clientIdentifier, Timout);
+            BasisOwnershipResult Result = await BasisNetworkOwnership.RequestCurrentOwnershipAsync(clientIdentifier, Timeout);
             return Result;
         }
         public virtual void RequestOwnershipIfNone()

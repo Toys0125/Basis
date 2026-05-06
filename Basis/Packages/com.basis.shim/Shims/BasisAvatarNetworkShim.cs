@@ -88,13 +88,13 @@ namespace Basis.Shims
             await TakeOwnershipAsync();
         }
 
-        public Task<BasisOwnershipResult> TakeOwnershipAsync(int Timout = 5000)
+        public Task<BasisOwnershipResult> TakeOwnershipAsync(int Timeout = 5000)
         {
             RefreshOwnerState();
             return Task.FromResult(new BasisOwnershipResult(IsLocalOwner(), CurrentOwnerId));
         }
 
-        public Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timout = 5000)
+        public Task<BasisOwnershipResult> RequestWhoIsOwnershipAsync(int Timeout = 5000)
         {
             RefreshOwnerState();
             bool hasOwner = CurrentOwnerId != 0 || currentOwnedPlayer != null;
