@@ -17,6 +17,7 @@ namespace Cilbox
 			"Basis.Scripts.BasisSdk.Interactions.BasisPickupInteractable", // Restrictive (See below), only access field.
 			"Basis.Scripts.BasisSdk.Interactions.BasisInteractableObject", // Restrictive (See below), only access field.
 			"Basis.BasisNetworkBehaviour",
+			"Basis.Shims.IBasisNetworkShimCompatible",
 			"Basis.Network.Core.DeliveryMethod",
 			"Basis.SafeUtil",
 			"Basis.Scripts.BasisSdk.Players.BasisLocalPlayer",
@@ -332,7 +333,14 @@ namespace Cilbox
 			"Basis.Scripts.BasisSdk.Interactions.BasisInteractableObject.OnInteractStartEvent",
 			"Basis.Scripts.BasisSdk.Interactions.BasisInteractableObject.OnInteractEndEvent",
 			"Basis.BasisNetworkBehaviour.CurrentOwnerId",
+			"Basis.BasisNetworkBehaviour.IsOwnedLocallyOnClient",
 			"Basis.BasisNetworkBehaviour.IsOwnedLocallyOnServer",
+			"Basis.BasisNetworkShim.CurrentOwnerId",
+			"Basis.BasisNetworkShim.IsOwnedLocallyOnClient",
+			"Basis.BasisNetworkShim.IsOwnedLocallyOnServer",
+			"Basis.Shims.BasisNetworkShim.CurrentOwnerId",
+			"Basis.Shims.BasisNetworkShim.IsOwnedLocallyOnClient",
+			"Basis.Shims.BasisNetworkShim.IsOwnedLocallyOnServer",
 			"Basis.Scripts.Networking.NetworkedAvatar.BasisNetworkPlayer.playerId",
 		};
 
