@@ -103,6 +103,24 @@ namespace Basis.Scripts.Device_Management
         public static event InitializationCompletedHandler OnInitializationCompleted;
 
         /// <summary>
+        /// Invoked after saved settings have been loaded into <see cref="BasisSettingsDefaults"/>.
+        /// External packages use this to start services that depend on persisted settings.
+        /// </summary>
+        public static event Action OnSettingsLoaded;
+
+        /// <summary>
+        /// True after the current runtime has loaded saved settings into <see cref="BasisSettingsDefaults"/>.
+        /// </summary>
+        public static bool SettingsLoaded { get; private set; }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetSettingsLoadedState()
+        {
+            SettingsLoaded = false;
+            OnSettingsLoaded = null;
+        }
+
+        /// <summary>
         /// A threadsafe queue of actions scheduled to run on Unity's main thread.
         /// </summary>
         public static readonly ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
@@ -229,6 +247,8 @@ namespace Basis.Scripts.Device_Management
             // defeat the HasSaveData("language") check.
             Basis.BasisUI.BasisLocalization.Initialize();
             BasisSettingsDefaults.LoadAll();
+            SettingsLoaded = true;
+            OnSettingsLoaded?.Invoke();
             try
             {
                 await Initialize();
