@@ -111,7 +111,7 @@ namespace Basis.Scripts.Device_Management
         /// <summary>
         /// True after the current runtime has loaded saved settings into <see cref="BasisSettingsDefaults"/>.
         /// </summary>
-        public static bool SettingsLoaded { get; private set; }
+        public static bool SettingsLoaded;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetSettingsLoadedState()

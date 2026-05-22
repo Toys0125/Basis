@@ -5,16 +5,18 @@ using UnityEngine;
 
 namespace HVR.Basis.Comms
 {
-    internal static class BasisOscBoot
+    public static class BasisOscBoot
     {
-        private static bool _subscribedToLocalAvatarChanges;
-        private static bool _subscribedToOscSetting;
+        public static bool SubscribedToLocalAvatarChanges;
+        public static bool SubscribedToOscSetting;
+        public static OSCAcquisition LocalAvatarOscAcquisition;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetState()
         {
-            _subscribedToLocalAvatarChanges = false;
-            _subscribedToOscSetting = false;
+            SubscribedToLocalAvatarChanges = false;
+            SubscribedToOscSetting = false;
+            LocalAvatarOscAcquisition = null;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -31,18 +33,18 @@ namespace HVR.Basis.Comms
 
         private static void OnSettingsLoaded()
         {
-            if (!_subscribedToOscSetting)
+            if (!SubscribedToOscSetting)
             {
                 BasisSettingsDefaults.EnableOSC.OnChanged -= OnEnableOscChanged;
                 BasisSettingsDefaults.EnableOSC.OnChanged += OnEnableOscChanged;
-                _subscribedToOscSetting = true;
+                SubscribedToOscSetting = true;
             }
 
-            if (!_subscribedToLocalAvatarChanges)
+            if (!SubscribedToLocalAvatarChanges)
             {
                 BasisLocalPlayer.OnLocalAvatarChanged -= EnsureLocalAvatarOscAcquisition;
                 BasisLocalPlayer.OnLocalAvatarChanged += EnsureLocalAvatarOscAcquisition;
-                _subscribedToLocalAvatarChanges = true;
+                SubscribedToLocalAvatarChanges = true;
             }
 
             if (!BasisSettingsDefaults.EnableOSC.RawValue)
@@ -76,6 +78,13 @@ namespace HVR.Basis.Comms
                 return;
             }
 
+            if (LocalAvatarOscAcquisition != null &&
+                LocalAvatarOscAcquisition.transform.IsChildOf(localPlayer.BasisAvatar.transform))
+            {
+                LocalAvatarOscAcquisition.OnAvatarReady(true);
+                return;
+            }
+
             OSCAcquisition acquisition = localPlayer.BasisAvatar.GetComponentInChildren<OSCAcquisition>(true);
             if (acquisition == null)
             {
@@ -89,6 +98,7 @@ namespace HVR.Basis.Comms
                 acquisition = acquisitionGo.AddComponent<OSCAcquisition>();
             }
 
+            LocalAvatarOscAcquisition = acquisition;
             acquisition.OnAvatarReady(true);
         }
     }
