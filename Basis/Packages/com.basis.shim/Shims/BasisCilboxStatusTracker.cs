@@ -28,10 +28,9 @@ namespace Basis.Shims
 
 	public static class BasisCilboxStatusTracker
 	{
-		private const int ObjectOverheadBytes = 24;
 		private const int ReferenceBytes = 8;
 		private const int StackElementBytes = 24;
-		private const int MaxObjectEstimateDepth = 2;
+		private const int StringCharBytes = 2;
 
 		private sealed class TrackedCilbox
 		{
@@ -39,12 +38,22 @@ namespace Basis.Shims
 			public BasisCilboxStatusType Type;
 		}
 
+		private struct ProxyAggregate
+		{
+			public int Count;
+			public long EstimatedMemoryBytes;
+		}
+
 		private static readonly List<TrackedCilbox> Tracked = new List<TrackedCilbox>();
+		private static readonly List<Cilbox.CilboxProxy> ProxySnapshot = new List<Cilbox.CilboxProxy>();
+		private static readonly Dictionary<Cilbox.Cilbox, ProxyAggregate> ProxyAggregates = new Dictionary<Cilbox.Cilbox, ProxyAggregate>();
 
 		[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
 		private static void ResetRuntimeState()
 		{
 			Tracked.Clear();
+			ProxySnapshot.Clear();
+			ProxyAggregates.Clear();
 			SettingsProvider.CilboxStatusBuilder -= BuildSettingsSection;
 		}
 
@@ -93,9 +102,8 @@ namespace Basis.Shims
 			CleanupDestroyed();
 			if (Tracked.Count == 0) return;
 
-			Cilbox.CilboxProxy[] proxies = UnityEngine.Object.FindObjectsByType<Cilbox.CilboxProxy>(
-				FindObjectsInactive.Include,
-				FindObjectsSortMode.None);
+			Cilbox.CilboxProxy.CopyTrackedProxies(ProxySnapshot);
+			BuildProxyAggregates(ProxySnapshot, ProxyAggregates);
 
 			for (int i = 0; i < Tracked.Count; i++)
 			{
@@ -103,7 +111,8 @@ namespace Basis.Shims
 				Cilbox.Cilbox box = tracked.Box;
 				if (box == null) continue;
 
-				long memoryBytes = EstimateMemoryBytes(box, proxies, out int proxyCount);
+				ProxyAggregates.TryGetValue(box, out ProxyAggregate proxyAggregate);
+				long memoryBytes = EstimateMemoryBytes(box) + proxyAggregate.EstimatedMemoryBytes;
 				snapshots.Add(new BasisCilboxStatusSnapshot
 				{
 					Type = tracked.Type,
@@ -114,7 +123,7 @@ namespace Basis.Shims
 					CpuUsedUs = Math.Max(0, box.usSpentLastFrame),
 					CpuBudgetUs = Math.Max(0, box.timeoutLengthUs),
 					EstimatedMemoryBytes = memoryBytes,
-					ProxyCount = proxyCount,
+					ProxyCount = proxyAggregate.Count,
 				});
 			}
 		}
@@ -157,7 +166,7 @@ namespace Basis.Shims
 			}
 
 			builder.Append("Total CPU: ").Append(FormatCpu(totalCpuUsedUs, totalCpuBudgetUs)).AppendLine();
-			builder.Append("Total Memory: ~").Append(FormatBytes(totalMemoryBytes));
+			builder.Append("Known Memory: ~").Append(FormatBytes(totalMemoryBytes));
 			builder.Append(" | Cilboxes: ").Append(snapshots.Count);
 			builder.Append(" | Proxies: ").Append(totalProxyCount).AppendLine();
 
@@ -167,7 +176,7 @@ namespace Basis.Shims
 				builder.AppendLine();
 				builder.Append(snapshot.Type).Append(" • ").Append(string.IsNullOrEmpty(snapshot.Name) ? "(unnamed)" : snapshot.Name).AppendLine();
 				builder.Append("CPU: ").Append(FormatCpu(snapshot.CpuUsedUs, snapshot.CpuBudgetUs));
-				builder.Append(" | Memory: ~").Append(FormatBytes(snapshot.EstimatedMemoryBytes));
+				builder.Append(" | Known Memory: ~").Append(FormatBytes(snapshot.EstimatedMemoryBytes));
 				builder.Append(" | Proxies: ").Append(snapshot.ProxyCount);
 
 				if (!snapshot.IsActiveAndEnabled)
@@ -210,271 +219,44 @@ namespace Basis.Shims
 			}
 		}
 
-		private static long EstimateMemoryBytes(Cilbox.Cilbox box, Cilbox.CilboxProxy[] proxies, out int proxyCount)
+		private static void BuildProxyAggregates(List<Cilbox.CilboxProxy> proxies, Dictionary<Cilbox.Cilbox, ProxyAggregate> aggregates)
 		{
-			proxyCount = 0;
-			if (box == null) return 0;
+			aggregates.Clear();
+			if (proxies == null) return;
 
-			long bytes = 128;
-			bytes += EstimateString(box.assemblyData);
-			bytes += EstimateString(box.disabledReason);
-			bytes += EstimateStringIntDictionary(box.classes);
-			bytes += EstimateEnums(box.cilboxEnums);
-
-			if (box.classesList != null)
+			for (int i = 0; i < proxies.Count; i++)
 			{
-				bytes += ObjectOverheadBytes + box.classesList.Length * ReferenceBytes;
-				for (int i = 0; i < box.classesList.Length; i++)
-				{
-					bytes += EstimateClass(box.classesList[i]);
-				}
-			}
+				Cilbox.CilboxProxy proxy = proxies[i];
+				if (proxy == null || proxy.box == null) continue;
 
-			if (box.metadatas != null)
-			{
-				bytes += ObjectOverheadBytes + box.metadatas.Length * ReferenceBytes;
-				for (int i = 0; i < box.metadatas.Length; i++)
-				{
-					bytes += EstimateMetadata(box.metadatas[i]);
-				}
+				aggregates.TryGetValue(proxy.box, out ProxyAggregate aggregate);
+				aggregate.Count++;
+				aggregate.EstimatedMemoryBytes += EstimateProxyBytes(proxy);
+				aggregates[proxy.box] = aggregate;
 			}
-
-			if (proxies != null)
-			{
-				for (int i = 0; i < proxies.Length; i++)
-				{
-					Cilbox.CilboxProxy proxy = proxies[i];
-					if (proxy == null || !ReferenceEquals(proxy.box, box)) continue;
-					proxyCount++;
-					bytes += EstimateProxy(proxy);
-				}
-			}
-
-			return Math.Max(0, bytes);
 		}
 
-		private static long EstimateClass(Cilbox.CilboxClass cls)
+		private static long EstimateMemoryBytes(Cilbox.Cilbox box)
 		{
-			if (cls == null) return 0;
-
-			long bytes = 128;
-			bytes += EstimateString(cls.className);
-			bytes += EstimateObjectArray(cls.staticFields);
-			bytes += EstimateStringArray(cls.staticFieldNames);
-			bytes += EstimateReferenceArray(cls.staticFieldTypes);
-			bytes += EstimateStringArray(cls.instanceFieldNames);
-			bytes += EstimateReferenceArray(cls.instanceFieldTypes);
-			bytes += EstimateStringUIntDictionary(cls.methodNameToIndex);
-			bytes += EstimateStringUIntDictionary(cls.methodFullSignatureToIndex);
-			bytes += EstimateUIntArray(cls.importFunctionToId);
-
-			if (cls.methods != null)
-			{
-				bytes += ObjectOverheadBytes + cls.methods.Length * ReferenceBytes;
-				for (int i = 0; i < cls.methods.Length; i++)
-				{
-					bytes += EstimateMethod(cls.methods[i]);
-				}
-			}
-
-			return bytes;
+			// ponytail: known managed buffers only; Unity/profiler owns real memory accounting.
+			return box == null ? 0 : EstimateStringBytes(box.assemblyData) + EstimateStringBytes(box.disabledReason);
 		}
 
-		private static long EstimateMethod(Cilbox.CilboxMethod method)
-		{
-			if (method == null) return 0;
-
-			long bytes = 128;
-			bytes += EstimateString(method.methodName);
-			bytes += EstimateString(method.fullSignature);
-			bytes += EstimateStringArray(method.methodLocals);
-			bytes += EstimateReferenceArray(method.typeLocals);
-			bytes += EstimateByteArray(method.byteCode);
-			bytes += EstimateStringArray(method.signatureParameters);
-			bytes += EstimateReferenceArray(method.typeParameters);
-
-			if (method.exceptionClauses != null)
-			{
-				bytes += ObjectOverheadBytes + method.exceptionClauses.Length * 96;
-				for (int i = 0; i < method.exceptionClauses.Length; i++)
-				{
-					bytes += EstimateString(method.exceptionClauses[i]?.CatchTypeName);
-				}
-			}
-
-			if (method.handlerOffsetToClauseMap != null)
-			{
-				bytes += ObjectOverheadBytes + method.handlerOffsetToClauseMap.Count * 48;
-			}
-
-			return bytes;
-		}
-
-		private static long EstimateMetadata(Cilbox.CilMetadataTokenInfo metadata)
-		{
-			if (metadata == null) return 0;
-
-			long bytes = 96;
-			bytes += EstimateString(metadata.Name);
-			bytes += EstimateString(metadata.declaringTypeName);
-			bytes += EstimateByteArray(metadata.arrayInitializerData);
-			bytes += EstimateReferenceArray(metadata.nativeParameterTypes);
-			return bytes;
-		}
-
-		private static long EstimateEnums(Dictionary<string, Cilbox.CilboxEnum> enums)
-		{
-			if (enums == null) return 0;
-
-			long bytes = ObjectOverheadBytes + enums.Count * 64;
-			foreach (KeyValuePair<string, Cilbox.CilboxEnum> kv in enums)
-			{
-				bytes += EstimateString(kv.Key);
-				if (kv.Value == null) continue;
-				bytes += 96;
-				bytes += EstimateString(kv.Value.enumName);
-				if (kv.Value.valueToName != null)
-				{
-					bytes += ObjectOverheadBytes + kv.Value.valueToName.Count * 48;
-					foreach (KeyValuePair<long, string> name in kv.Value.valueToName)
-					{
-						bytes += EstimateString(name.Value);
-					}
-				}
-			}
-
-			return bytes;
-		}
-
-		private static long EstimateProxy(Cilbox.CilboxProxy proxy)
+		private static long EstimateProxyBytes(Cilbox.CilboxProxy proxy)
 		{
 			if (proxy == null) return 0;
-
-			long bytes = 160;
-			bytes += EstimateString(proxy.className);
-			bytes += EstimateString(proxy.serializedObjectData);
-			bytes += EstimateString(proxy.buildTimeGuid);
-			bytes += EstimateString(proxy.initialLoadPath);
-			bytes += EstimateStackElementArray(proxy.fields);
-			bytes += EstimateUnityObjectList(proxy.fieldsObjects);
+			long bytes = EstimateStringBytes(proxy.className)
+				+ EstimateStringBytes(proxy.serializedObjectData)
+				+ EstimateStringBytes(proxy.buildTimeGuid)
+				+ EstimateStringBytes(proxy.initialLoadPath);
+			if (proxy.fields != null) bytes += proxy.fields.LongLength * StackElementBytes;
+			if (proxy.fieldsObjects != null) bytes += proxy.fieldsObjects.Count * ReferenceBytes;
 			return bytes;
 		}
 
-		private static long EstimateString(string value)
+		private static long EstimateStringBytes(string value)
 		{
-			return string.IsNullOrEmpty(value) ? 0 : ObjectOverheadBytes + value.Length * 2L;
-		}
-
-		private static long EstimateByteArray(byte[] value)
-		{
-			return value == null ? 0 : ObjectOverheadBytes + value.LongLength;
-		}
-
-		private static long EstimateUIntArray(uint[] value)
-		{
-			return value == null ? 0 : ObjectOverheadBytes + value.LongLength * 4L;
-		}
-
-		private static long EstimateStackElementArray(Cilbox.StackElement[] value)
-		{
-			return value == null ? 0 : ObjectOverheadBytes + value.LongLength * StackElementBytes;
-		}
-
-		private static long EstimateStringArray(string[] values)
-		{
-			if (values == null) return 0;
-
-			long bytes = ObjectOverheadBytes + values.LongLength * ReferenceBytes;
-			for (int i = 0; i < values.Length; i++)
-			{
-				bytes += EstimateString(values[i]);
-			}
-			return bytes;
-		}
-
-		private static long EstimateReferenceArray(Array values)
-		{
-			return values == null ? 0 : ObjectOverheadBytes + values.LongLength * ReferenceBytes;
-		}
-
-		private static long EstimateObjectArray(object[] values)
-		{
-			if (values == null) return 0;
-
-			long bytes = ObjectOverheadBytes + values.LongLength * ReferenceBytes;
-			for (int i = 0; i < values.Length; i++)
-			{
-				bytes += EstimateKnownObject(values[i], 0);
-			}
-			return bytes;
-		}
-
-		private static long EstimateUnityObjectList(List<UnityEngine.Object> values)
-		{
-			return values == null ? 0 : ObjectOverheadBytes + values.Count * ReferenceBytes;
-		}
-
-		private static long EstimateStringIntDictionary(Dictionary<string, int> values)
-		{
-			if (values == null) return 0;
-
-			long bytes = ObjectOverheadBytes + values.Count * 48;
-			foreach (KeyValuePair<string, int> kv in values)
-			{
-				bytes += EstimateString(kv.Key);
-			}
-			return bytes;
-		}
-
-		private static long EstimateStringUIntDictionary(Dictionary<string, uint> values)
-		{
-			if (values == null) return 0;
-
-			long bytes = ObjectOverheadBytes + values.Count * 48;
-			foreach (KeyValuePair<string, uint> kv in values)
-			{
-				bytes += EstimateString(kv.Key);
-			}
-			return bytes;
-		}
-
-		private static long EstimateKnownObject(object value, int depth)
-		{
-			if (value == null || depth > MaxObjectEstimateDepth) return 0;
-			if (value is string str) return EstimateString(str);
-			if (value is byte[] bytes) return EstimateByteArray(bytes);
-			if (value is Array array)
-			{
-				Type elementType = array.GetType().GetElementType();
-				long total = ObjectOverheadBytes + array.LongLength * EstimateArrayElementBytes(elementType);
-
-				// Avoid walking huge arrays every UI tick. For small reference arrays, add a
-				// bounded estimate of the objects they retain.
-				if (depth < MaxObjectEstimateDepth && array.LongLength <= 128 && elementType != null && !elementType.IsValueType)
-				{
-					foreach (object item in array)
-					{
-						total += EstimateKnownObject(item, depth + 1);
-					}
-				}
-				return total;
-			}
-
-			Type type = value.GetType();
-			if (type.IsPrimitive || type.IsEnum) return 16;
-			if (type.IsValueType) return 32;
-			return 64;
-		}
-
-		private static long EstimateArrayElementBytes(Type elementType)
-		{
-			if (elementType == null) return ReferenceBytes;
-			if (!elementType.IsValueType) return ReferenceBytes;
-			if (elementType == typeof(bool) || elementType == typeof(byte) || elementType == typeof(sbyte)) return 1;
-			if (elementType == typeof(short) || elementType == typeof(ushort) || elementType == typeof(char)) return 2;
-			if (elementType == typeof(int) || elementType == typeof(uint) || elementType == typeof(float)) return 4;
-			if (elementType == typeof(long) || elementType == typeof(ulong) || elementType == typeof(double)) return 8;
-			return 16;
+			return string.IsNullOrEmpty(value) ? 0 : value.Length * StringCharBytes;
 		}
 
 		private static string FormatCpu(long usedUs, long budgetUs)

@@ -35,6 +35,40 @@ namespace Cilbox
 			enabled = false;
 		}
 
+		private static readonly HashSet<CilboxProxy> trackedProxies = new HashSet<CilboxProxy>();
+
+		[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+		private static void ResetTrackedProxies()
+		{
+			trackedProxies.Clear();
+		}
+
+		public static void CopyTrackedProxies(List<CilboxProxy> destination)
+		{
+			if (destination == null) return;
+			destination.Clear();
+			CleanupTrackedProxies();
+			foreach (CilboxProxy proxy in trackedProxies)
+			{
+				destination.Add(proxy);
+			}
+		}
+
+		private static void CleanupTrackedProxies()
+		{
+			trackedProxies.RemoveWhere(proxy => proxy == null);
+		}
+
+		private void TrackProxy()
+		{
+			trackedProxies.Add(this);
+		}
+
+		private void UntrackProxy()
+		{
+			trackedProxies.Remove(this);
+		}
+
 		private void ProxyDebugLog( string message )
 		{
 				Debug.Log( $"[CilboxProxy:{gameObject.name}] {message}" );
@@ -195,7 +229,8 @@ namespace Cilbox
 #endif
 		void Awake()
 		{
-			// You cannot do anything in Awake()  Box is not set yet.
+			// Box may not be set yet, but the proxy instance itself can be tracked.
+			TrackProxy();
 		}
 
 		public void RuntimeProxyLoad()
@@ -525,9 +560,23 @@ namespace Cilbox
 		void FixedUpdate() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.FixedUpdate, null ); }
 		void Update() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.Update, null ); }
 		void LateUpdate() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.LateUpdate, null ); }
-		void OnEnable() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnEnable, null ); }
+		void OnEnable()
+		{
+			TrackProxy();
+			if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnEnable, null );
+		}
 		void OnDisable() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnDisable, null ); }
-		void OnDestroy() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnDestroy, null ); }
+		void OnDestroy()
+		{
+			try
+			{
+				if( proxyWasSetup && box != null ) box.InterpretIID( cls, this, ImportFunctionID.OnDestroy, null );
+			}
+			finally
+			{
+				UntrackProxy();
+			}
+		}
 		void OnTriggerEnter(Collider c) { if (proxyWasSetup) box.InterpretIID(cls, this, ImportFunctionID.OnTriggerEnter, new object[] { c }); }
 		void OnTriggerExit(Collider c) { if (proxyWasSetup) box.InterpretIID(cls, this, ImportFunctionID.OnTriggerExit, new object[] { c }); }
 		void OnCollisionEnter(Collision c) { if (proxyWasSetup) box.InterpretIID(cls, this, ImportFunctionID.OnCollisionEnter, new object[] { c }); }
