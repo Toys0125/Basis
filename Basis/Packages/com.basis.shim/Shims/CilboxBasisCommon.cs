@@ -534,11 +534,6 @@ namespace Cilbox
 			Basis.Shims.BasisCilboxStatusTracker.Register(this, StatusType);
 		}
 
-		protected void OnEnable()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, StatusType);
-		}
-
 		protected void OnDestroy()
 		{
 			Basis.Shims.BasisCilboxStatusTracker.Unregister(this);

@@ -48,6 +48,7 @@ namespace Cilbox
 			if (destination == null) return;
 			destination.Clear();
 			CleanupTrackedProxies();
+			if (destination.Capacity < trackedProxies.Count) destination.Capacity = trackedProxies.Count;
 			foreach (CilboxProxy proxy in trackedProxies)
 			{
 				destination.Add(proxy);
@@ -560,11 +561,7 @@ namespace Cilbox
 		void FixedUpdate() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.FixedUpdate, null ); }
 		void Update() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.Update, null ); }
 		void LateUpdate() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.LateUpdate, null ); }
-		void OnEnable()
-		{
-			TrackProxy();
-			if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnEnable, null );
-		}
+		void OnEnable() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnEnable, null ); }
 		void OnDisable() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnDisable, null ); }
 		void OnDestroy()
 		{
