@@ -66,6 +66,13 @@ namespace Basis.BasisUI
         /// </summary>
         public static Action<RectTransform> EyeTrackingDebugBuilder;
 
+        /// <summary>
+        /// External hook for the Developer tab's "Cilbox Status" section.
+        /// The shim assembly owns the concrete Cilbox types and registers a
+        /// builder here to show live CPU budget and memory status.
+        /// </summary>
+        public static Action<RectTransform> CilboxStatusBuilder;
+
         public static Action<RectTransform> AvatarCustomizationBuilder;
 
         /// <summary>
@@ -3374,6 +3381,25 @@ namespace Basis.BasisUI
                         BasisLocalization.Get("settings.developer.assignedTrackers"));
                     SettingsProviderAvatarStats.PopulateTrackerRoles(trackerRoles);
                 }, false, _ => descriptor.ForceRebuild());
+
+            // ---- Cilbox Status ----
+            PanelSectionToggleHelpers.CreateLazyFlatSection(container, "Cilbox Status", () =>
+            {
+                PanelElementDescriptor cilboxStatusGroup = CreateDiagnosticSubGroup(container, "Cilbox Status");
+                cilboxStatusGroup.SetDescription("Live CPU budget and estimated memory usage for tracked Cilbox instances.");
+
+                Action<RectTransform> cilboxStatusBuilder = CilboxStatusBuilder;
+                if (cilboxStatusBuilder != null)
+                {
+                    cilboxStatusBuilder.Invoke(cilboxStatusGroup.ContentParent);
+                }
+                else
+                {
+                    PanelElementDescriptor unavailable = CreateDiagnosticSubGroup(
+                        cilboxStatusGroup.ContentParent, "Status Provider");
+                    unavailable.SetDescription("No Cilbox status provider is registered.");
+                }
+            }, false, _ => descriptor.ForceRebuild());
 
             // ---- System Info & Statistics (texture/VRAM, build environment, live network stats) ----
             PanelSectionToggleHelpers.CreateLazyFlatSection(container,

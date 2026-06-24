@@ -9,6 +9,21 @@ namespace Cilbox
 	[CilboxTarget]
 	public class CilboxSceneBasis : CilboxBasisCommon
 	{
+		private void Awake()
+		{
+			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Scene);
+		}
+
+		private void OnEnable()
+		{
+			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Scene);
+		}
+
+		private void OnDestroy()
+		{
+			Basis.Shims.BasisCilboxStatusTracker.Unregister(this);
+		}
+
 		static readonly HashSet<string> extraWhiteListType = new HashSet<string>(){
 			// TUBE world-script additions (Cilbox conversion)
 			"Basis.Scripts.BasisSdk.Players.BasisTeleportMode",    // BasisLocalPlayer.Teleport(...) parameter enum
