@@ -512,6 +512,7 @@ namespace Cilbox
 				} },
 		};
 
+		protected abstract Basis.Shims.BasisCilboxStatusType StatusType { get; }
 		protected abstract HashSet<string> ExtraWhiteListType { get; }
 		protected abstract HashSet<string> ExtraWhiteListFields { get; }
 		protected abstract Dictionary<Type, HashSet<string>> ExtraMethodWhitelist { get; }
@@ -527,6 +528,21 @@ namespace Cilbox
 			"System.RuntimeMethodHandle",
 			"System.RuntimeTypeHandle",
 		};
+
+		protected void Awake()
+		{
+			Basis.Shims.BasisCilboxStatusTracker.Register(this, StatusType);
+		}
+
+		protected void OnEnable()
+		{
+			Basis.Shims.BasisCilboxStatusTracker.Register(this, StatusType);
+		}
+
+		protected void OnDestroy()
+		{
+			Basis.Shims.BasisCilboxStatusTracker.Unregister(this);
+		}
 
 		public override bool CheckTypeAllowed(string sType)
 		{

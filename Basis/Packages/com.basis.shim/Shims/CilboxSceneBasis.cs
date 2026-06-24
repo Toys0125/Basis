@@ -9,20 +9,7 @@ namespace Cilbox
 	[CilboxTarget]
 	public class CilboxSceneBasis : CilboxBasisCommon
 	{
-		private void Awake()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Scene);
-		}
-
-		private void OnEnable()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Scene);
-		}
-
-		private void OnDestroy()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Unregister(this);
-		}
+		protected override Basis.Shims.BasisCilboxStatusType StatusType => Basis.Shims.BasisCilboxStatusType.Scene;
 
 		static readonly HashSet<string> extraWhiteListType = new HashSet<string>(){
 			// TUBE world-script additions (Cilbox conversion)

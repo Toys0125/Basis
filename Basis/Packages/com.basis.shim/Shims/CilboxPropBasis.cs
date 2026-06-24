@@ -7,20 +7,7 @@ namespace Cilbox
 	[CilboxTarget]
 	public class CilboxPropBasis : CilboxBasisCommon
 	{
-		private void Awake()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Prop);
-		}
-
-		private void OnEnable()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Prop);
-		}
-
-		private void OnDestroy()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Unregister(this);
-		}
+		protected override Basis.Shims.BasisCilboxStatusType StatusType => Basis.Shims.BasisCilboxStatusType.Prop;
 
 		static readonly HashSet<string> extraWhiteListType = new HashSet<string>(){
 			// Prop-specific Basis types

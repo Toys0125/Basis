@@ -7,20 +7,7 @@ namespace Cilbox
 	[CilboxTarget]
 	public class CilboxAvatarBasis : CilboxBasisCommon
 	{
-		private void Awake()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Avatar);
-		}
-
-		private void OnEnable()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Register(this, Basis.Shims.BasisCilboxStatusType.Avatar);
-		}
-
-		private void OnDestroy()
-		{
-			Basis.Shims.BasisCilboxStatusTracker.Unregister(this);
-		}
+		protected override Basis.Shims.BasisCilboxStatusType StatusType => Basis.Shims.BasisCilboxStatusType.Avatar;
 
 		static readonly HashSet<string> extraWhiteListType = new HashSet<string>(){
 			// Avatar-specific Basis shim types
