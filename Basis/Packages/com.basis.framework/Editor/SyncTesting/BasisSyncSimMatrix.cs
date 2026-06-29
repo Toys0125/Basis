@@ -43,8 +43,8 @@ namespace Basis.Scripts.Networking.Sync.Testing
             public int Seeds = 1;
             public int BaseSeed = 0x5A1D;
 
-            public List<SyncMotion> Motions;     // null => all
-            public HashSet<string> ProfileNames; // null => all
+            public List<SyncMotion> Motions;  // null => all
+            public List<string> ProfileNames;  // null => all
 
             public float Dt = 1f / 72f;
             public float DurationSeconds = 6f;
@@ -63,7 +63,7 @@ namespace Basis.Scripts.Networking.Sync.Testing
                     DurationSeconds = 4f,
                     SettleSeconds = 1.5f,
                     Motions = new List<SyncMotion> { SyncMotion.Sine, SyncMotion.Step, SyncMotion.Teleport, SyncMotion.RandomWalk },
-                    ProfileNames = new HashSet<string> { "perfect", "loss-heavy", "reorder", "bad-wifi", "corrupt", "chaos" },
+                    ProfileNames = new List<string> { "perfect", "loss-heavy", "reorder", "bad-wifi", "corrupt", "chaos" },
                 };
             }
 

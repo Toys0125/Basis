@@ -11,12 +11,14 @@ on:
     paths:
       - 'Basis/Packages/com.basis.framework/**'
       - '.github/workflows/sync-sim-tests.yml'
+  schedule:
+    - cron: '0 8 * * 1'
   workflow_dispatch:
     inputs:
       unityVersion:
-        description: 'Unity version to test (default: 6000.5.1f1)'
+        description: 'Unity version to test (default: auto from ProjectSettings/ProjectVersion.txt)'
         required: false
-        default: '6000.5.1f1'
+        default: 'auto'
       testFilter:
         description: 'NUnit filter (e.g. BasisSyncSimTests.Sim_Converges*)'
         required: false
@@ -40,7 +42,7 @@ jobs:
         run: echo "defined=true" >> $GITHUB_OUTPUT
 
   test:
-    name: Unity ${{ github.event.inputs.unityVersion || '6000.5.1f1' }} EditMode Tests
+    name: Unity ${{ github.event.inputs.unityVersion || 'auto' }} EditMode Tests
     timeout-minutes: 60
     runs-on: ubuntu-latest
     permissions:
@@ -49,7 +51,7 @@ jobs:
       contents: read
     env:
       projectPath: Basis
-      unityVersion: ${{ github.event.inputs.unityVersion || '6000.5.1f1' }}
+      unityVersion: ${{ github.event.inputs.unityVersion || 'auto' }}
       testFilter: ${{ github.event.inputs.testFilter || 'BasisSyncSimTests' }}
       testArtifactsPath: artifacts/sync-sim-tests
     needs: [check-secret]
@@ -80,7 +82,7 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: ${{ env.projectPath }}/Library
-          key: Library-${{ env.projectPath }}-sync-sim-tests-${{ hashFiles(env.projectPath) }}
+          key: Library-${{ env.projectPath }}-sync-sim-tests-${{ hashFiles('Basis/Packages/manifest.json', 'Basis/Packages/packages-lock.json', 'Basis/ProjectSettings/**', 'Basis/Packages/com.basis.framework/**') }}
           restore-keys: Library-${{ env.projectPath }}-sync-sim-tests-
       - name: "Run BasisSyncSimTests (EditMode)"
         timeout-minutes: 60
@@ -131,12 +133,12 @@ jobs:
       contents: write # to upload release assets on tag dispatches
     env:
       projectPath: Basis
-      unityVersion: ${{ github.event.inputs.unityVersion || '6000.5.1f1' }}
+      unityVersion: ${{ github.event.inputs.unityVersion || 'auto' }}
       matrixCsvPath: artifacts/sync-sim-matrix.csv
       matrixOptionsPath: artifacts/sync-sim-matrix-options.json
       matrixOptions: '{"Seeds":3,"QuantizeVariants":true,"InterpolateOffVariants":true,"ExtrapolateVariant":true,"TeleportThresholdVariant":true,"CompositeConfigs":true,"MultiObjectScenes":true,"BatchedTransport":true,"RealInterpJob":true,"LateJoinVariant":true,"Dt":0.013888889,"DurationSeconds":6,"SettleSeconds":1.8,"BaseSeed":1523023}'
     needs: [check-secret]
-    if: github.event_name == 'workflow_dispatch' && needs.check-secret.outputs.secret-is-set == 'true'
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.check-secret.outputs.secret-is-set == 'true'
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -161,7 +163,7 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: ${{ env.projectPath }}/Library
-          key: Library-${{ env.projectPath }}-sync-sim-matrix-${{ hashFiles(env.projectPath) }}
+          key: Library-${{ env.projectPath }}-sync-sim-matrix-${{ hashFiles('Basis/Packages/manifest.json', 'Basis/Packages/packages-lock.json', 'Basis/ProjectSettings/**', 'Basis/Packages/com.basis.framework/**') }}
           restore-keys: Library-${{ env.projectPath }}-sync-sim-matrix-
       - name: "Write matrix options"
         shell: bash
@@ -217,3 +219,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.matrixCsvPath }}
+
+  lint:
+    name: Code Style (C#)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting (csharpier)
+        run: |
+          dotnet tool restore
+          dotnet csharpier check --unformatted-as-warnings Basis/Packages/com.basis.framework/Editor/SyncTesting/BasisSyncSimMatrix.cs
