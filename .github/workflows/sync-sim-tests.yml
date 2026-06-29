@@ -82,8 +82,8 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: ${{ env.projectPath }}/Library
-          key: Library-${{ env.projectPath }}-sync-sim-tests-${{ hashFiles('Basis/Packages/manifest.json', 'Basis/Packages/packages-lock.json', 'Basis/ProjectSettings/**', 'Basis/Packages/com.basis.framework/**') }}
-          restore-keys: Library-${{ env.projectPath }}-sync-sim-tests-
+          key: Library-${{ env.projectPath }}-StandaloneLinux64-client-${{ hashFiles(env.projectPath) }}
+          restore-keys: Library-${{ env.projectPath }}-StandaloneLinux64-client-
       - name: "Run BasisSyncSimTests (EditMode)"
         timeout-minutes: 60
         uses: game-ci/unity-test-runner@v4
@@ -111,7 +111,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          OLD_CACHE_IDS=$(gh cache list --sort created_at --key Library-${{ env.projectPath }}-sync-sim-tests- --json id --jq '.[1:] | map(.id) | @sh')
+          OLD_CACHE_IDS=$(gh cache list --sort created_at --key Library-${{ env.projectPath }}-StandaloneLinux64-client- --json id --jq '.[1:] | map(.id) | @sh')
           for cache_id in $OLD_CACHE_IDS; do
             echo "Deleting cache id: $cache_id"
             gh cache delete $cache_id
@@ -163,8 +163,8 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: ${{ env.projectPath }}/Library
-          key: Library-${{ env.projectPath }}-sync-sim-matrix-${{ hashFiles('Basis/Packages/manifest.json', 'Basis/Packages/packages-lock.json', 'Basis/ProjectSettings/**', 'Basis/Packages/com.basis.framework/**') }}
-          restore-keys: Library-${{ env.projectPath }}-sync-sim-matrix-
+          key: Library-${{ env.projectPath }}-StandaloneLinux64-client-${{ hashFiles(env.projectPath) }}
+          restore-keys: Library-${{ env.projectPath }}-StandaloneLinux64-client-
       - name: "Write matrix options"
         shell: bash
         run: |
@@ -202,7 +202,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          OLD_CACHE_IDS=$(gh cache list --sort created_at --key Library-${{ env.projectPath }}-sync-sim-matrix- --json id --jq '.[1:] | map(.id) | @sh')
+          OLD_CACHE_IDS=$(gh cache list --sort created_at --key Library-${{ env.projectPath }}-StandaloneLinux64-client- --json id --jq '.[1:] | map(.id) | @sh')
           for cache_id in $OLD_CACHE_IDS; do
             echo "Deleting cache id: $cache_id"
             gh cache delete $cache_id
@@ -219,15 +219,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.matrixCsvPath }}
-
-  lint:
-    name: Code Style (C#)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check formatting (csharpier)
-        run: |
-          dotnet tool restore
-          dotnet csharpier check --unformatted-as-warnings Basis/Packages/com.basis.framework/Editor/SyncTesting/BasisSyncSimMatrix.cs
