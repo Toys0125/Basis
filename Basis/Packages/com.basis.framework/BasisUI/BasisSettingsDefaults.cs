@@ -438,6 +438,15 @@ namespace Basis.BasisUI
 
         public static BasisSettingsBinding<bool> EnableThirdPersonCamera = new("enablethirdpersoncamera", new BasisPlatformDefault<bool>(true));
 
+        public static BasisSettingsBinding<bool> EnableVRDesktopView = new("enablevrdesktopview", new BasisPlatformDefault<bool>(false));
+        public static BasisSettingsBinding<float> VRDesktopViewFOV = new("vrdesktopviewfov", new BasisPlatformDefault<float>(90f));
+        public static BasisSettingsBinding<bool> VRDesktopViewPositionStabilization = new("vrdesktopviewpositionstabilization", new BasisPlatformDefault<bool>(true));
+        public static BasisSettingsBinding<bool> VRDesktopViewRotationStabilization = new("vrdesktopviewrotationstabilization", new BasisPlatformDefault<bool>(true));
+        public static BasisSettingsBinding<string> VRDesktopViewHorizonMode = new("vrdesktopviewhorizonmode", new BasisPlatformDefault<string>("Reduced"));
+        public static BasisSettingsBinding<float> VRDesktopViewStabilizationStrength = new("vrdesktopviewstabilizationstrength", new BasisPlatformDefault<float>(1f));
+        public static BasisSettingsBinding<bool> VRDesktopViewShowHUD = new("vrdesktopviewshowhud", new BasisPlatformDefault<bool>(false));
+        public static BasisSettingsBinding<string> VRDesktopViewRenderRate = new("vrdesktopviewrenderrate", new BasisPlatformDefault<string>("60"));
+
         // True = listener stays at the player's head while third-person is active.
         // False = listener follows the orbital camera (audio shifts behind the player on zoom).
         // Only takes effect when the camera is currently in third-person mode.
@@ -1776,6 +1785,14 @@ namespace Basis.BasisUI
             DesktopReticle.LoadBindingValue();
             EnablePassthrough.LoadBindingValue();
             EnableThirdPersonCamera.LoadBindingValue();
+            EnableVRDesktopView.LoadBindingValue();
+            VRDesktopViewFOV.LoadBindingValue();
+            VRDesktopViewPositionStabilization.LoadBindingValue();
+            VRDesktopViewRotationStabilization.LoadBindingValue();
+            VRDesktopViewHorizonMode.LoadBindingValue();
+            VRDesktopViewStabilizationStrength.LoadBindingValue();
+            VRDesktopViewShowHUD.LoadBindingValue();
+            VRDesktopViewRenderRate.LoadBindingValue();
             AudioListenerFollowsHead.LoadBindingValue();
             MicrophoneIcon.LoadBindingValue();
             MicrophoneIconOffsetX.LoadBindingValue();

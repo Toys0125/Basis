@@ -28,6 +28,9 @@ public static class SettingsProviderKeyboardBindings
         // Camera
         BuildActionGroup(container, playerMap.FindAction("Look Delta"), "Look",
             "Camera", "Keyboard camera controls.", asset);
+        BuildSimpleGroup(container, playerMap, asset, "Camera Shortcuts", "Switch desktop camera views.",
+            ("ToggleThirdPerson", "Third Person View"),
+            ("ToggleStabilizedDesktopView", "Stabilized VR Desktop View"));
 
         // Vertical Movement
         BuildActionGroup(container, playerMap.FindAction("MoveLocalUpDown"), "Fly",

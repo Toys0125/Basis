@@ -41,6 +41,7 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
         public static InputAction OpenChat;
         public static InputAction ToggleMicMute;
         public static InputAction ToggleThirdPerson;
+        public static InputAction ToggleStabilizedDesktopView;
         public static InputAction CameraZoomAction;
 
         public static float MouseSensitivity = 1f;
@@ -139,6 +140,7 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
             OpenChat = map.FindAction("OpenChat", throwIfNotFound: true);
             ToggleMicMute = map.FindAction("ToggleMicMute", throwIfNotFound: true);
             ToggleThirdPerson = map.FindAction("ToggleThirdPerson", throwIfNotFound: true);
+            ToggleStabilizedDesktopView = map.FindAction("ToggleStabilizedDesktopView", throwIfNotFound: true);
             CameraZoomAction = map.FindAction("CameraZoom", throwIfNotFound: true);
         }
 
@@ -174,6 +176,7 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
             OpenChat.Enable();
             ToggleMicMute.Enable();
             ToggleThirdPerson.Enable();
+            ToggleStabilizedDesktopView.Enable();
             CameraZoomAction.Enable();
         }
 
@@ -199,6 +202,7 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
             OpenChat?.Disable();
             ToggleMicMute?.Disable();
             ToggleThirdPerson?.Disable();
+            ToggleStabilizedDesktopView?.Disable();
             CameraZoomAction?.Disable();
         }
 
@@ -258,6 +262,8 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
             ToggleThirdPerson.performed += OnToggleThirdPerson;
             ToggleThirdPerson.canceled += OnToggleThirdPersonCanceled;
 
+            ToggleStabilizedDesktopView.performed += OnToggleStabilizedDesktopView;
+
             CameraZoomAction.performed += OnCameraZoom;
             CameraZoomAction.canceled += OnCameraZoomCanceled;
 
@@ -294,6 +300,7 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
             SafeRemoveCallbacks(OpenChat, OnOpenChatPerformed, OnOpenChatCancelled);
             SafeRemoveCallbacks(ToggleMicMute, OnToggleMicMutePerformed, OnToggleMicMuteCancelled);
             SafeRemoveCallbacks(ToggleThirdPerson, OnToggleThirdPerson, OnToggleThirdPersonCanceled);
+            SafeRemoveCallbacks(ToggleStabilizedDesktopView, OnToggleStabilizedDesktopView);
             SafeRemoveCallbacks(CameraZoomAction, OnCameraZoom, OnCameraZoomCanceled);
 
             BasisCursorManagement.OnCursorStateChange -= OnCursorStateChanged;
@@ -524,6 +531,21 @@ namespace Basis.Scripts.Device_Management.Devices.Desktop
         public static void OnToggleThirdPersonCanceled(InputAction.CallbackContext ctx)
         {
             canZoomCamera = false;
+        }
+
+        public static void OnToggleStabilizedDesktopView(InputAction.CallbackContext ctx)
+        {
+            if (ctx.phase != InputActionPhase.Performed)
+                return;
+
+            if (BasisInputModuleHandler.Instance != null && BasisInputModuleHandler.Instance.IsTyping())
+                return;
+
+            if (!BasisDeviceManagement.IsCurrentModeVR() || BasisDeviceManagement.IsMobileHardware())
+                return;
+
+            BasisSettingsDefaults.EnableVRDesktopView.SetValue(
+                !BasisSettingsDefaults.EnableVRDesktopView.RawValue);
         }
 
         public static void OnCameraZoom(InputAction.CallbackContext ctx)

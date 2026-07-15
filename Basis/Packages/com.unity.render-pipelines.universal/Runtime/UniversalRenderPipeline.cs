@@ -29,6 +29,13 @@ namespace UnityEngine.Rendering.Universal
         /// </summary>
         public const string k_ShaderTagName = "UniversalPipeline";
 
+        /// <summary>
+        /// Optional application hook used to suppress the native XR mirror blit for a camera.
+        /// Return <see langword="false"/> when another camera owns the desktop backbuffer.
+        /// A null hook preserves the stock URP behavior.
+        /// </summary>
+        public static Func<Camera, bool> xrMirrorViewRenderFilter;
+
         // builtin upscaler names
         //  - {Point, Linear, FSR1} spatial upscalers; point & linear are embedded in uber post shaders, FSR1 standalone.
         //  - {STP} temporal
@@ -1267,7 +1274,7 @@ namespace UnityEngine.Rendering.Universal
                 }
             }
 
-            if (xrActive)
+            if (xrActive && (xrMirrorViewRenderFilter == null || xrMirrorViewRenderFilter(baseCamera)))
             {
                 CommandBuffer cmd = CommandBufferPool.Get();
                 XRSystem.RenderMirrorView(cmd, baseCamera);

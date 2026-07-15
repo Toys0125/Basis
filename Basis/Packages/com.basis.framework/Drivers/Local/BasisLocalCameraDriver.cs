@@ -220,6 +220,8 @@ namespace Basis.Scripts.Drivers
         /// <summary>Driver for avatar preview camera and HUD display.</summary>
         [SerializeField]
         public BasisLocalAvatarPreviewDriver avatarPreviewDriver = new BasisLocalAvatarPreviewDriver();
+
+        private BasisVRDesktopViewDriver vrDesktopViewDriver;
         /// <summary>
         /// World forward vector of the active camera instance, or zero if no instance exists.
         /// Derived from the cached <see cref="Rotation"/> to avoid a native transform PInvoke per call.
@@ -352,6 +354,16 @@ namespace Basis.Scripts.Drivers
 
             avatarPreviewDriver.Initialize(this);
 
+            if (vrDesktopViewDriver == null)
+            {
+                vrDesktopViewDriver = GetComponent<BasisVRDesktopViewDriver>();
+                if (vrDesktopViewDriver == null)
+                {
+                    vrDesktopViewDriver = gameObject.AddComponent<BasisVRDesktopViewDriver>();
+                }
+            }
+            vrDesktopViewDriver.Initialize(this);
+
 #if STEAMAUDIO_ENABLED
             if (SteamListener != null)
             {
@@ -365,6 +377,7 @@ namespace Basis.Scripts.Drivers
         /// </summary>
         public void OnDestroy()
         {
+            vrDesktopViewDriver?.Shutdown();
             avatarPreviewDriver.Cleanup();
             CameraInstance = null;
 
@@ -416,6 +429,7 @@ namespace Basis.Scripts.Drivers
 #endif
                 HasEvents = false;
             }
+            vrDesktopViewDriver?.Suspend();
             avatarPreviewDriver.Cleanup();
         }
 
@@ -612,6 +626,7 @@ namespace Basis.Scripts.Drivers
         public void Simulate(float DeltaTime)
         {
             BasisAutoScaleEstimator.Tick(DeltaTime);
+            vrDesktopViewDriver?.Simulate(DeltaTime);
             if (BasisLocalAvatarDriver.Mapping.Hashead)
             {
                 SelfTransform.GetPositionAndRotation(out Position, out Rotation);

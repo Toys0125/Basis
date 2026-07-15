@@ -24,6 +24,14 @@ using UnityEngine.Rendering.Universal;
 /// </summary>
 public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
 {
+    private static readonly HashSet<BasisHandHeldCamera> DesktopOutputOverrides = new();
+
+    /// <summary>Raised when handheld-camera ownership of display zero starts or ends.</summary>
+    public static event Action<bool> DesktopOutputOverrideChanged;
+
+    /// <summary>True while any handheld camera is explicitly replacing the desktop game view.</summary>
+    public static bool IsDesktopOutputOverrideActive => DesktopOutputOverrides.Count > 0;
+
     [Header("Camera Components")]
     /// <summary>URP camera data (AA, stack, etc.).</summary>
     public UniversalAdditionalCameraData CameraData;
@@ -193,6 +201,8 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     /// </summary>
     public new async void OnDestroy()
     {
+        SetDesktopOutputOverrideActive(false);
+
         // Notify network that PIP camera was destroyed
         if (BasisNetworkConnection.LocalPlayerPeer != null)
         {
@@ -244,6 +254,18 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         BasisDebug.Log($"[HandHeldCamera] Preview reset to {PreviewCaptureWidth}x{PreviewCaptureHeight} @ {AntialiasingQuality.Low}");
         captureCamera.targetTexture = renderTexture;
         BasisCullingCameraRegistry.Register(captureCamera);
+
+        // OnEnable runs before Awake on first creation, so only restore an existing recording
+        // override after its runtime material/setup has already been initialized.
+        if (actualMaterial != null && enableRecordingView && !BasisDeviceManagement.IsUserInDesktop())
+        {
+            OverrideDesktopOutput();
+        }
+    }
+
+    private void OnDisable()
+    {
+        SetDesktopOutputOverrideActive(false);
     }
 
     /// <summary>
@@ -629,6 +651,7 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     public void OverrideDesktopOutput()
     {
         IsOverridingDesktopView = enableRecordingView && !BasisDeviceManagement.IsUserInDesktop();
+        SetDesktopOutputOverrideActive(IsOverridingDesktopView);
         if (IsOverridingDesktopView)
         {
             captureCamera.targetTexture = null;
@@ -652,6 +675,25 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
 
         VisibilityFlag(Renderer != null && Renderer.isVisible);
         UpdatePreviewScreen();
+    }
+
+    private void SetDesktopOutputOverrideActive(bool active)
+    {
+        bool wasActive = IsDesktopOutputOverrideActive;
+        if (active)
+        {
+            DesktopOutputOverrides.Add(this);
+        }
+        else
+        {
+            DesktopOutputOverrides.Remove(this);
+        }
+
+        bool isActive = IsDesktopOutputOverrideActive;
+        if (wasActive != isActive)
+        {
+            DesktopOutputOverrideChanged?.Invoke(isActive);
+        }
     }
 
     /// <summary>UI callback to toggle recording view and apply <see cref="OverrideDesktopOutput"/>.</summary>

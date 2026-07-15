@@ -556,6 +556,84 @@ namespace Basis.BasisUI
                 });
             }
 
+            // Stabilized spectator output replaces the normal XR eye mirror on PC VR.
+            if (BasisDeviceManagement.IsCurrentModeVR() && !BasisDeviceManagement.IsMobileHardware())
+            {
+                PanelSectionToggleHelpers.CreateCollapsibleFlatSection(container,
+                    BasisLocalization.Get("settings.general.vrDesktopView.title"), () =>
+                {
+                    PanelToggle toggleEnabled = PanelToggle.CreateNewEntry(container);
+                    toggleEnabled.AssignBinding(BasisSettingsDefaults.EnableVRDesktopView);
+                    toggleEnabled.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.enabled"));
+                    toggleEnabled.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.enabled.tooltip"));
+
+                    PanelSlider fov = PanelSlider.CreateEntryAndBind(
+                        container,
+                        PanelSlider.SliderSettings.Advanced(
+                            BasisLocalization.Get("settings.general.vrDesktopView.fov"),
+                            35f, 120f, true, 0, ValueDisplayMode.Degrees),
+                        BasisSettingsDefaults.VRDesktopViewFOV);
+                    fov.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.fov.tooltip"));
+
+                    PanelToggle position = PanelToggle.CreateNewEntry(container);
+                    position.AssignBinding(BasisSettingsDefaults.VRDesktopViewPositionStabilization);
+                    position.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.position"));
+                    position.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.position.tooltip"));
+
+                    PanelToggle rotation = PanelToggle.CreateNewEntry(container);
+                    rotation.AssignBinding(BasisSettingsDefaults.VRDesktopViewRotationStabilization);
+                    rotation.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.rotation"));
+                    rotation.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.rotation.tooltip"));
+
+                    PanelDropdown horizon = PanelDropdown.CreateNewEntry(container);
+                    horizon.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.horizon"));
+                    horizon.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.horizon.tooltip"));
+                    horizon.AssignLocalizedEntries(
+                        new List<string> { "Off", "Reduced", "Locked" },
+                        new List<string>
+                        {
+                            "settings.general.vrDesktopView.horizon.off",
+                            "settings.general.vrDesktopView.horizon.reduced",
+                            "settings.general.vrDesktopView.horizon.locked"
+                        });
+                    horizon.AssignBinding(BasisSettingsDefaults.VRDesktopViewHorizonMode);
+
+                    PanelSlider strength = PanelSlider.CreateEntryAndBind(
+                        container,
+                        PanelSlider.SliderSettings.Advanced(
+                            BasisLocalization.Get("settings.general.vrDesktopView.strength"),
+                            0.25f, 2f, false, 2, ValueDisplayMode.Raw),
+                        BasisSettingsDefaults.VRDesktopViewStabilizationStrength);
+                    strength.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.strength.tooltip"));
+
+                    PanelToggle showHud = PanelToggle.CreateNewEntry(container);
+                    showHud.AssignBinding(BasisSettingsDefaults.VRDesktopViewShowHUD);
+                    showHud.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.showHud"));
+                    showHud.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.showHud.tooltip"));
+
+                    PanelDropdown renderRate = PanelDropdown.CreateNewEntry(container);
+                    renderRate.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.renderRate"));
+                    renderRate.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.renderRate.tooltip"));
+                    renderRate.AssignEntries(new List<string> { "30", "60", "90", "Unlimited" });
+                    renderRate.AssignBinding(BasisSettingsDefaults.VRDesktopViewRenderRate);
+
+                    void SetSubOptionsActive(bool active)
+                    {
+                        fov.Descriptor.SetActive(active);
+                        position.Descriptor.SetActive(active);
+                        rotation.Descriptor.SetActive(active);
+                        horizon.Descriptor.SetActive(active);
+                        strength.Descriptor.SetActive(active);
+                        showHud.Descriptor.SetActive(active);
+                        renderRate.Descriptor.SetActive(active);
+                        descriptor.ForceRebuild();
+                    }
+
+                    SetSubOptionsActive(BasisSettingsDefaults.EnableVRDesktopView.RawValue);
+                    toggleEnabled.OnValueChanged += SetSubOptionsActive;
+                }, false, _ => descriptor.ForceRebuild());
+            }
+
             BuildNetworkingSection(container, descriptor);
 
             // One reset button for this whole page
@@ -729,6 +807,14 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.DesktopReticle.ResetToDefault();
             BasisSettingsDefaults.EnablePassthrough.ResetToDefault();
             BasisSettingsDefaults.EnableThirdPersonCamera.ResetToDefault();
+            BasisSettingsDefaults.EnableVRDesktopView.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewFOV.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewPositionStabilization.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewRotationStabilization.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewHorizonMode.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewStabilizationStrength.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewShowHUD.ResetToDefault();
+            BasisSettingsDefaults.VRDesktopViewRenderRate.ResetToDefault();
             BasisSettingsDefaults.AudioListenerFollowsHead.ResetToDefault();
             BasisSettingsDefaults.DisableDirectConnections.ResetToDefault();
             BasisSettingsDefaults.P2PVoiceBitrateOverride.ResetToDefault();

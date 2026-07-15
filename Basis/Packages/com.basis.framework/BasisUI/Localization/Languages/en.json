@@ -31,6 +31,86 @@
       "value": "Keep hearing sound from your avatar's head instead of the camera."
     },
     {
+      "key": "settings.general.vrDesktopView.title",
+      "value": "VR Desktop View"
+    },
+    {
+      "key": "settings.general.vrDesktopView.enabled",
+      "value": "Use Stabilized Desktop View"
+    },
+    {
+      "key": "settings.general.vrDesktopView.enabled.tooltip",
+      "value": "Replace the normal headset-eye mirror in the desktop game window with a smooth mono spectator camera. Press F8 to toggle it."
+    },
+    {
+      "key": "settings.general.vrDesktopView.fov",
+      "value": "Desktop View FOV"
+    },
+    {
+      "key": "settings.general.vrDesktopView.fov.tooltip",
+      "value": "Vertical field of view for the desktop spectator camera. This does not change the headset view."
+    },
+    {
+      "key": "settings.general.vrDesktopView.position",
+      "value": "Position Stabilization"
+    },
+    {
+      "key": "settings.general.vrDesktopView.position.tooltip",
+      "value": "Smooth physical head-position motion while keeping locomotion and playspace movement responsive."
+    },
+    {
+      "key": "settings.general.vrDesktopView.rotation",
+      "value": "Rotation Stabilization"
+    },
+    {
+      "key": "settings.general.vrDesktopView.rotation.tooltip",
+      "value": "Smooth physical head rotation with adaptive catch-up during deliberate turns."
+    },
+    {
+      "key": "settings.general.vrDesktopView.horizon",
+      "value": "Horizon Stabilization"
+    },
+    {
+      "key": "settings.general.vrDesktopView.horizon.tooltip",
+      "value": "Off preserves head roll, Reduced dampens it, and Locked keeps the desktop horizon level."
+    },
+    {
+      "key": "settings.general.vrDesktopView.horizon.off",
+      "value": "Off"
+    },
+    {
+      "key": "settings.general.vrDesktopView.horizon.reduced",
+      "value": "Reduced"
+    },
+    {
+      "key": "settings.general.vrDesktopView.horizon.locked",
+      "value": "Locked"
+    },
+    {
+      "key": "settings.general.vrDesktopView.strength",
+      "value": "Stabilization Strength"
+    },
+    {
+      "key": "settings.general.vrDesktopView.strength.tooltip",
+      "value": "Higher values follow the headset faster; lower values produce a smoother but more delayed view."
+    },
+    {
+      "key": "settings.general.vrDesktopView.showHud",
+      "value": "Show VR HUD"
+    },
+    {
+      "key": "settings.general.vrDesktopView.showHud.tooltip",
+      "value": "Include headset overlay UI in the desktop spectator view. World-space UI and nameplates remain visible."
+    },
+    {
+      "key": "settings.general.vrDesktopView.renderRate",
+      "value": "Desktop View Frame Rate"
+    },
+    {
+      "key": "settings.general.vrDesktopView.renderRate.tooltip",
+      "value": "How often the spectator scene is rendered. The latest completed frame remains visible between updates."
+    },
+    {
       "key": "settings.general.language.title.tooltip",
       "value": "Choose your menu language. Help translate Basis: copy en.json, translate it, and open a pull request at github.com/BasisVR/Basis."
     },

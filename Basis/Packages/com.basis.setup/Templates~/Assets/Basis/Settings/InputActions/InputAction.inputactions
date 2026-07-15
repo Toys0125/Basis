@@ -187,6 +187,15 @@
                     "initialStateCheck": true
                 },
                 {
+                    "name": "ToggleStabilizedDesktopView",
+                    "type": "Button",
+                    "id": "5e860090-5f31-4771-8a03-3fa923957f07",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                },
+                {
                     "name": "CameraZoom",
                     "type": "Value",
                     "id": "876786d7-6ea1-42b8-89e9-b2868f7a560f",
@@ -832,6 +841,17 @@
                     "processors": "",
                     "groups": ";All",
                     "action": "ToggleThirdPerson",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
+                    "id": "96621004-4b38-4c39-82ed-ae0522c32bce",
+                    "path": "<Keyboard>/f8",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": ";All",
+                    "action": "ToggleStabilizedDesktopView",
                     "isComposite": false,
                     "isPartOfComposite": false
                 },
