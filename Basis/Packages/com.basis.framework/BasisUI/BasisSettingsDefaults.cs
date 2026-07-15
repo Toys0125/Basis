@@ -438,14 +438,26 @@ namespace Basis.BasisUI
 
         public static BasisSettingsBinding<bool> EnableThirdPersonCamera = new("enablethirdpersoncamera", new BasisPlatformDefault<bool>(true));
 
+        public const float VR_DESKTOP_VIEW_FOV_MIN = 35f;
+        public const float VR_DESKTOP_VIEW_FOV_MAX = 120f;
+        public const float VR_DESKTOP_VIEW_STRENGTH_MIN = 0.25f;
+        public const float VR_DESKTOP_VIEW_STRENGTH_MAX = 2f;
+        public const string VR_DESKTOP_VIEW_HORIZON_OFF = "Off";
+        public const string VR_DESKTOP_VIEW_HORIZON_REDUCED = "Reduced";
+        public const string VR_DESKTOP_VIEW_HORIZON_LOCKED = "Locked";
+        public const string VR_DESKTOP_VIEW_RATE_30 = "30";
+        public const string VR_DESKTOP_VIEW_RATE_60 = "60";
+        public const string VR_DESKTOP_VIEW_RATE_90 = "90";
+        public const string VR_DESKTOP_VIEW_RATE_UNLIMITED = "Unlimited";
+
         public static BasisSettingsBinding<bool> EnableVRDesktopView = new("enablevrdesktopview", new BasisPlatformDefault<bool>(false));
         public static BasisSettingsBinding<float> VRDesktopViewFOV = new("vrdesktopviewfov", new BasisPlatformDefault<float>(90f));
         public static BasisSettingsBinding<bool> VRDesktopViewPositionStabilization = new("vrdesktopviewpositionstabilization", new BasisPlatformDefault<bool>(true));
         public static BasisSettingsBinding<bool> VRDesktopViewRotationStabilization = new("vrdesktopviewrotationstabilization", new BasisPlatformDefault<bool>(true));
-        public static BasisSettingsBinding<string> VRDesktopViewHorizonMode = new("vrdesktopviewhorizonmode", new BasisPlatformDefault<string>("Reduced"));
+        public static BasisSettingsBinding<string> VRDesktopViewHorizonMode = new("vrdesktopviewhorizonmode", new BasisPlatformDefault<string>(VR_DESKTOP_VIEW_HORIZON_REDUCED));
         public static BasisSettingsBinding<float> VRDesktopViewStabilizationStrength = new("vrdesktopviewstabilizationstrength", new BasisPlatformDefault<float>(1f));
         public static BasisSettingsBinding<bool> VRDesktopViewShowHUD = new("vrdesktopviewshowhud", new BasisPlatformDefault<bool>(false));
-        public static BasisSettingsBinding<string> VRDesktopViewRenderRate = new("vrdesktopviewrenderrate", new BasisPlatformDefault<string>("60"));
+        public static BasisSettingsBinding<string> VRDesktopViewRenderRate = new("vrdesktopviewrenderrate", new BasisPlatformDefault<string>(VR_DESKTOP_VIEW_RATE_60));
 
         // True = listener stays at the player's head while third-person is active.
         // False = listener follows the orbital camera (audio shifts behind the player on zoom).

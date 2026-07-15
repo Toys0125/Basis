@@ -29,12 +29,51 @@ namespace UnityEngine.Rendering.Universal
         /// </summary>
         public const string k_ShaderTagName = "UniversalPipeline";
 
+        // BASIS PATCH: The stabilized desktop spectator view needs to suppress Unity's native XR
+        // mirror only while another camera owns the desktop backbuffer. Keep this registry when
+        // updating the vendored URP package. See:
+        // Packages/com.basis.framework/Camera/StabilizedVRDesktopView.md
+        private static readonly List<Func<Camera, bool>> s_XRMirrorViewRenderFilters = new();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetXRMirrorViewRenderFilters()
+        {
+            s_XRMirrorViewRenderFilters.Clear();
+        }
+
         /// <summary>
-        /// Optional application hook used to suppress the native XR mirror blit for a camera.
-        /// Return <see langword="false"/> when another camera owns the desktop backbuffer.
-        /// A null hook preserves the stock URP behavior.
+        /// Registers an application filter for the native XR mirror blit. Every registered filter
+        /// must return <see langword="true"/> for the mirror to render.
         /// </summary>
-        public static Func<Camera, bool> xrMirrorViewRenderFilter;
+        public static void RegisterXRMirrorViewRenderFilter(Func<Camera, bool> filter)
+        {
+            if (filter != null && !s_XRMirrorViewRenderFilters.Contains(filter))
+            {
+                s_XRMirrorViewRenderFilters.Add(filter);
+            }
+        }
+
+        /// <summary>Removes a previously registered XR mirror-view filter.</summary>
+        public static void UnregisterXRMirrorViewRenderFilter(Func<Camera, bool> filter)
+        {
+            if (filter != null)
+            {
+                s_XRMirrorViewRenderFilters.Remove(filter);
+            }
+        }
+
+        private static bool ShouldRenderXRMirrorView(Camera camera)
+        {
+            for (int i = 0; i < s_XRMirrorViewRenderFilters.Count; i++)
+            {
+                if (!s_XRMirrorViewRenderFilters[i](camera))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
 
         // builtin upscaler names
         //  - {Point, Linear, FSR1} spatial upscalers; point & linear are embedded in uber post shaders, FSR1 standalone.
@@ -1274,7 +1313,7 @@ namespace UnityEngine.Rendering.Universal
                 }
             }
 
-            if (xrActive && (xrMirrorViewRenderFilter == null || xrMirrorViewRenderFilter(baseCamera)))
+            if (xrActive && ShouldRenderXRMirrorView(baseCamera))
             {
                 CommandBuffer cmd = CommandBufferPool.Get();
                 XRSystem.RenderMirrorView(cmd, baseCamera);

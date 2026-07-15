@@ -10,22 +10,41 @@ namespace Basis.Scripts.Rendering
     /// Final-output pass for the stabilized VR desktop view. The spectator camera renders the
     /// world into a cached RenderTexture at its own rate; this feature presents that texture from
     /// a cheap, non-XR camera after URP's XR camera has finished.
+    ///
+    /// This feature intentionally owns one process-wide output. Basis has one local desktop
+    /// backbuffer, so multiple renderer-feature instances cannot present independent views.
+    /// The newest created instance takes ownership and safely invalidates the previous instance.
     /// </summary>
     public sealed class BasisVRDesktopViewBlitFeature : ScriptableRendererFeature
     {
         [SerializeField] private Material blitMaterial;
 
+        // RenderGraph recording and the driver callbacks that mutate this state both run on the
+        // Unity main thread. The state is static because display zero has one active owner.
+        private static BasisVRDesktopViewBlitFeature s_OwnerFeature;
         private static Camera s_OutputCamera;
         private static RenderTexture s_SourceTexture;
         private static RTHandle s_SourceHandle;
 
         private BlitPass _pass;
+        private bool _ownsStaticState;
 
         /// <summary>True after an active renderer has created this feature.</summary>
         public static bool IsAvailable { get; private set; }
 
         /// <summary>True after the output pass has been recorded successfully at least once.</summary>
         public static bool HasPresentedOutput { get; private set; }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStaticState()
+        {
+            ReleaseSourceHandle();
+            s_OwnerFeature = null;
+            s_OutputCamera = null;
+            s_SourceTexture = null;
+            IsAvailable = false;
+            HasPresentedOutput = false;
+        }
 
         /// <summary>Assigns the camera allowed to run this pass and the texture it presents.</summary>
         public static void SetOutput(Camera outputCamera, RenderTexture sourceTexture)
@@ -34,6 +53,7 @@ namespace Basis.Scripts.Rendering
             {
                 HasPresentedOutput = false;
             }
+
             s_OutputCamera = outputCamera;
 
             if (ReferenceEquals(s_SourceTexture, sourceTexture) && s_SourceHandle != null)
@@ -76,7 +96,19 @@ namespace Basis.Scripts.Rendering
 
         public override void Create()
         {
+            if (s_OwnerFeature != null && !ReferenceEquals(s_OwnerFeature, this))
+            {
+                Debug.LogWarning(
+                    "Multiple stabilized VR desktop blit features were created. " +
+                    "The newest feature will own the single desktop output.");
+                s_OwnerFeature._ownsStaticState = false;
+                ClearOutput(null);
+            }
+
+            s_OwnerFeature = this;
+            _ownsStaticState = true;
             IsAvailable = blitMaterial != null;
+            HasPresentedOutput = false;
 
             if (blitMaterial != null)
             {
@@ -94,7 +126,8 @@ namespace Basis.Scripts.Rendering
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
-            if (_pass == null || blitMaterial == null || s_SourceHandle == null || s_SourceTexture == null)
+            if (!_ownsStaticState || _pass == null || blitMaterial == null
+                || s_SourceHandle == null || s_SourceTexture == null)
             {
                 return;
             }
@@ -110,17 +143,29 @@ namespace Basis.Scripts.Rendering
 
         protected override void Dispose(bool disposing)
         {
+            _pass = null;
+
+            if (!_ownsStaticState)
+            {
+                return;
+            }
+
+            ClearOutput(null);
             IsAvailable = false;
             HasPresentedOutput = false;
+            s_OwnerFeature = null;
+            _ownsStaticState = false;
         }
 
         private sealed class BlitPass : ScriptableRenderPass
         {
-            public Material BlitMaterial;
+            public Material BlitMaterial { private get; set; }
 
             public BlitPass()
             {
-                requiresIntermediateTexture = true;
+                // Source and destination are distinct textures. Forcing an intermediate target here
+                // adds a redundant full-resolution copy before the presentation blit.
+                requiresIntermediateTexture = false;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameContext)

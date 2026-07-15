@@ -32,6 +32,14 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     /// <summary>True while any handheld camera is explicitly replacing the desktop game view.</summary>
     public static bool IsDesktopOutputOverrideActive => DesktopOutputOverrides.Count > 0;
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetDesktopOutputOverrideState()
+    {
+        DesktopOutputOverrides.Clear();
+        DesktopOutputOverrideChanged = null;
+        _activeHandHeldCount = 0;
+    }
+
     [Header("Camera Components")]
     /// <summary>URP camera data (AA, stack, etc.).</summary>
     public UniversalAdditionalCameraData CameraData;

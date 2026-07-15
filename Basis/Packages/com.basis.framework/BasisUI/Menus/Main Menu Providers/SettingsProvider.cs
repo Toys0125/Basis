@@ -571,7 +571,9 @@ namespace Basis.BasisUI
                         container,
                         PanelSlider.SliderSettings.Advanced(
                             BasisLocalization.Get("settings.general.vrDesktopView.fov"),
-                            35f, 120f, true, 0, ValueDisplayMode.Degrees),
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_FOV_MIN,
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_FOV_MAX,
+                            true, 0, ValueDisplayMode.Degrees),
                         BasisSettingsDefaults.VRDesktopViewFOV);
                     fov.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.fov.tooltip"));
 
@@ -589,7 +591,12 @@ namespace Basis.BasisUI
                     horizon.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.horizon"));
                     horizon.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.horizon.tooltip"));
                     horizon.AssignLocalizedEntries(
-                        new List<string> { "Off", "Reduced", "Locked" },
+                        new List<string>
+                        {
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_HORIZON_OFF,
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_HORIZON_REDUCED,
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_HORIZON_LOCKED
+                        },
                         new List<string>
                         {
                             "settings.general.vrDesktopView.horizon.off",
@@ -602,7 +609,9 @@ namespace Basis.BasisUI
                         container,
                         PanelSlider.SliderSettings.Advanced(
                             BasisLocalization.Get("settings.general.vrDesktopView.strength"),
-                            0.25f, 2f, false, 2, ValueDisplayMode.Raw),
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_STRENGTH_MIN,
+                            BasisSettingsDefaults.VR_DESKTOP_VIEW_STRENGTH_MAX,
+                            false, 2, ValueDisplayMode.Raw),
                         BasisSettingsDefaults.VRDesktopViewStabilizationStrength);
                     strength.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.strength.tooltip"));
 
@@ -614,7 +623,13 @@ namespace Basis.BasisUI
                     PanelDropdown renderRate = PanelDropdown.CreateNewEntry(container);
                     renderRate.Descriptor.SetTitle(BasisLocalization.Get("settings.general.vrDesktopView.renderRate"));
                     renderRate.Descriptor.SetTooltip(BasisLocalization.Get("settings.general.vrDesktopView.renderRate.tooltip"));
-                    renderRate.AssignEntries(new List<string> { "30", "60", "90", "Unlimited" });
+                    renderRate.AssignEntries(new List<string>
+                    {
+                        BasisSettingsDefaults.VR_DESKTOP_VIEW_RATE_30,
+                        BasisSettingsDefaults.VR_DESKTOP_VIEW_RATE_60,
+                        BasisSettingsDefaults.VR_DESKTOP_VIEW_RATE_90,
+                        BasisSettingsDefaults.VR_DESKTOP_VIEW_RATE_UNLIMITED
+                    });
                     renderRate.AssignBinding(BasisSettingsDefaults.VRDesktopViewRenderRate);
 
                     void SetSubOptionsActive(bool active)
