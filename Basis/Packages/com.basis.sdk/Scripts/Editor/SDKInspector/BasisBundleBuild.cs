@@ -34,16 +34,31 @@ public static class BasisBundleBuild
 
         var meta = GenerateMetaData(BasisContentBase.gameObject);
         string FolderPath = MakeSafeFolderName(BasisContentBase.BasisBundleDescription.AssetBundleName);
-        return await BuildBundle(FolderPath,
-            basisContentBase: BasisContentBase,
-            MetaData: meta,
-            BasisBounds: BasisBounds,
-            Images: Image,
-            targets: Targets,
-            useProvidedPassword: useProvidedPassword,
-            OverriddenPassword: OverriddenPassword,
-            buildFunction: (content, obj, hex, target, buildId) =>
-                BasisAssetBundlePipeline.BuildAssetBundle(content.gameObject, obj, hex, target, FolderPath));
+        BasisPreparedPrefabSource preparedSource = null;
+        try
+        {
+            return await BuildBundle(FolderPath,
+                basisContentBase: BasisContentBase,
+                MetaData: meta,
+                BasisBounds: BasisBounds,
+                Images: Image,
+                targets: Targets,
+                useProvidedPassword: useProvidedPassword,
+                OverriddenPassword: OverriddenPassword,
+                buildFunction: (content, obj, hex, target, buildId) =>
+                {
+                    if (preparedSource == null)
+                    {
+                        preparedSource = BasisAssetBundlePipeline.PreparePrefabSource(content.gameObject, obj);
+                    }
+
+                    return BasisAssetBundlePipeline.BuildAssetBundle(preparedSource, obj, hex, target, FolderPath);
+                });
+        }
+        finally
+        {
+            preparedSource?.Dispose();
+        }
     }
     /// <summary>
     /// Calculates bounds of all child renderers in PARENT LOCAL SPACE (pivot-relative).
@@ -453,6 +468,10 @@ public static class BasisBundleBuild
     {
         string generatedID = null;
         string stagingRoot = null;
+        BuildTarget originalActiveTarget = EditorUserBuildSettings.activeBuildTarget;
+        List<BuildTarget> buildTargets = targets != null
+            ? new List<BuildTarget>(targets)
+            : new List<BuildTarget>();
 
         try
         {
@@ -464,7 +483,7 @@ public static class BasisBundleBuild
                 for (int ctr = 0; ctr < Length; ctr++)
                 {
                     var handler = (Func<BasisContentBase, List<BuildTarget>, Task>)events[ctr];
-                    eventTasks.Add(handler(basisContentBase, targets));
+                    eventTasks.Add(handler(basisContentBase, buildTargets));
                 }
 
                 await Task.WhenAll(eventTasks);
@@ -474,14 +493,12 @@ public static class BasisBundleBuild
             Debug.Log("Starting BuildBundle...");
             EditorUtility.DisplayProgressBar(BasisEditorLocalization.Get("sdk.bundleBuild.progress.start"), BasisEditorLocalization.Get("sdk.bundleBuild.progress.start"), 0);
 
-            BuildTarget originalActiveTarget = EditorUserBuildSettings.activeBuildTarget;
-
             if (!ErrorChecking(basisContentBase, out string error))
             {
                 return (false, error);
             }
 
-            AdjustBuildTargetOrder(targets);
+            AdjustBuildTargetOrder(buildTargets);
 
             BasisAssetBundleObject assetBundleObject =
                 AssetDatabase.LoadAssetAtPath<BasisAssetBundleObject>(BasisAssetBundleObject.AssetBundleObject);
@@ -500,13 +517,13 @@ public static class BasisBundleBuild
 
             string Password = useProvidedPassword ? OverriddenPassword : GenerateHexString(32);
 
-            int targetsLength = targets.Count;
+            int targetsLength = buildTargets.Count;
             BasisBundleGenerated[] bundles = new BasisBundleGenerated[targetsLength];
             List<string> paths = new List<string>();
 
             for (int Index = 0; Index < targetsLength; Index++)
             {
-                BuildTarget target = targets[Index];
+                BuildTarget target = buildTargets[Index];
 
                 // CHANGED: pass buildId (generatedID) into buildFunction
                 var (success, result) = await buildFunction(basisContentBase, assetBundleObject, Password, target, generatedID);
@@ -573,8 +590,6 @@ public static class BasisBundleBuild
                 OpenRelativePath(buildOutDir);
             }
 
-            RestoreOriginalBuildTarget(originalActiveTarget);
-
             BasisDebug.Log("Successfully built asset bundle.");
             EditorUtility.ClearProgressBar();
             return (true, "Success");
@@ -594,6 +609,10 @@ public static class BasisBundleBuild
 
             EditorUtility.ClearProgressBar();
             return (false, $"BuildBundle Exception: {ex.Message}");
+        }
+        finally
+        {
+            RestoreOriginalBuildTarget(originalActiveTarget);
         }
     }
     private static string EnsureBuildOutputDirectory(string rootOutDir, string folderName, bool deleteIfExists)

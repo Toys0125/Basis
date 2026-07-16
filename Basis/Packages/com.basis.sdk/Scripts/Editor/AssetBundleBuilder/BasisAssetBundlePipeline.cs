@@ -6,18 +6,51 @@ using System.Threading.Tasks;
 using Basis.Editor.Localization;
 using Basis.Scripts.BasisSdk;
 using UnityEditor;
+using UnityEditor.Build;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
+
+public sealed class BasisPreparedPrefabSource : IDisposable
+{
+    internal GameObject PrefabRoot { get; private set; }
+
+    internal BasisPreparedPrefabSource(GameObject prefabRoot)
+    {
+        PrefabRoot = prefabRoot;
+    }
+
+    public void Dispose()
+    {
+        if (PrefabRoot != null)
+        {
+            Object.DestroyImmediate(PrefabRoot);
+            PrefabRoot = null;
+        }
+    }
+}
+
 public static class BasisAssetBundlePipeline
 {
     // Define static delegates
     public delegate void BeforeBuildGameobjectHandler(GameObject prefab, BasisAssetBundleObject settings);
+    public delegate void BeforeBuildTargetPrefabHandler(GameObject prefab, BasisPrefabBuildContext context);
+    public delegate bool PrefabBuildTargetRequiresActiveEditorTargetHandler(BasisPrefabBuildContext context);
     public delegate void BeforeBuildSceneHandler(Scene prefab, BasisAssetBundleObject settings);
     public delegate void AfterBuildHandler(string assetBundleName);
     public delegate void BuildErrorHandler(Exception ex, GameObject prefab, bool wasModified, string temporaryStorage);
 
     // Static delegates
+    public static event Action<GameObject, BasisAssetBundleObject> OnPreparePrefabSource;
+    public static event BeforeBuildTargetPrefabHandler OnBeforeBuildTargetPrefab;
+    public static event Action<GameObject, BasisPrefabBuildContext> OnAfterBuildTargetPrefab;
+
+    // A target-aware processor that still depends on Unity's global target can opt in
+    // to the compatibility switch. Legacy hooks are treated as requiring it because
+    // they cannot receive an explicit target.
+    public static event PrefabBuildTargetRequiresActiveEditorTargetHandler OnPrefabBuildTargetRequiresActiveEditorTarget;
+
+    // Compatibility hook. It intentionally remains per-target.
     public static BeforeBuildGameobjectHandler OnBeforeBuildPrefab;
     public static AfterBuildHandler OnAfterBuildPrefab;
     public static BuildErrorHandler OnBuildErrorPrefab;
@@ -29,7 +62,51 @@ public static class BasisAssetBundlePipeline
     public static async Task<(bool, (BasisBundleGenerated, AssetBundleBuilder.InformationHash))>
     BuildAssetBundle(GameObject originalPrefab, BasisAssetBundleObject settings, string Password, BuildTarget Target, string buildId)
     {
-        return await BuildAssetBundle(false, originalPrefab, new Scene(), settings, Password, Target, buildId);
+        BasisPreparedPrefabSource preparedSource = PreparePrefabSource(originalPrefab, settings);
+        try
+        {
+            return await BuildAssetBundle(preparedSource, settings, Password, Target, buildId);
+        }
+        finally
+        {
+            preparedSource.Dispose();
+        }
+    }
+
+    public static BasisPreparedPrefabSource PreparePrefabSource(GameObject originalPrefab, BasisAssetBundleObject settings)
+    {
+        if (originalPrefab == null)
+        {
+            throw new ArgumentNullException(nameof(originalPrefab));
+        }
+
+        GameObject preparedBase = Object.Instantiate(originalPrefab);
+        preparedBase.name = originalPrefab.name;
+        try
+        {
+            OnPreparePrefabSource?.Invoke(preparedBase, settings);
+            return new BasisPreparedPrefabSource(preparedBase);
+        }
+        catch
+        {
+            Object.DestroyImmediate(preparedBase);
+            throw;
+        }
+    }
+
+    public static async Task<(bool, (BasisBundleGenerated, AssetBundleBuilder.InformationHash))>
+    BuildAssetBundle(BasisPreparedPrefabSource preparedSource, BasisAssetBundleObject settings, string Password, BuildTarget Target, string buildId)
+    {
+        if (preparedSource == null)
+        {
+            throw new ArgumentNullException(nameof(preparedSource));
+        }
+        if (preparedSource.PrefabRoot == null)
+        {
+            throw new ObjectDisposedException(nameof(preparedSource));
+        }
+
+        return await BuildAssetBundle(false, preparedSource.PrefabRoot, new Scene(), settings, Password, Target, buildId);
     }
 
     public static async Task<(bool, (BasisBundleGenerated, AssetBundleBuilder.InformationHash))>
@@ -47,10 +124,9 @@ public static class BasisAssetBundlePipeline
       BuildTarget Target,
       string Folder)
     {
-        if (EditorUserBuildSettings.activeBuildTarget != Target)
-        {
-            EditorUserBuildSettings.SwitchActiveBuildTarget(BuildPipeline.GetBuildTargetGroup(Target), Target);
-        }
+        BuildTarget originalActiveTarget = EditorUserBuildSettings.activeBuildTarget;
+        Scene originalActiveScene = SceneManager.GetActiveScene();
+        bool switchedActiveTarget = false;
         string uncombinedRoot = BasisBundleBuild.PathConversion(settings.AssetBundleUnCombined);
         string targetDirectory = Path.Combine(uncombinedRoot, Folder, Target.ToString());
 
@@ -61,11 +137,14 @@ public static class BasisAssetBundlePipeline
         string assetPath = null;
         string uniqueID = null;
         GameObject prefab = null;
+        BasisPrefabBuildContext prefabContext = null;
 
         try
         {
             if (isScene)
             {
+                switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
+
                 if (settings.RebakeOcclusionCulling)
                 {
                     if (settings.RebakeOcclusionCullingInThese.Contains(Target))
@@ -84,16 +163,22 @@ public static class BasisAssetBundlePipeline
             else
             {
                 prefab = Object.Instantiate(asset);
+                prefab.name = asset.name;
+                prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
+
+                bool requiresActiveTarget = OnBeforeBuildPrefab != null || RequiresActiveEditorTarget(prefabContext);
+                if (requiresActiveTarget)
+                {
+                    switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
+                    prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
+                }
+
                 DestroyEditorOnlyInAvatar(prefab);
+                OnBeforeBuildTargetPrefab?.Invoke(prefab, prefabContext);
                 OnBeforeBuildPrefab?.Invoke(prefab, settings);
                 PostProcessAvatar(prefab);
 
                 assetPath = TemporaryStorageHandler.SavePrefabToTemporaryStorage(prefab, settings, ref wasModified, out uniqueID);
-
-                if (prefab != null)
-                {
-                    GameObject.DestroyImmediate(prefab);
-                }
             }
 
             AssetBundleBuild Build = new AssetBundleBuild()
@@ -114,19 +199,16 @@ public static class BasisAssetBundlePipeline
                     Password,
                     Target);
 
-            TemporaryStorageHandler.ClearTemporaryStorage(settings.TemporaryStorage);
-            AssetDatabase.Refresh();
+            if (string.IsNullOrWhiteSpace(value.Item2.EncyptedPath) || !File.Exists(value.Item2.EncyptedPath))
+            {
+                throw new InvalidOperationException($"AssetBundle build for {Target} did not produce an encrypted bundle.");
+            }
 
             if (isScene) OnAfterBuildScene?.Invoke(uniqueID);
-            else OnAfterBuildPrefab?.Invoke(uniqueID);
-
-            // keep your original backend reset logic
-            BuildTarget buildTarget = EditorUserBuildSettings.activeBuildTarget;
-            BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(buildTarget);
-            var namedBuildTarget = UnityEditor.Build.NamedBuildTarget.FromBuildTargetGroup(targetGroup);
-            if (ScriptingImplementation.Mono2x != PlayerSettings.GetScriptingBackend(namedBuildTarget))
+            else
             {
-                PlayerSettings.SetScriptingBackend(namedBuildTarget, ScriptingImplementation.Mono2x);
+                OnAfterBuildTargetPrefab?.Invoke(prefab, prefabContext);
+                OnAfterBuildPrefab?.Invoke(uniqueID);
             }
 
             return new(true, value);
@@ -148,15 +230,107 @@ public static class BasisAssetBundlePipeline
                     BasisEditorLocalization.Get("sdk.common.dialog.ok"));
             }
 
-            BuildTarget buildTarget = EditorUserBuildSettings.activeBuildTarget;
-            BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(buildTarget);
-            var namedBuildTarget = UnityEditor.Build.NamedBuildTarget.FromBuildTargetGroup(targetGroup);
-            if (ScriptingImplementation.Mono2x != PlayerSettings.GetScriptingBackend(namedBuildTarget))
+            return new(false, (null, new AssetBundleBuilder.InformationHash()));
+        }
+        finally
+        {
+            if (prefab != null)
             {
-                PlayerSettings.SetScriptingBackend(namedBuildTarget, ScriptingImplementation.Mono2x);
+                Object.DestroyImmediate(prefab);
             }
 
-            return new(false, (null, new AssetBundleBuilder.InformationHash()));
+            if (isScene || wasModified)
+            {
+                TemporaryStorageHandler.ClearTemporaryStorage(settings.TemporaryStorage);
+                AssetDatabase.Refresh();
+            }
+
+            if (switchedActiveTarget && EditorUserBuildSettings.activeBuildTarget != originalActiveTarget)
+            {
+                EditorUserBuildSettings.SwitchActiveBuildTarget(
+                    BuildPipeline.GetBuildTargetGroup(originalActiveTarget),
+                    originalActiveTarget);
+            }
+
+            if (originalActiveScene.IsValid() && originalActiveScene.isLoaded && SceneManager.GetActiveScene() != originalActiveScene)
+            {
+                SceneManager.SetActiveScene(originalActiveScene);
+            }
+        }
+    }
+
+    private static bool SwitchActiveBuildTargetIfNeeded(BuildTarget target)
+    {
+        if (EditorUserBuildSettings.activeBuildTarget == target)
+        {
+            return false;
+        }
+
+        BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(target);
+        if (!EditorUserBuildSettings.SwitchActiveBuildTarget(targetGroup, target))
+        {
+            throw new InvalidOperationException($"Failed to switch Unity's active build target to {target}.");
+        }
+
+        return true;
+    }
+
+    private static BasisPrefabBuildContext CreatePrefabBuildContext(
+        GameObject prefab,
+        BasisAssetBundleObject settings,
+        BuildTarget target)
+    {
+        BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(target);
+        return new BasisPrefabBuildContext
+        {
+            Target = target,
+            TargetGroup = targetGroup,
+            NamedTarget = NamedBuildTarget.FromBuildTargetGroup(targetGroup),
+            ContentKind = prefab.GetComponent<BasisAvatar>() != null
+                ? BasisBundleContentKind.Avatar
+                : BasisBundleContentKind.Prop,
+            Settings = settings,
+            IsActiveEditorTarget = EditorUserBuildSettings.activeBuildTarget == target,
+            GraphicsApis = ResolveGraphicsApis(target)
+        };
+    }
+
+    private static bool RequiresActiveEditorTarget(BasisPrefabBuildContext context)
+    {
+        if (OnPrefabBuildTargetRequiresActiveEditorTarget == null)
+        {
+            return false;
+        }
+
+        Delegate[] handlers = OnPrefabBuildTargetRequiresActiveEditorTarget.GetInvocationList();
+        for (int index = 0; index < handlers.Length; index++)
+        {
+            var handler = (PrefabBuildTargetRequiresActiveEditorTargetHandler)handlers[index];
+            if (handler(context))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string[] ResolveGraphicsApis(BuildTarget target)
+    {
+        try
+        {
+            var graphicsApis = PlayerSettings.GetGraphicsAPIs(target);
+            if (graphicsApis == null || graphicsApis.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            return graphicsApis.Select(api => api.ToString()).ToArray();
+        }
+        catch (Exception ex)
+        {
+            BasisDebug.LogWarning($"Failed to resolve graphics APIs for {target}: {ex.Message}");
+            return Array.Empty<string>();
         }
     }
 
