@@ -14,24 +14,32 @@ using Object = UnityEngine.Object;
 public sealed class BasisPreparedPrefabSource : IDisposable
 {
     internal GameObject PrefabRoot { get; private set; }
+    private readonly bool ownsPrefabRoot;
 
-    internal BasisPreparedPrefabSource(GameObject prefabRoot)
+    internal BasisPreparedPrefabSource(GameObject prefabRoot, bool ownsPrefabRoot)
     {
         PrefabRoot = prefabRoot;
+        this.ownsPrefabRoot = ownsPrefabRoot;
     }
 
     public void Dispose()
     {
-        if (PrefabRoot != null)
+        if (ownsPrefabRoot && PrefabRoot != null)
         {
             Object.DestroyImmediate(PrefabRoot);
-            PrefabRoot = null;
         }
+        PrefabRoot = null;
     }
 }
 
 public static class BasisAssetBundlePipeline
 {
+    private static int deferredActiveTargetRestoreDepth;
+    private static int forcedActiveTargetDepth;
+    private static int deferredTemporaryStorageCleanupDepth;
+    private static readonly HashSet<string> deferredTemporaryStoragePaths =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     // Define static delegates
     public delegate void BeforeBuildGameobjectHandler(GameObject prefab, BasisAssetBundleObject settings);
     public delegate void BeforeBuildTargetPrefabHandler(GameObject prefab, BasisPrefabBuildContext context);
@@ -41,6 +49,8 @@ public static class BasisAssetBundlePipeline
     public delegate void BuildErrorHandler(Exception ex, GameObject prefab, bool wasModified, string temporaryStorage);
 
     // Static delegates
+    // Target-invariant processors can run once on this isolated source. Every
+    // target still receives its own clone before target-aware processors run.
     public static event Action<GameObject, BasisAssetBundleObject> OnPreparePrefabSource;
     public static event BeforeBuildTargetPrefabHandler OnBeforeBuildTargetPrefab;
     public static event Action<GameObject, BasisPrefabBuildContext> OnAfterBuildTargetPrefab;
@@ -80,12 +90,20 @@ public static class BasisAssetBundlePipeline
             throw new ArgumentNullException(nameof(originalPrefab));
         }
 
+        // The per-target build always clones PrefabRoot before processors can mutate it.
+        // When there is no shared-source processor, borrowing the original avoids one
+        // otherwise redundant hierarchy clone without changing per-target isolation.
+        if (OnPreparePrefabSource == null)
+        {
+            return new BasisPreparedPrefabSource(originalPrefab, false);
+        }
+
         GameObject preparedBase = Object.Instantiate(originalPrefab);
         preparedBase.name = originalPrefab.name;
         try
         {
-            OnPreparePrefabSource?.Invoke(preparedBase, settings);
-            return new BasisPreparedPrefabSource(preparedBase);
+            OnPreparePrefabSource.Invoke(preparedBase, settings);
+            return new BasisPreparedPrefabSource(preparedBase, true);
         }
         catch
         {
@@ -166,8 +184,10 @@ public static class BasisAssetBundlePipeline
                 prefab.name = asset.name;
                 prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
 
-                bool requiresActiveTarget = OnBeforeBuildPrefab != null || RequiresActiveEditorTarget(prefabContext);
-                if (requiresActiveTarget)
+                bool requiresActiveTarget = forcedActiveTargetDepth > 0 ||
+                    OnBeforeBuildPrefab != null ||
+                    RequiresActiveEditorTarget(prefabContext);
+                if (requiresActiveTarget && EditorUserBuildSettings.activeBuildTarget != Target)
                 {
                     switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
                     prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
@@ -241,11 +261,12 @@ public static class BasisAssetBundlePipeline
 
             if (isScene || wasModified)
             {
-                TemporaryStorageHandler.ClearTemporaryStorage(settings.TemporaryStorage);
-                AssetDatabase.Refresh();
+                CleanupTemporaryStorageWhenSafe(settings.TemporaryStorage);
             }
 
-            if (switchedActiveTarget && EditorUserBuildSettings.activeBuildTarget != originalActiveTarget)
+            if (switchedActiveTarget &&
+                deferredActiveTargetRestoreDepth == 0 &&
+                EditorUserBuildSettings.activeBuildTarget != originalActiveTarget)
             {
                 EditorUserBuildSettings.SwitchActiveBuildTarget(
                     BuildPipeline.GetBuildTargetGroup(originalActiveTarget),
@@ -257,6 +278,110 @@ public static class BasisAssetBundlePipeline
                 SceneManager.SetActiveScene(originalActiveScene);
             }
         }
+    }
+
+    internal static IDisposable DeferActiveBuildTargetRestore(bool forceActiveTarget)
+    {
+        deferredActiveTargetRestoreDepth++;
+        deferredTemporaryStorageCleanupDepth++;
+        if (forceActiveTarget)
+        {
+            forcedActiveTargetDepth++;
+        }
+
+        return new DeferredActiveTargetRestoreScope(forceActiveTarget);
+    }
+
+    private sealed class DeferredActiveTargetRestoreScope : IDisposable
+    {
+        private readonly bool forceActiveTarget;
+        private bool disposed;
+
+        public DeferredActiveTargetRestoreScope(bool forceActiveTarget)
+        {
+            this.forceActiveTarget = forceActiveTarget;
+        }
+
+        public void Dispose()
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            deferredActiveTargetRestoreDepth = Math.Max(0, deferredActiveTargetRestoreDepth - 1);
+            deferredTemporaryStorageCleanupDepth = Math.Max(0, deferredTemporaryStorageCleanupDepth - 1);
+            if (forceActiveTarget)
+            {
+                forcedActiveTargetDepth = Math.Max(0, forcedActiveTargetDepth - 1);
+            }
+
+            if (deferredTemporaryStorageCleanupDepth == 0)
+            {
+                FlushDeferredTemporaryStorageCleanup();
+            }
+        }
+    }
+
+    private static void CleanupTemporaryStorageWhenSafe(string temporaryStorage)
+    {
+        if (deferredTemporaryStorageCleanupDepth > 0)
+        {
+            deferredTemporaryStoragePaths.Add(temporaryStorage);
+            return;
+        }
+
+        DeleteTrackedTemporaryStorage(temporaryStorage);
+    }
+
+    private static void FlushDeferredTemporaryStorageCleanup()
+    {
+        if (deferredTemporaryStoragePaths.Count == 0)
+        {
+            return;
+        }
+
+        bool requiresRefresh = false;
+        try
+        {
+            foreach (string path in deferredTemporaryStoragePaths)
+            {
+                if (!DeleteTrackedTemporaryStorage(path, refreshFallback: false))
+                {
+                    requiresRefresh = true;
+                }
+            }
+
+            if (requiresRefresh)
+            {
+                AssetDatabase.Refresh();
+            }
+        }
+        finally
+        {
+            deferredTemporaryStoragePaths.Clear();
+        }
+    }
+
+    private static bool DeleteTrackedTemporaryStorage(string path, bool refreshFallback = true)
+    {
+        string normalizedPath = path?.Replace('\\', '/');
+        if (!string.IsNullOrWhiteSpace(normalizedPath) &&
+            normalizedPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
+            AssetDatabase.IsValidFolder(normalizedPath) &&
+            AssetDatabase.DeleteAsset(normalizedPath))
+        {
+            return true;
+        }
+
+        TemporaryStorageHandler.ClearTemporaryStorage(path);
+        if (refreshFallback)
+        {
+            AssetDatabase.Refresh();
+        }
+
+        return false;
     }
 
     private static bool SwitchActiveBuildTargetIfNeeded(BuildTarget target)
