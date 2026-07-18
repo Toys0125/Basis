@@ -281,6 +281,7 @@ public class BasisP2PConnectionLifecycleTests
     public void PeerDisconnectMidSession_NotifiesSurvivor_AndTearsDownTheSession()
     {
         using var scope = new ServerStaticsScope();
+        NetworkServer.AuthIdentity = new MapAuthIdentity();
         int initId = LifecycleSupport.NextPeerId();
         int targetId = LifecycleSupport.NextPeerId();
         FakeNetPeer initiator = LifecycleSupport.Peer(initId);
@@ -292,9 +293,13 @@ public class BasisP2PConnectionLifecycleTests
         Inject(initiator, BasisNetworkCommons.P2PSub_Request, (ushort)targetId, token);
         target.Sent.Clear(); // ignore the earlier Request forward
 
-        // This is exactly what CleanupPeerSubsystems calls on a real disconnect.
-        BasisServerP2PBroker.RemovePeer(initId);
+        BasisServerHandleEvents.HandlePeerDisconnected(initiator, new DisconnectInfo
+        {
+            Reason = DisconnectReason.RemoteConnectionClose,
+            SocketErrorCode = SocketError.Success
+        });
 
+        Assert.False(NetworkServer.AuthenticatedPeers.ContainsKey(initId));
         Assert.False(BasisServerP2PBroker.HasSessionForTests(token));
         Assert.True(Received(target, BasisNetworkCommons.P2PSub_Cancel, (ushort)initId, token));
     }
@@ -345,13 +350,16 @@ public class BasisP2PConnectionLifecycleTests
     public void StaleDisconnect_DoesNotTearDownTheLivePeersDirectConnectSession()
     {
         using var scope = new ServerStaticsScope();
-        NetworkServer.AuthIdentity = new MapAuthIdentity();
+        var identity = new MapAuthIdentity();
+        NetworkServer.AuthIdentity = identity;
 
         int id = LifecycleSupport.NextPeerId();
         int otherId = LifecycleSupport.NextPeerId();
         FakeNetPeer live = LifecycleSupport.Peer(id);   // reconnected peer that owns the id now
         FakeNetPeer other = LifecycleSupport.Peer(otherId);
         FakeNetPeer stale = LifecycleSupport.Peer(id);  // disconnected predecessor, same id
+        string liveUuid = LifecycleSupport.NewUuid();
+        identity.Register(liveUuid, id);
         NetworkServer.AuthenticatedPeers[id] = live;
         NetworkServer.AuthenticatedPeers[otherId] = other;
 
@@ -366,6 +374,10 @@ public class BasisP2PConnectionLifecycleTests
 
         Assert.True(BasisServerP2PBroker.HasSessionForTests(token),
             "a stranger's disconnect tore down the live peer's direct-connect session (CleanupPeerSubsystems.RemovePeer on a key it no longer owns)");
+        Assert.Same(live, NetworkServer.AuthenticatedPeers[id]);
+        Assert.True(identity.NetIDToUUID(live, out string storedUuid));
+        Assert.Equal(liveUuid, storedUuid);
+        Assert.DoesNotContain(other.Sent, message => message.Channel == BasisNetworkCommons.DisconnectionChannel);
     }
 
     // ── Routing ───────────────────────────────────────────────────────────────

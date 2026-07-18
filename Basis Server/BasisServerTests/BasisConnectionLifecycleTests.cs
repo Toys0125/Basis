@@ -677,21 +677,31 @@ public class BasisReconnectStateTests
         using var scope = new ServerStaticsScope();
         InstallServer();
 
+        MapAuthIdentity identity = (MapAuthIdentity)NetworkServer.AuthIdentity;
         int id = LifecycleSupport.NextPeerId();
+        int witnessId = LifecycleSupport.NextPeerId();
         FakeNetPeer stale = LifecycleSupport.Peer(id);
         FakeNetPeer live = LifecycleSupport.Peer(id); // reconnection that already won the slot
+        FakeNetPeer witness = LifecycleSupport.Peer(witnessId);
+        string liveUuid = LifecycleSupport.NewUuid();
 
         // Post-collision state: the live peer holds the slot; the stale peer's disconnect
         // event is still in flight and now fires with the same id.
+        identity.Register(liveUuid, id);
         NetworkServer.AuthenticatedPeers[id] = live;
+        NetworkServer.AuthenticatedPeers[witnessId] = witness;
         NetworkServer.RebuildPeerSnapshot();
 
         BasisServerHandleEvents.HandlePeerDisconnected(stale, Info());
 
         // Invariant: a stale peer's teardown must only remove itself, never the live peer
-        // that owns the id now — mirroring the value-matched remove in RejectWithReason(NetPeer).
+        // or any id-indexed state that now belongs to the replacement connection.
         Assert.True(NetworkServer.AuthenticatedPeers.TryGetValue(id, out NetPeer stored),
             "the live peer was evicted by a stale peer's disconnect (key-only TryRemove)");
         Assert.Same(live, stored);
+        Assert.Contains(NetworkServer.PeerSnapshot, peer => ReferenceEquals(peer, live));
+        Assert.True(identity.NetIDToUUID(live, out string storedUuid));
+        Assert.Equal(liveUuid, storedUuid);
+        Assert.Empty(witness.Sent);
     }
 }

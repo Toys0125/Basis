@@ -24,6 +24,7 @@ namespace BasisServerHandle
     public static class BasisServerHandleEvents
     {
         [ThreadStatic] private static HashSet<int> _excludedSet;
+        private static readonly object _peerLifecycleLock = new object();
 
         #region Server Events Setup
         public static void SubscribeServerEvents()
@@ -62,13 +63,25 @@ namespace BasisServerHandle
         #region Peer Connection and Disconnection
 
         /// <summary>
-        /// Runs the idempotent per-peer subsystem cleanup shared by graceful
-        /// disconnects and reconnect-collision eviction. Does NOT broadcast a
-        /// disconnect to other peers and does NOT reset server-wide state — the
-        /// caller decides whether either is appropriate.
+        /// Runs the per-peer subsystem cleanup shared by graceful disconnects and
+        /// reconnect-collision eviction. The caller must hold <see cref="_peerLifecycleLock"/>.
+        /// Cleanup is allowed only when <paramref name="peer"/> still owns the authenticated
+        /// slot; otherwise an old disconnect callback could tear down replacement state.
         /// </summary>
         private static bool CleanupPeerSubsystems(NetPeer peer, int id)
         {
+            if (!NetworkServer.AuthenticatedPeers.TryGetValue(id, out NetPeer currentPeer) ||
+                !ReferenceEquals(currentPeer, peer))
+            {
+                return false;
+            }
+
+            var peerEntry = new KeyValuePair<int, NetPeer>(id, peer);
+            if (!((ICollection<KeyValuePair<int, NetPeer>>)NetworkServer.AuthenticatedPeers).Remove(peerEntry))
+            {
+                return false;
+            }
+
             if (NetworkServer.AuthIdentity.NetIDToUUID(peer, out string uuid))
             {
                 PermissionIntegration.RemovePlayerMeta(uuid);
@@ -89,7 +102,7 @@ namespace BasisServerHandle
             BasisNetworkMessageProcessor.ClearPeerErrors(id);
             BasisServerMessageRegistry.ClearSubscription(id);
 
-            return NetworkServer.AuthenticatedPeers.TryRemove(id, out _);
+            return true;
         }
 
         public static void HandlePeerDisconnected(NetPeer peer, DisconnectInfo info)
@@ -103,38 +116,48 @@ namespace BasisServerHandle
                 }
                 int id = peer.Id;
 
-                if (CleanupPeerSubsystems(peer, id))
+                lock (_peerLifecycleLock)
                 {
+                    if (!CleanupPeerSubsystems(peer, id))
+                    {
+                        if (NetworkServer.AuthenticatedPeers.TryGetValue(id, out NetPeer currentPeer) &&
+                            !ReferenceEquals(currentPeer, peer))
+                        {
+                            BNL.Log($"Ignoring stale disconnect for peer {id}; the authenticated slot belongs to a newer connection.");
+                        }
+                        else
+                        {
+                            BNL.Log($"Peer {id} was not in AuthenticatedPeers (likely rejected before auth completed).");
+                        }
+                        return;
+                    }
+
                     NetworkServer.RebuildPeerSnapshot();
                     BNL.Log($"Peer removed: {id}");
-                }
-                else
-                {
-                    BNL.Log($"Peer {id} was not in AuthenticatedPeers (likely rejected before auth completed).");
-                }
 
-                if (NetworkServer.AuthenticatedPeers.IsEmpty)
-                {
-                    BasisNetworkIDDatabase.Reset();
-                    BasisNetworkResourceManagement.Reset();
-                    BasisNetworkContentShare.Reset();
-                }
-
-                NetDataWriter writer = NetworkServer.RentWriter();
-                writer.Put((ushort)id);
-                if (NetworkServer.CheckValidated(writer))
-                {
-                    NetPeer[] Peers = NetworkServer.PeerSnapshot;
-                    foreach (var client in Peers)
+                    if (NetworkServer.AuthenticatedPeers.IsEmpty)
                     {
-                        if (client.Id != id)
+                        BasisNetworkIDDatabase.Reset();
+                        BasisNetworkResourceManagement.Reset();
+                        BasisNetworkContentShare.Reset();
+                    }
+
+                    NetDataWriter writer = NetworkServer.RentWriter();
+                    writer.Put((ushort)id);
+                    if (NetworkServer.CheckValidated(writer))
+                    {
+                        NetPeer[] Peers = NetworkServer.PeerSnapshot;
+                        foreach (var client in Peers)
                         {
-                            BasisNetworkStatistics.RecordOutbound(BasisNetworkCommons.DisconnectionChannel, writer.Length);
-                            client.Send(writer, BasisNetworkCommons.DisconnectionChannel, DeliveryMethod.ReliableOrdered);
+                            if (client.Id != id)
+                            {
+                                BasisNetworkStatistics.RecordOutbound(BasisNetworkCommons.DisconnectionChannel, writer.Length);
+                                client.Send(writer, BasisNetworkCommons.DisconnectionChannel, DeliveryMethod.ReliableOrdered);
+                            }
                         }
                     }
+                    NetworkServer.ReturnWriter(writer);
                 }
-                NetworkServer.ReturnWriter(writer);
             }
             catch (Exception e)
             {
@@ -343,27 +366,35 @@ namespace BasisServerHandle
             }
             ReadyMessage.playerMetaDataMessage.playerDisplayName = sanitizedDisplayName;
 
-            bool added = NetworkServer.AuthenticatedPeers.TryAdd(PeerId, newPeer);
-            if (!added)
+            bool added;
+            lock (_peerLifecycleLock)
             {
-                // Reconnect collision: LiteNetLib recycled this peer-id slot before the
-                // previous disconnect's subsystem cleanup completed (or the original
-                // PeerDisconnectedEvent has not yet been dispatched). The old entry is
-                // stale because LNL will not hand us two live peers with the same Id —
-                // evict it synchronously and retry the insert.
-                if (NetworkServer.AuthenticatedPeers.TryGetValue(PeerId, out NetPeer stale) &&
-                    !ReferenceEquals(stale, newPeer))
+                added = NetworkServer.AuthenticatedPeers.TryAdd(PeerId, newPeer);
+                if (!added)
                 {
-                    BNL.Log($"Reconnect collision on peer id {PeerId}; evicting stale entry and accepting new connection.");
-                    CleanupPeerSubsystems(stale, PeerId);
-                    added = NetworkServer.AuthenticatedPeers.TryAdd(PeerId, newPeer);
+                    // Reconnect collision: LiteNetLib recycled this peer-id slot before the
+                    // previous disconnect's subsystem cleanup completed (or the original
+                    // PeerDisconnectedEvent has not yet been dispatched). The old entry is
+                    // stale because LNL will not hand us two live peers with the same Id —
+                    // evict it synchronously and retry the insert.
+                    if (NetworkServer.AuthenticatedPeers.TryGetValue(PeerId, out NetPeer stale) &&
+                        !ReferenceEquals(stale, newPeer))
+                    {
+                        BNL.Log($"Reconnect collision on peer id {PeerId}; evicting stale entry and accepting new connection.");
+                        CleanupPeerSubsystems(stale, PeerId);
+                        added = NetworkServer.AuthenticatedPeers.TryAdd(PeerId, newPeer);
+                    }
+                }
+
+                if (added)
+                {
+                    newPeer.Tag = NetworkServer.AuthenticatedPeerTag;
+                    NetworkServer.RebuildPeerSnapshot();
                 }
             }
 
             if (added)
             {
-                newPeer.Tag = NetworkServer.AuthenticatedPeerTag;
-                NetworkServer.RebuildPeerSnapshot();
                 BNL.Log($"Peer connected: {newPeer.Id}");
                 //never ever assume the UUID provided by the user is good always recalc on the server.
                 //this means that as long as they pass auth but locally have a bad UUID that only they locally are effected.
