@@ -292,9 +292,9 @@ public class BasisBulkBuildWindowEditor : EditorWindow
         var targets = assetBundleObject.selectedTargets == null
             ? null
             : new List<BuildTarget>(assetBundleObject.selectedTargets);
-        if (targets == null || targets.Count == 0)
+        if (!BasisBundleBuild.ValidateTargets(targets, out string targetError))
         {
-            Debug.LogError("No build targets selected (BasisAssetBundleObject.selectedTargets is empty).");
+            Debug.LogError(targetError);
             return;
         }
 
@@ -337,9 +337,12 @@ public class BasisBulkBuildWindowEditor : EditorWindow
                     {
                         string imageBytes = GetPreviewBytes(e, prefab);
                         var (ok, msg) = await BasisBundleBuild.GameObjectBundleBuild(
-                            imageBytes, content, targets,
+                            imageBytes,
+                            content,
+                            targets,
                             assetBundleObject.UseCustomPassword,
-                            assetBundleObject.UserSelectedPassword);
+                            assetBundleObject.UserSelectedPassword,
+                            targetsAlreadyValidated: true);
 
                         LogResult(ok, msg, e);
                     }

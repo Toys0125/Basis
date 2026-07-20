@@ -153,13 +153,13 @@ public static class BasisAssetBundlePipeline
         string targetDirectory = Path.Combine(uncombinedRoot, Folder, Target.ToString());
 
         TemporaryStorageHandler.ClearTemporaryStorage(targetDirectory);
-        TemporaryStorageHandler.EnsureDirectoryExists(targetDirectory);
 
         bool wasModified = false;
         string assetPath = null;
         string uniqueID = null;
         GameObject prefab = null;
         BasisPrefabBuildContext prefabContext = null;
+        string[] resolvedGraphicsApis = null;
         IDisposable backendScope = null;
         bool retainPrefabForAfterTargetHook = false;
 
@@ -187,10 +187,19 @@ public static class BasisAssetBundlePipeline
             }
             else
             {
-                BasisPrefabBuildContext requirementContext =
-                    CreatePrefabBuildContext(asset, settings, Target);
-                bool requiresActiveTarget = OnBeforeBuildPrefab != null ||
-                    RequiresActiveEditorTarget(requirementContext);
+                BasisPrefabBuildContext requirementContext = null;
+                bool requiresActiveTarget = OnBeforeBuildPrefab != null;
+                if (OnPrefabBuildTargetRequiresActiveEditorTarget != null)
+                {
+                    resolvedGraphicsApis = ResolveGraphicsApis(Target);
+                    requirementContext = CreatePrefabBuildContext(
+                        asset,
+                        settings,
+                        Target,
+                        resolvedGraphicsApis);
+                    requiresActiveTarget |= RequiresActiveEditorTarget(requirementContext);
+                }
+
                 if (requiresActiveTarget && EditorUserBuildSettings.activeBuildTarget != Target)
                 {
                     switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
@@ -198,11 +207,23 @@ public static class BasisAssetBundlePipeline
 
                 backendScope = BasisBuildTargetCapabilities.EnsureCompatibleBackend(Target, originalActiveTarget);
 
+                // Resolve final target metadata after compatibility changes. If
+                // no global target/backend change was needed, the requirement
+                // context already holds the same target-specific API list.
+                if (requirementContext == null || switchedActiveTarget || backendScope != null)
+                {
+                    resolvedGraphicsApis = ResolveGraphicsApis(Target);
+                }
+
                 // Create the mutable target clone only after any required platform
                 // switch has completed, so it reflects the target's compiled scripts.
                 prefab = Object.Instantiate(asset);
                 prefab.name = asset.name;
-                prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
+                prefabContext = CreatePrefabBuildContext(
+                    prefab,
+                    settings,
+                    Target,
+                    resolvedGraphicsApis);
 
                 DestroyEditorOnlyInAvatar(prefab);
                 OnBeforeBuildTargetPrefab?.Invoke(prefab, prefabContext);
@@ -240,7 +261,8 @@ public static class BasisAssetBundlePipeline
                     uniqueID,
                     isScene ? "Scene" : "GameObject",
                     Password,
-                    Target);
+                    Target,
+                    resolvedGraphicsAPIs: resolvedGraphicsApis);
 
             if (string.IsNullOrWhiteSpace(value.Item2.EncyptedPath) || !File.Exists(value.Item2.EncyptedPath))
             {
@@ -456,7 +478,8 @@ public static class BasisAssetBundlePipeline
     private static BasisPrefabBuildContext CreatePrefabBuildContext(
         GameObject prefab,
         BasisAssetBundleObject settings,
-        BuildTarget target)
+        BuildTarget target,
+        string[] graphicsApis)
     {
         BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(target);
         return new BasisPrefabBuildContext
@@ -470,7 +493,7 @@ public static class BasisAssetBundlePipeline
                 : BasisBundleContentKind.Prop,
             Settings = settings,
             IsActiveEditorTarget = EditorUserBuildSettings.activeBuildTarget == target,
-            GraphicsApis = ResolveGraphicsApis(target)
+            GraphicsApis = graphicsApis
         };
     }
 

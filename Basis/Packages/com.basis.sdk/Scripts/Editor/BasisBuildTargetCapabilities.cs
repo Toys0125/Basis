@@ -17,6 +17,92 @@ public static class BasisBuildTargetCapabilities
     private const string Il2CppToken = "il2cpp";
     private const string MonoToken = "mono";
 
+    private static int buildSessionDepth;
+    private static readonly Dictionary<BuildTarget, Dictionary<ScriptingImplementation, BackendAvailabilityResult>>
+        buildSessionAvailability =
+            new Dictionary<BuildTarget, Dictionary<ScriptingImplementation, BackendAvailabilityResult>>();
+    private static readonly Dictionary<BuildTargetGroup, BackendSessionState> buildSessionBackends =
+        new Dictionary<BuildTargetGroup, BackendSessionState>();
+
+    private readonly struct BackendAvailabilityResult
+    {
+        public readonly bool Available;
+        public readonly string Reason;
+
+        public BackendAvailabilityResult(bool available, string reason)
+        {
+            Available = available;
+            Reason = reason;
+        }
+    }
+
+    private sealed class BackendSessionState
+    {
+        public readonly BuildTargetGroup Group;
+        public readonly NamedBuildTarget NamedTarget;
+        public readonly ScriptingImplementation OriginalBackend;
+        public readonly BuildTarget OriginalObservationTarget;
+
+        public BackendSessionState(
+            BuildTargetGroup group,
+            NamedBuildTarget namedTarget,
+            ScriptingImplementation originalBackend,
+            BuildTarget originalObservationTarget)
+        {
+            Group = group;
+            NamedTarget = namedTarget;
+            OriginalBackend = originalBackend;
+            OriginalObservationTarget = originalObservationTarget;
+        }
+    }
+
+    private sealed class BackendChangedScope : IDisposable
+    {
+        public static readonly BackendChangedScope Instance = new BackendChangedScope();
+        private BackendChangedScope() { }
+        public void Dispose() { }
+    }
+
+    /// <summary>
+    /// Caches installed-module/backend probes for one logical build operation.
+    /// Nested sessions share the same cache and defer backend restoration until
+    /// the caller has restored a safe active target. This prevents bulk builds
+    /// from reselecting IL2CPP while an unsupported macOS target is still active.
+    /// </summary>
+    internal static IDisposable BeginBuildSession()
+    {
+        buildSessionDepth++;
+        return new BuildSessionScope();
+    }
+
+    private sealed class BuildSessionScope : IDisposable
+    {
+        private bool disposed;
+
+        public void Dispose()
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            buildSessionDepth = Math.Max(0, buildSessionDepth - 1);
+            if (buildSessionDepth == 0)
+            {
+                try
+                {
+                    RestoreBuildSessionBackends();
+                }
+                finally
+                {
+                    buildSessionBackends.Clear();
+                    buildSessionAvailability.Clear();
+                }
+            }
+        }
+    }
+
     public static bool TryResolveBackend(
         BuildTarget target,
         ScriptingImplementation requested,
@@ -53,6 +139,22 @@ public static class BasisBuildTargetCapabilities
         ScriptingImplementation backend,
         out string reason)
     {
+        if (TryGetCachedAvailability(target, backend, out BackendAvailabilityResult cached))
+        {
+            reason = cached.Reason;
+            return cached.Available;
+        }
+
+        bool available = ResolveScriptingBackendAvailability(target, backend, out reason);
+        CacheAvailability(target, backend, available, reason);
+        return available;
+    }
+
+    private static bool ResolveScriptingBackendAvailability(
+        BuildTarget target,
+        ScriptingImplementation backend,
+        out string reason)
+    {
         BuildTargetGroup group;
         try
         {
@@ -75,6 +177,41 @@ public static class BasisBuildTargetCapabilities
         }
 
         return IsScriptingBackendAvailable(group, backend, out reason);
+    }
+
+    private static bool TryGetCachedAvailability(
+        BuildTarget target,
+        ScriptingImplementation backend,
+        out BackendAvailabilityResult result)
+    {
+        result = default;
+        if (buildSessionDepth == 0 ||
+            !buildSessionAvailability.TryGetValue(target, out Dictionary<ScriptingImplementation, BackendAvailabilityResult> targetResults))
+        {
+            return false;
+        }
+
+        return targetResults.TryGetValue(backend, out result);
+    }
+
+    private static void CacheAvailability(
+        BuildTarget target,
+        ScriptingImplementation backend,
+        bool available,
+        string reason)
+    {
+        if (buildSessionDepth == 0)
+        {
+            return;
+        }
+
+        if (!buildSessionAvailability.TryGetValue(target, out Dictionary<ScriptingImplementation, BackendAvailabilityResult> targetResults))
+        {
+            targetResults = new Dictionary<ScriptingImplementation, BackendAvailabilityResult>();
+            buildSessionAvailability.Add(target, targetResults);
+        }
+
+        targetResults[backend] = new BackendAvailabilityResult(available, reason);
     }
 
     public static bool IsScriptingBackendAvailable(
@@ -119,6 +256,15 @@ public static class BasisBuildTargetCapabilities
         NamedBuildTarget namedBuildTarget = NamedBuildTarget.FromBuildTargetGroup(group);
         ScriptingImplementation original = PlayerSettings.GetScriptingBackend(namedBuildTarget);
 
+        if (buildSessionDepth > 0)
+        {
+            return EnsureCompatibleBackendForSession(
+                target,
+                group,
+                namedBuildTarget,
+                original);
+        }
+
         if (original != ScriptingImplementation.IL2CPP)
         {
             return null;
@@ -143,6 +289,118 @@ public static class BasisBuildTargetCapabilities
             $"[BasisBuild] IL2CPP is unavailable for {target}; automatically using Mono for this build. " +
             $"{il2CppReason}");
         return new BackendRestoreScope(target, restoreValidationTarget, namedBuildTarget, original);
+    }
+
+    private static IDisposable EnsureCompatibleBackendForSession(
+        BuildTarget target,
+        BuildTargetGroup group,
+        NamedBuildTarget namedBuildTarget,
+        ScriptingImplementation currentBackend)
+    {
+        if (!buildSessionBackends.TryGetValue(group, out BackendSessionState state))
+        {
+            state = new BackendSessionState(
+                group,
+                namedBuildTarget,
+                currentBackend,
+                target);
+            buildSessionBackends.Add(group, state);
+        }
+
+        ScriptingImplementation requestedBackend = state.OriginalBackend;
+        if (requestedBackend != ScriptingImplementation.IL2CPP)
+        {
+            return null;
+        }
+
+        ScriptingImplementation desiredBackend = requestedBackend;
+        string il2CppReason;
+        if (!IsScriptingBackendAvailable(target, requestedBackend, out il2CppReason))
+        {
+            string monoReason;
+            if (!IsScriptingBackendAvailable(target, ScriptingImplementation.Mono2x, out monoReason))
+            {
+                throw new InvalidOperationException(
+                    $"IL2CPP is unavailable for {target}, and Mono is not available. " +
+                    $"IL2CPP: {il2CppReason}; Mono: {monoReason}.");
+            }
+
+            desiredBackend = ScriptingImplementation.Mono2x;
+        }
+
+        if (currentBackend == desiredBackend)
+        {
+            return null;
+        }
+
+        PlayerSettings.SetScriptingBackend(namedBuildTarget, desiredBackend);
+        if (desiredBackend == ScriptingImplementation.Mono2x)
+        {
+            Debug.LogWarning(
+                $"[BasisBuild] IL2CPP is unavailable for {target}; automatically using Mono for this build. " +
+                il2CppReason);
+        }
+
+        return BackendChangedScope.Instance;
+    }
+
+    private static void RestoreBuildSessionBackends()
+    {
+        if (buildSessionBackends.Count == 0)
+        {
+            return;
+        }
+
+        BuildTarget activeTarget = EditorUserBuildSettings.activeBuildTarget;
+        BuildTargetGroup activeGroup;
+        try
+        {
+            activeGroup = BuildPipeline.GetBuildTargetGroup(activeTarget);
+        }
+        catch
+        {
+            activeGroup = BuildTargetGroup.Unknown;
+        }
+
+        foreach (BackendSessionState state in buildSessionBackends.Values)
+        {
+            ScriptingImplementation current;
+            try
+            {
+                current = PlayerSettings.GetScriptingBackend(state.NamedTarget);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(
+                    $"[BasisBuild] Could not inspect the current scripting backend for {state.Group}.\n{ex}");
+                continue;
+            }
+
+            if (current == state.OriginalBackend)
+            {
+                continue;
+            }
+
+            if (activeGroup == state.Group &&
+                !IsScriptingBackendAvailable(activeTarget, state.OriginalBackend, out string reason))
+            {
+                Debug.LogWarning(
+                    $"[BasisBuild] Leaving {current} selected for {state.Group}; the original " +
+                    $"{state.OriginalBackend} backend is unavailable for active target {activeTarget}. {reason}");
+                continue;
+            }
+
+            try
+            {
+                PlayerSettings.SetScriptingBackend(state.NamedTarget, state.OriginalBackend);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(
+                    $"[BasisBuild] Could not restore the original {state.OriginalBackend} backend " +
+                    $"for {state.Group} after building from {state.OriginalObservationTarget}.\n{ex}");
+            }
+        }
     }
 
     public static bool TryGetAvailableScriptingBackends(

@@ -19,6 +19,7 @@ public static class BasisBundleBuild
     public static event Func<BasisContentBase, List<BuildTarget>, Task> PreBuildBundleEvents;
     private static int deferredBulkTargetRestoreDepth;
     private static BuildTarget? deferredBulkOriginalTarget;
+    private static IDisposable deferredBulkCapabilitySession;
 
     /// <summary>
     /// Keeps the active editor target across a bulk sequence. Each individual
@@ -31,6 +32,7 @@ public static class BasisBundleBuild
         if (deferredBulkTargetRestoreDepth == 0)
         {
             deferredBulkOriginalTarget = EditorUserBuildSettings.activeBuildTarget;
+            deferredBulkCapabilitySession = BasisBuildTargetCapabilities.BeginBuildSession();
         }
 
         deferredBulkTargetRestoreDepth++;
@@ -50,32 +52,71 @@ public static class BasisBundleBuild
 
             disposed = true;
             deferredBulkTargetRestoreDepth = Math.Max(0, deferredBulkTargetRestoreDepth - 1);
-            if (deferredBulkTargetRestoreDepth != 0 || !deferredBulkOriginalTarget.HasValue)
+            if (deferredBulkTargetRestoreDepth != 0)
             {
                 return;
             }
 
-            BuildTarget originalTarget = deferredBulkOriginalTarget.Value;
+            BuildTarget? originalTarget = deferredBulkOriginalTarget;
             deferredBulkOriginalTarget = null;
-            RestoreOriginalBuildTargetImmediately(originalTarget);
+            try
+            {
+                if (originalTarget.HasValue)
+                {
+                    RestoreOriginalBuildTargetImmediately(originalTarget.Value);
+                }
+            }
+            finally
+            {
+                deferredBulkCapabilitySession?.Dispose();
+                deferredBulkCapabilitySession = null;
+            }
         }
     }
 
-    public static async Task<(bool, string)> GameObjectBundleBuild(string Image, BasisContentBase BasisContentBase, List<BuildTarget> Targets, bool useProvidedPassword = false, string OverriddenPassword = "")
+    public static Task<(bool, string)> GameObjectBundleBuild(
+        string Image,
+        BasisContentBase BasisContentBase,
+        List<BuildTarget> Targets,
+        bool useProvidedPassword = false,
+        string OverriddenPassword = "")
     {
-        int TargetCount = Targets.Count;
-        for (int Index = 0; Index < TargetCount; Index++)
+        return GameObjectBundleBuild(
+            Image,
+            BasisContentBase,
+            Targets,
+            useProvidedPassword,
+            OverriddenPassword,
+            targetsAlreadyValidated: false);
+    }
+
+    internal static async Task<(bool, string)> GameObjectBundleBuild(
+        string Image,
+        BasisContentBase BasisContentBase,
+        List<BuildTarget> Targets,
+        bool useProvidedPassword,
+        string OverriddenPassword,
+        bool targetsAlreadyValidated)
+    {
+        if (!targetsAlreadyValidated && !ValidateTargets(Targets, out string targetError))
         {
-            if (CheckTarget(Targets[Index]) == false)
-            {
-                return (false, "Please install build target for " + Targets[Index].ToString());
-            }
+            return (false, targetError);
         }
 
-        Bounds unitybounds = CalculateLocalRenderBounds(BasisContentBase.gameObject);
-        BasisBounds BasisBounds = new BasisBounds(unitybounds.center, unitybounds.size);
+        BasisContentHarvest harvest = BasisContentHarvest.BuildFrom(BasisContentBase.gameObject, true);
+        Bounds unitybounds;
+        BasisBundleConnector.BasisMetaData meta;
+        try
+        {
+            unitybounds = CalculateLocalRenderBounds(BasisContentBase.gameObject, harvest.Renderers);
+            meta = GenerateMetaData(harvest);
+        }
+        finally
+        {
+            harvest.ReturnToPool();
+        }
 
-        var meta = GenerateMetaData(BasisContentBase.gameObject);
+        BasisBounds BasisBounds = new BasisBounds(unitybounds.center, unitybounds.size);
         string FolderPath = MakeSafeFolderName(BasisContentBase.BasisBundleDescription.AssetBundleName);
         BasisPreparedPrefabSource preparedSource = null;
         try
@@ -109,8 +150,15 @@ public static class BasisBundleBuild
     /// </summary>
     public static Bounds CalculateLocalRenderBounds(GameObject parent)
     {
-        var renderers = parent.GetComponentsInChildren<Renderer>(true);
-        if (renderers == null || renderers.Length == 0)
+        Renderer[] renderers = parent.GetComponentsInChildren<Renderer>(true);
+        return CalculateLocalRenderBounds(parent, renderers);
+    }
+
+    private static Bounds CalculateLocalRenderBounds(
+        GameObject parent,
+        IReadOnlyList<Renderer> renderers)
+    {
+        if (renderers == null || renderers.Count == 0)
             return new Bounds(Vector3.zero, Vector3.zero);
 
         Matrix4x4 parentWorldToLocal = parent.transform.worldToLocalMatrix;
@@ -118,8 +166,9 @@ public static class BasisBundleBuild
         bool hasAny = false;
         Bounds accum = default;
 
-        foreach (var r in renderers)
+        for (int index = 0; index < renderers.Count; index++)
         {
+            Renderer r = renderers[index];
             if (r == null) continue;
 
             Bounds transformed;
@@ -186,11 +235,34 @@ public static class BasisBundleBuild
     }
     public static bool CheckTarget(BuildTarget target)
     {
-        bool isSupported = BuildPipeline.IsBuildTargetSupported(BuildTargetGroup.Standalone, target) ||
-                           BuildPipeline.IsBuildTargetSupported(BuildTargetGroup.Android, target);
+        BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(target);
+        bool isSupported = targetGroup != BuildTargetGroup.Unknown &&
+                           BuildPipeline.IsBuildTargetSupported(targetGroup, target);
 
-        Debug.Log($"{target.ToString()} Build Target Installed: {isSupported}");
+        Debug.Log($"{target} Build Target Installed: {isSupported}");
         return isSupported;
+    }
+
+    internal static bool ValidateTargets(IReadOnlyList<BuildTarget> targets, out string error)
+    {
+        if (targets == null || targets.Count == 0)
+        {
+            error = "No build targets were selected.";
+            return false;
+        }
+
+        for (int index = 0; index < targets.Count; index++)
+        {
+            BuildTarget target = targets[index];
+            if (!CheckTarget(target))
+            {
+                error = "Please install build target for " + target;
+                return false;
+            }
+        }
+
+        error = null;
+        return true;
     }
     public static async Task<(bool, string)> SceneBundleBuild(
      string Image,
@@ -199,21 +271,14 @@ public static class BasisBundleBuild
      bool useProvidedPassword = false,
      string OverriddenPassword = "")
     {
-        int TargetCount = Targets.Count;
-        for (int Index = 0; Index < TargetCount; Index++)
+        if (!ValidateTargets(Targets, out string targetError))
         {
-            if (CheckTarget(Targets[Index]) == false)
-            {
-                return (false, "Please install build target for " + Targets[Index].ToString());
-            }
+            return (false, targetError);
         }
 
         UnityEngine.SceneManagement.Scene scene = BasisContentBase.gameObject.scene;
-
-        var unitybounds = CalculateSceneBounds(scene);
+        BasisBundleConnector.BasisMetaData meta = AnalyzeScene(scene, out Bounds unitybounds);
         BasisBounds BasisBounds = new BasisBounds(unitybounds.center, unitybounds.size);
-
-        var meta = GenerateSceneMetaData(scene);
         string FolderName = MakeSafeFolderName(BasisContentBase.BasisBundleDescription.AssetBundleName);
         return await BuildBundle(FolderName,
             basisContentBase: BasisContentBase,
@@ -306,13 +371,25 @@ public static class BasisBundleBuild
     }
     public static BasisBundleConnector.BasisMetaData GenerateMetaData(GameObject root)
     {
+        BasisContentHarvest harvest = BasisContentHarvest.BuildFrom(root, true);
+        try
+        {
+            return GenerateMetaData(harvest);
+        }
+        finally
+        {
+            harvest.ReturnToPool();
+        }
+    }
+
+    private static BasisBundleConnector.BasisMetaData GenerateMetaData(BasisContentHarvest harvest)
+    {
         BasisBundleConnector.BasisMetaData meta = new BasisBundleConnector.BasisMetaData();
         long triangleCount = 0;
         long materialCount = 0;
         long bonesCount = 0;
         Dictionary<string, int> componentCounts = new Dictionary<string, int>();
 
-        BasisContentHarvest harvest = BasisContentHarvest.BuildFrom(root, true);
         List<Component> components = harvest.Components;
         List<BasisComponentKind> kinds = harvest.Kinds;
 
@@ -347,13 +424,23 @@ public static class BasisBundleBuild
         // hidden outfit variant's textures still sit in GPU/CPU memory.
         List<Renderer> allRenderers = harvest.Renderers;
         HashSet<Material> uniqueMaterials = new HashSet<Material>();
-        foreach (var r in allRenderers)
+        List<Material> rendererMaterials = new List<Material>(8);
+        for (int rendererIndex = 0; rendererIndex < allRenderers.Count; rendererIndex++)
         {
-            foreach (var mat in r.sharedMaterials)
+            Renderer renderer = allRenderers[rendererIndex];
+            if (renderer == null)
             {
-                if (mat != null)
+                continue;
+            }
+
+            rendererMaterials.Clear();
+            renderer.GetSharedMaterials(rendererMaterials);
+            for (int materialIndex = 0; materialIndex < rendererMaterials.Count; materialIndex++)
+            {
+                Material material = rendererMaterials[materialIndex];
+                if (material != null)
                 {
-                    uniqueMaterials.Add(mat);
+                    uniqueMaterials.Add(material);
                 }
             }
         }
@@ -403,14 +490,13 @@ public static class BasisBundleBuild
             }
 
             string typeName = comp.GetType().Name;
-
-            if (componentCounts.ContainsKey(typeName))
+            if (componentCounts.TryGetValue(typeName, out int count))
             {
-                componentCounts[typeName]++;
+                componentCounts[typeName] = count + 1;
             }
             else
             {
-                componentCounts[typeName] = 1;
+                componentCounts.Add(typeName, 1);
             }
         }
 
@@ -483,32 +569,69 @@ public static class BasisBundleBuild
     }
     public static BasisBundleConnector.BasisMetaData GenerateSceneMetaData(Scene scene)
     {
-        var roots = scene.GetRootGameObjects();
+        return AnalyzeScene(scene, out _);
+    }
 
+    private static BasisBundleConnector.BasisMetaData AnalyzeScene(Scene scene, out Bounds sceneBounds)
+    {
+        GameObject[] roots = scene.GetRootGameObjects();
         BasisBundleConnector.BasisMetaData combined = new BasisBundleConnector.BasisMetaData();
-
         long triangles = 0;
         long materials = 0;
         long bones = 0;
+        bool hasBounds = false;
+        sceneBounds = new Bounds(Vector3.zero, new Vector3(0.1f, 0.1f, 0.1f));
         Dictionary<string, int> componentCounts = new Dictionary<string, int>();
 
-        foreach (var root in roots)
+        for (int rootIndex = 0; rootIndex < roots.Length; rootIndex++)
         {
-            var meta = GenerateMetaData(root);
-
-            triangles += meta.TrianglesCount;
-            materials += meta.MaterialCount;
-            bones += meta.BonesCount;
-
-            if (meta.ComponentNames != null)
+            BasisContentHarvest harvest = BasisContentHarvest.BuildFrom(roots[rootIndex], true);
+            try
             {
-                foreach (var c in meta.ComponentNames)
+                List<Renderer> renderers = harvest.Renderers;
+                for (int rendererIndex = 0; rendererIndex < renderers.Count; rendererIndex++)
                 {
-                    if (componentCounts.ContainsKey(c.Name))
-                        componentCounts[c.Name] += c.count;
+                    Renderer renderer = renderers[rendererIndex];
+                    if (renderer == null)
+                    {
+                        continue;
+                    }
+
+                    if (!hasBounds)
+                    {
+                        sceneBounds = renderer.bounds;
+                        hasBounds = true;
+                    }
                     else
-                        componentCounts[c.Name] = c.count;
+                    {
+                        sceneBounds.Encapsulate(renderer.bounds);
+                    }
                 }
+
+                BasisBundleConnector.BasisMetaData meta = GenerateMetaData(harvest);
+                triangles += meta.TrianglesCount;
+                materials += meta.MaterialCount;
+                bones += meta.BonesCount;
+
+                if (meta.ComponentNames != null)
+                {
+                    for (int componentIndex = 0; componentIndex < meta.ComponentNames.Length; componentIndex++)
+                    {
+                        BasisBundleConnector.BasisComponentName component = meta.ComponentNames[componentIndex];
+                        if (componentCounts.TryGetValue(component.Name, out int count))
+                        {
+                            componentCounts[component.Name] = count + component.count;
+                        }
+                        else
+                        {
+                            componentCounts.Add(component.Name, component.count);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                harvest.ReturnToPool();
             }
         }
 
@@ -516,7 +639,6 @@ public static class BasisBundleBuild
         combined.MaterialCount = materials;
         combined.BonesCount = bones;
         combined.GraphicsPipeline = DetectGraphicsPipeline();
-
         combined.ComponentNames = componentCounts
             .Select(kvp => new BasisBundleConnector.BasisComponentName
             {
@@ -541,6 +663,7 @@ public static class BasisBundleBuild
         string generatedID = null;
         string stagingRoot = null;
         BuildTarget originalActiveTarget = EditorUserBuildSettings.activeBuildTarget;
+        IDisposable capabilitySession = BasisBuildTargetCapabilities.BeginBuildSession();
         List<BuildTarget> buildTargets = targets != null
             ? new List<BuildTarget>(targets)
             : new List<BuildTarget>();
@@ -599,7 +722,6 @@ public static class BasisBundleBuild
                 {
                     BuildTarget target = buildTargets[Index];
 
-                    // CHANGED: pass buildId (generatedID) into buildFunction
                     var (success, result) = await buildFunction(basisContentBase, assetBundleObject, Password, target, generatedID);
                     if (!success)
                     {
@@ -649,45 +771,49 @@ public static class BasisBundleBuild
 
             DeleteFolders(buildOutDir);
 
-            // cleanup staging (uncombined) outputs
-            try
-            {
-                if (!string.IsNullOrEmpty(stagingRoot) && Directory.Exists(stagingRoot))
-                    Directory.Delete(stagingRoot, true);
-            }
-            catch (Exception ex)
-            {
-                BasisDebug.LogError($"Failed to delete staging folder {stagingRoot}: {ex.Message}");
-            }
-
             if (assetBundleObject.OpenFolderOnDisc)
             {
                 OpenRelativePath(buildOutDir);
             }
 
             BasisDebug.Log("Successfully built asset bundle.");
-            EditorUtility.ClearProgressBar();
             return (true, "Success");
         }
         catch (Exception ex)
         {
             Debug.LogException(ex);
             BasisDebug.LogError($"BuildBundle error: {ex.Message}");
-
-            // cleanup staging even on failure
-            try
-            {
-                if (!string.IsNullOrEmpty(stagingRoot) && Directory.Exists(stagingRoot))
-                    Directory.Delete(stagingRoot, true);
-            }
-            catch { /* ignore */ }
-
-            EditorUtility.ClearProgressBar();
             return (false, $"BuildBundle Exception: {ex.Message}");
         }
         finally
         {
-            RestoreOriginalBuildTarget(originalActiveTarget);
+            try
+            {
+                DeleteStagingDirectory(stagingRoot);
+                RestoreOriginalBuildTarget(originalActiveTarget);
+            }
+            finally
+            {
+                capabilitySession.Dispose();
+                EditorUtility.ClearProgressBar();
+            }
+        }
+    }
+
+    private static void DeleteStagingDirectory(string stagingRoot)
+    {
+        if (string.IsNullOrEmpty(stagingRoot) || !Directory.Exists(stagingRoot))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(stagingRoot, true);
+        }
+        catch (Exception ex)
+        {
+            BasisDebug.LogWarning($"Failed to delete staging folder '{stagingRoot}'.\n{ex}");
         }
     }
     private static string EnsureBuildOutputDirectory(string rootOutDir, string folderName, bool deleteIfExists)
@@ -721,13 +847,6 @@ public static class BasisBundleBuild
         {
             targets.Remove(activeTarget);
             targets.Insert(0, activeTarget);
-        }
-    }
-    private static void ClearAssetBundleDirectory(string directoryPath)
-    {
-        if (Directory.Exists(directoryPath))
-        {
-            Directory.Delete(directoryPath, true);
         }
     }
     private static string GenerateHexString(int length)

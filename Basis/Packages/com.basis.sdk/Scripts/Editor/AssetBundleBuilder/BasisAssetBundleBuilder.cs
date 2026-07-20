@@ -10,7 +10,7 @@ using UnityEngine;
 using static BasisEncryptionWrapper;
 public static class AssetBundleBuilder
 {
-    public static async Task<(BasisBundleGenerated, InformationHash)> BuildAssetBundle(AssetBundleBuild[] BundledData, string targetDirectory, BasisAssetBundleObject settings, string assetBundleName, string mode, string password, BuildTarget buildTarget, bool isEncrypted = true)
+    public static async Task<(BasisBundleGenerated, InformationHash)> BuildAssetBundle(AssetBundleBuild[] BundledData, string targetDirectory, BasisAssetBundleObject settings, string assetBundleName, string mode, string password, BuildTarget buildTarget, bool isEncrypted = true, string[] resolvedGraphicsAPIs = null)
     {
         InformationHash Hash = new InformationHash();
         BasisBundleGenerated BasisBundleGenerated = new BasisBundleGenerated();
@@ -33,7 +33,7 @@ public static class AssetBundleBuilder
         if (manifest != null)
         {
             Hash = await ProcessAssetBundles(targetDirectory, settings, manifest, password, isEncrypted);
-            string[] graphicsAPIs = ResolveGraphicsAPIs(buildTarget);
+            string[] graphicsAPIs = resolvedGraphicsAPIs ?? ResolveGraphicsAPIs(buildTarget);
             BasisBundleGenerated = new BasisBundleGenerated(Hash.bundleHash.ToString(), mode, assetBundleName, Hash.CRC, true, password, buildTarget.ToString(), Hash.Length, graphicsAPIs);
             DeleteManifestFiles(targetDirectory, buildTarget.ToString());
 #if UNITY_6000_0_OR_NEWER
@@ -71,7 +71,7 @@ public static class AssetBundleBuilder
         }
         catch (Exception ex)
         {
-            BasisDebug.LogWarning($"Failed to resolve graphics APIs for {buildTarget}: {ex.Message}");
+            BasisDebug.LogWarning($"Failed to resolve graphics APIs for {buildTarget}: {ex}");
             return Array.Empty<string>();
         }
     }
