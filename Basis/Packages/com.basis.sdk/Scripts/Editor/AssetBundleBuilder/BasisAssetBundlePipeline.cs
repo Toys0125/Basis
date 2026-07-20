@@ -35,7 +35,6 @@ public sealed class BasisPreparedPrefabSource : IDisposable
 public static class BasisAssetBundlePipeline
 {
     private static int deferredActiveTargetRestoreDepth;
-    private static int forcedActiveTargetDepth;
     private static int deferredTemporaryStorageCleanupDepth;
     private static readonly HashSet<string> deferredTemporaryStoragePaths =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -53,6 +52,11 @@ public static class BasisAssetBundlePipeline
     // target still receives its own clone before target-aware processors run.
     public static event Action<GameObject, BasisAssetBundleObject> OnPreparePrefabSource;
     public static event BeforeBuildTargetPrefabHandler OnBeforeBuildTargetPrefab;
+
+    // Runs after all normal target processors and Basis avatar post-processing, but
+    // before the prefab is serialized. Finalizers therefore observe the hierarchy
+    // that will actually be written into the target bundle.
+    public static event BeforeBuildTargetPrefabHandler OnFinalizeBuildTargetPrefab;
     public static event Action<GameObject, BasisPrefabBuildContext> OnAfterBuildTargetPrefab;
 
     // A target-aware processor that still depends on Unity's global target can opt in
@@ -180,23 +184,26 @@ public static class BasisAssetBundlePipeline
             }
             else
             {
-                prefab = Object.Instantiate(asset);
-                prefab.name = asset.name;
-                prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
-
-                bool requiresActiveTarget = forcedActiveTargetDepth > 0 ||
-                    OnBeforeBuildPrefab != null ||
-                    RequiresActiveEditorTarget(prefabContext);
+                BasisPrefabBuildContext requirementContext =
+                    CreatePrefabBuildContext(asset, settings, Target);
+                bool requiresActiveTarget = OnBeforeBuildPrefab != null ||
+                    RequiresActiveEditorTarget(requirementContext);
                 if (requiresActiveTarget && EditorUserBuildSettings.activeBuildTarget != Target)
                 {
                     switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
-                    prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
                 }
+
+                // Create the mutable target clone only after any required platform
+                // switch has completed, so it reflects the target's compiled scripts.
+                prefab = Object.Instantiate(asset);
+                prefab.name = asset.name;
+                prefabContext = CreatePrefabBuildContext(prefab, settings, Target);
 
                 DestroyEditorOnlyInAvatar(prefab);
                 OnBeforeBuildTargetPrefab?.Invoke(prefab, prefabContext);
                 OnBeforeBuildPrefab?.Invoke(prefab, settings);
                 PostProcessAvatar(prefab);
+                OnFinalizeBuildTargetPrefab?.Invoke(prefab, prefabContext);
 
                 assetPath = TemporaryStorageHandler.SavePrefabToTemporaryStorage(prefab, settings, ref wasModified, out uniqueID);
             }
@@ -280,27 +287,16 @@ public static class BasisAssetBundlePipeline
         }
     }
 
-    internal static IDisposable DeferActiveBuildTargetRestore(bool forceActiveTarget)
+    internal static IDisposable DeferActiveBuildTargetRestore()
     {
         deferredActiveTargetRestoreDepth++;
         deferredTemporaryStorageCleanupDepth++;
-        if (forceActiveTarget)
-        {
-            forcedActiveTargetDepth++;
-        }
-
-        return new DeferredActiveTargetRestoreScope(forceActiveTarget);
+        return new DeferredActiveTargetRestoreScope();
     }
 
     private sealed class DeferredActiveTargetRestoreScope : IDisposable
     {
-        private readonly bool forceActiveTarget;
         private bool disposed;
-
-        public DeferredActiveTargetRestoreScope(bool forceActiveTarget)
-        {
-            this.forceActiveTarget = forceActiveTarget;
-        }
 
         public void Dispose()
         {
@@ -312,10 +308,6 @@ public static class BasisAssetBundlePipeline
             disposed = true;
             deferredActiveTargetRestoreDepth = Math.Max(0, deferredActiveTargetRestoreDepth - 1);
             deferredTemporaryStorageCleanupDepth = Math.Max(0, deferredTemporaryStorageCleanupDepth - 1);
-            if (forceActiveTarget)
-            {
-                forcedActiveTargetDepth = Math.Max(0, forcedActiveTargetDepth - 1);
-            }
 
             if (deferredTemporaryStorageCleanupDepth == 0)
             {
@@ -408,6 +400,7 @@ public static class BasisAssetBundlePipeline
         BuildTargetGroup targetGroup = BuildPipeline.GetBuildTargetGroup(target);
         return new BasisPrefabBuildContext
         {
+            PrefabRoot = prefab,
             Target = target,
             TargetGroup = targetGroup,
             NamedTarget = NamedBuildTarget.FromBuildTargetGroup(targetGroup),

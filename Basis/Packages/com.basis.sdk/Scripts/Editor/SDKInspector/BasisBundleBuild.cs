@@ -503,11 +503,6 @@ public static class BasisBundleBuild
             BasisAssetBundleObject assetBundleObject =
                 AssetDatabase.LoadAssetAtPath<BasisAssetBundleObject>(BasisAssetBundleObject.AssetBundleObject);
 
-            // Activate every requested non-active target. This is the fastest
-            // four-platform path and remains correct when Library caches are absent,
-            // recreated, or partially invalidated.
-            bool forceActiveTargetForBatch = buildTargets.Any(target => target != originalActiveTarget);
-
             // Final output folder (combined result)
             string rootOutDir = assetBundleObject.AssetBundleDirectory;
             Directory.CreateDirectory(rootOutDir);
@@ -526,24 +521,11 @@ public static class BasisBundleBuild
             BasisBundleGenerated[] bundles = new BasisBundleGenerated[targetsLength];
             List<string> paths = new List<string>();
 
-            using (BasisAssetBundlePipeline.DeferActiveBuildTargetRestore(forceActiveTargetForBatch))
+            using (BasisAssetBundlePipeline.DeferActiveBuildTargetRestore())
             {
                 for (int Index = 0; Index < targetsLength; Index++)
                 {
                     BuildTarget target = buildTargets[Index];
-
-                    // Activate cold targets before the build callback so one-time
-                    // source preparation and every target-aware processor observe
-                    // the same target as Unity's AssetBundle pipeline.
-                    if (forceActiveTargetForBatch && EditorUserBuildSettings.activeBuildTarget != target)
-                    {
-                        if (!EditorUserBuildSettings.SwitchActiveBuildTarget(
-                            BuildPipeline.GetBuildTargetGroup(target),
-                            target))
-                        {
-                            throw new InvalidOperationException($"Failed to switch Unity's active build target to {target}.");
-                        }
-                    }
 
                     // CHANGED: pass buildId (generatedID) into buildFunction
                     var (success, result) = await buildFunction(basisContentBase, assetBundleObject, Password, target, generatedID);

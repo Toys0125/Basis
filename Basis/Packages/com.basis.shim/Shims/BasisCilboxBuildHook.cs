@@ -15,15 +15,22 @@ public class BasisCilboxBuildHook
     private static void Initialize()
     {
         //Debug.Log("BasisCilboxBuildHook initialized.");
-        BasisAssetBundlePipeline.OnPreparePrefabSource -= HandlePreparePrefabSource;
-        BasisAssetBundlePipeline.OnPreparePrefabSource += HandlePreparePrefabSource;
+        BasisAssetBundlePipeline.OnFinalizeBuildTargetPrefab -= HandleFinalizeBuildTargetPrefab;
+        BasisAssetBundlePipeline.OnFinalizeBuildTargetPrefab += HandleFinalizeBuildTargetPrefab;
+        BasisAssetBundlePipeline.OnPrefabBuildTargetRequiresActiveEditorTarget -= RequiresActiveEditorTarget;
+        BasisAssetBundlePipeline.OnPrefabBuildTargetRequiresActiveEditorTarget += RequiresActiveEditorTarget;
         BasisAvatarSDKInspector.OnBeforeTestInEditor -= HandleBeforeTestInEditor;
         BasisAvatarSDKInspector.OnBeforeTestInEditor += HandleBeforeTestInEditor;
     }
 
-    private static void HandlePreparePrefabSource(GameObject prefabRoot, BasisAssetBundleObject settings)
+    private static void HandleFinalizeBuildTargetPrefab(GameObject prefabRoot, BasisPrefabBuildContext context)
     {
-        HandleBeforeBuildPrefab(prefabRoot, settings);
+        HandleBeforeBuildPrefab(prefabRoot, context.Settings);
+    }
+
+    private static bool RequiresActiveEditorTarget(BasisPrefabBuildContext context)
+    {
+        return context?.PrefabRoot != null && HasCilboxableComponents(context.PrefabRoot);
     }
 
     private static void HandleBeforeTestInEditor(GameObject prefabRoot)
