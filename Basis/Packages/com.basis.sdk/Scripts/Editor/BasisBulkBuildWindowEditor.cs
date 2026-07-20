@@ -305,7 +305,7 @@ public class BasisBulkBuildWindowEditor : EditorWindow
         try
         {
             using (BasisBundleBuild.DeferBulkTargetRestore())
-            using (BasisAssetBundlePipeline.DeferActiveBuildTargetRestore(false))
+            using (BasisAssetBundlePipeline.DeferActiveBuildTargetRestore())
             {
                 for (int i = 0; i < toBuild.Count; i++)
                 {
