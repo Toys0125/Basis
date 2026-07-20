@@ -334,25 +334,68 @@ public static class BasisAssetBundlePipeline
             return;
         }
 
-        bool requiresRefresh = false;
-        try
+        string[] pendingPaths = deferredTemporaryStoragePaths.ToArray();
+        deferredTemporaryStoragePaths.Clear();
+
+        List<string> retryPaths = new List<string>();
+        bool refreshBeforeRetry = false;
+        for (int index = 0; index < pendingPaths.Length; index++)
         {
-            foreach (string path in deferredTemporaryStoragePaths)
+            string path = pendingPaths[index];
+            try
             {
                 if (!DeleteTrackedTemporaryStorage(path, refreshFallback: false))
                 {
-                    requiresRefresh = true;
+                    refreshBeforeRetry = true;
                 }
             }
-
-            if (requiresRefresh)
+            catch (Exception ex)
             {
-                AssetDatabase.Refresh();
+                retryPaths.Add(path);
+                BasisDebug.LogWarning(
+                    $"Temporary storage cleanup failed for '{path}'. Retrying after an AssetDatabase refresh.\n{ex}");
             }
         }
-        finally
+
+        if (refreshBeforeRetry || retryPaths.Count > 0)
         {
-            deferredTemporaryStoragePaths.Clear();
+            TryRefreshAssetDatabase("before retrying deferred temporary storage cleanup");
+        }
+
+        bool refreshAfterRetry = false;
+        for (int index = 0; index < retryPaths.Count; index++)
+        {
+            string path = retryPaths[index];
+            try
+            {
+                if (!DeleteTrackedTemporaryStorage(path, refreshFallback: false))
+                {
+                    refreshAfterRetry = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                deferredTemporaryStoragePaths.Add(path);
+                BasisDebug.LogWarning(
+                    $"Temporary storage cleanup still failed for '{path}'. It will be retried after the next bundle build.\n{ex}");
+            }
+        }
+
+        if (refreshAfterRetry)
+        {
+            TryRefreshAssetDatabase("after retrying deferred temporary storage cleanup");
+        }
+    }
+
+    private static void TryRefreshAssetDatabase(string reason)
+    {
+        try
+        {
+            AssetDatabase.Refresh();
+        }
+        catch (Exception ex)
+        {
+            BasisDebug.LogWarning($"AssetDatabase refresh failed {reason}.\n{ex}");
         }
     }
 
@@ -420,17 +463,30 @@ public static class BasisAssetBundlePipeline
             return false;
         }
 
+        bool requiresActiveTarget = false;
         Delegate[] handlers = OnPrefabBuildTargetRequiresActiveEditorTarget.GetInvocationList();
         for (int index = 0; index < handlers.Length; index++)
         {
             var handler = (PrefabBuildTargetRequiresActiveEditorTargetHandler)handlers[index];
-            if (handler(context))
+            try
             {
-                return true;
+                if (handler(context))
+                {
+                    requiresActiveTarget = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                requiresActiveTarget = true;
+                string declaringType = handler.Method.DeclaringType?.FullName ?? "<unknown>";
+                string targetName = context != null ? context.Target.ToString() : "<unknown>";
+                BasisDebug.LogWarning(
+                    $"Active-target requirement handler '{declaringType}.{handler.Method.Name}' failed. " +
+                    $"The build will conservatively activate {targetName} and continue evaluating other handlers.\n{ex}");
             }
         }
 
-        return false;
+        return requiresActiveTarget;
     }
 
     private static string[] ResolveGraphicsApis(BuildTarget target)
@@ -447,7 +503,7 @@ public static class BasisAssetBundlePipeline
         }
         catch (Exception ex)
         {
-            BasisDebug.LogWarning($"Failed to resolve graphics APIs for {target}: {ex.Message}");
+            BasisDebug.LogWarning($"Failed to resolve graphics APIs for {target}: {ex}");
             return Array.Empty<string>();
         }
     }
