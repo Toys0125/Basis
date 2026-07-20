@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEngine;
 
 public class BasisBulkBuildWindowEditor : EditorWindow
@@ -25,6 +24,9 @@ public class BasisBulkBuildWindowEditor : EditorWindow
         public ContentType type;
         public bool selected;
         public Texture2D preview;
+        public bool previewIsAsset;
+        public bool previewBytesInitialized;
+        public string previewBytes;
     }
 
     private enum ContentType { Avatar, Prop }
@@ -232,7 +234,9 @@ public class BasisBulkBuildWindowEditor : EditorWindow
         foreach (var e in entries)
         {
             var main = AssetDatabase.LoadMainAssetAtPath(e.assetPath);
-            e.preview = AssetPreview.GetAssetPreview(main) ?? AssetPreview.GetMiniThumbnail(main);
+            Texture2D assetPreview = AssetPreview.GetAssetPreview(main);
+            e.preview = assetPreview ?? AssetPreview.GetMiniThumbnail(main);
+            e.previewIsAsset = assetPreview != null;
         }
 
         Repaint();
@@ -240,14 +244,34 @@ public class BasisBulkBuildWindowEditor : EditorWindow
 
     private void AddEntry(string path, string prefabName, ContentType type, GameObject prefab)
     {
+        Texture2D assetPreview = AssetPreview.GetAssetPreview(prefab);
         entries.Add(new Entry
         {
             assetPath = path,
             displayName = prefabName,
             type = type,
             selected = true,
-            preview = AssetPreview.GetAssetPreview(prefab) ?? AssetPreview.GetMiniThumbnail(prefab)
+            preview = assetPreview ?? AssetPreview.GetMiniThumbnail(prefab),
+            previewIsAsset = assetPreview != null
         });
+    }
+
+    private static string GetPreviewBytes(Entry entry, GameObject prefab)
+    {
+        if (entry.previewBytesInitialized)
+        {
+            return entry.previewBytes;
+        }
+
+        Texture2D image = entry.previewIsAsset && entry.preview != null
+            ? entry.preview
+            : AssetPreview.GetAssetPreview(prefab);
+        entry.previewBytes = image != null ? BasisTextureCompression.ToPngBytes(image) : null;
+        // If Unity has not generated a preview yet, leave the cache open so a
+        // later build can still include the icon instead of permanently
+        // caching a transient null result.
+        entry.previewBytesInitialized = entry.previewBytes != null;
+        return entry.previewBytes;
     }
 
     private async Task BuildSelectedAsync()
@@ -263,7 +287,11 @@ public class BasisBulkBuildWindowEditor : EditorWindow
             return;
         }
 
-        var targets = assetBundleObject.selectedTargets;
+        // Take a snapshot so platform switching or an asset refresh cannot
+        // mutate the target list while the bulk operation is in progress.
+        var targets = assetBundleObject.selectedTargets == null
+            ? null
+            : new List<BuildTarget>(assetBundleObject.selectedTargets);
         if (targets == null || targets.Count == 0)
         {
             Debug.LogError("No build targets selected (BasisAssetBundleObject.selectedTargets is empty).");
@@ -276,76 +304,49 @@ public class BasisBulkBuildWindowEditor : EditorWindow
         isBuilding = true;
         try
         {
-            for (int i = 0; i < toBuild.Count; i++)
+            using (BasisBundleBuild.DeferBulkTargetRestore())
+            using (BasisAssetBundlePipeline.DeferActiveBuildTargetRestore(false))
             {
-                var e = toBuild[i];
-
-                EditorUtility.DisplayProgressBar(
-                    BasisEditorLocalization.Get("sdk.bulkBuild.progress.title"),
-                    BasisEditorLocalization.Get("sdk.bulkBuild.progress.body", i + 1, toBuild.Count, e.type, e.displayName),
-                    (float)i / toBuild.Count);
-
-                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(e.assetPath);
-                if (prefab == null)
+                for (int i = 0; i < toBuild.Count; i++)
                 {
-                    Debug.LogError($"Failed to load prefab at {e.assetPath}");
-                    continue;
-                }
+                    var e = toBuild[i];
 
-                // Build from an instantiated clone so we never touch the authored prefab.
-                var buildRoot = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
-                if (buildRoot == null)
-                {
-                    Debug.LogError($"Failed to instantiate prefab: {e.assetPath}");
-                    continue;
-                }
+                    EditorUtility.DisplayProgressBar(
+                        BasisEditorLocalization.Get("sdk.bulkBuild.progress.title"),
+                        BasisEditorLocalization.Get("sdk.bulkBuild.progress.body", i + 1, toBuild.Count, e.type, e.displayName),
+                        (float)i / toBuild.Count);
 
-                try
-                {
-                    // Preview PNG (same idea as your inspectors)
-                    Texture2D img = AssetPreview.GetAssetPreview(prefab) ?? AssetPreview.GetAssetPreview(buildRoot);
-                    string imageBytes = img != null ? BasisTextureCompression.ToPngBytes(img) : null;
-
-                    switch (e.type)
+                    var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(e.assetPath);
+                    if (prefab == null)
                     {
-                        case ContentType.Avatar:
-                            {
-                                var avatar = buildRoot.GetComponentInChildren<BasisAvatar>(true);
-                                if (avatar == null) { Debug.LogError($"No BasisAvatar found in {e.assetPath}"); break; }
-
-                                var (ok, msg) = await BasisBundleBuild.GameObjectBundleBuild(
-                                    imageBytes, avatar, targets,
-                                    assetBundleObject.UseCustomPassword,
-                                    assetBundleObject.UserSelectedPassword);
-
-                                LogResult(ok, msg, e);
-                                break;
-                            }
-
-                        case ContentType.Prop:
-                            {
-                                var prop = buildRoot.GetComponentInChildren<BasisProp>(true);
-                                if (prop == null) { Debug.LogError($"No BasisProp found in {e.assetPath}"); break; }
-
-                                var (ok, msg) = await BasisBundleBuild.GameObjectBundleBuild(
-                                    imageBytes, prop, targets,
-                                    assetBundleObject.UseCustomPassword,
-                                    assetBundleObject.UserSelectedPassword);
-
-                                LogResult(ok, msg, e);
-                                break;
-                            }
+                        Debug.LogError($"Failed to load prefab at {e.assetPath}");
+                        continue;
                     }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogException(ex);
-                }
-                finally
-                {
-                    // Always clean up the clone
-                    if (buildRoot != null)
-                        DestroyImmediate(buildRoot);
+
+                    // GameObjectBundleBuild owns an isolated per-target clone;
+                    // pass the authored asset directly to avoid a redundant
+                    // hierarchy clone while preserving prefab immutability.
+                    BasisContentBase content = prefab.GetComponentInChildren<BasisContentBase>(true);
+                    if (content == null)
+                    {
+                        Debug.LogError($"No BasisContentBase found in {e.assetPath}");
+                        continue;
+                    }
+
+                    try
+                    {
+                        string imageBytes = GetPreviewBytes(e, prefab);
+                        var (ok, msg) = await BasisBundleBuild.GameObjectBundleBuild(
+                            imageBytes, content, targets,
+                            assetBundleObject.UseCustomPassword,
+                            assetBundleObject.UserSelectedPassword);
+
+                        LogResult(ok, msg, e);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogException(ex);
+                    }
                 }
             }
         }

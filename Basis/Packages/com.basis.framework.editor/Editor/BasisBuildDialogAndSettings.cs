@@ -55,14 +55,46 @@ public class BasisBuildDialogAndSettings : IPreprocessBuildWithReport
         // 1) Force IL2CPP-only targets
         if (Il2CppOnlyTargets.Contains(target))
         {
-            SetBackendIfNeeded(namedBuildTarget, currentBackend, ScriptingImplementation.IL2CPP);
+            ApplyRequestedBackend(
+                target,
+                namedBuildTarget,
+                currentBackend,
+                ScriptingImplementation.IL2CPP,
+                allowIl2CppFallback: false);
             return;
         }
 
         // 2) Force Mono-only targets
         if (MonoOnlyTargets.Contains(target))
         {
-            SetBackendIfNeeded(namedBuildTarget, currentBackend, ScriptingImplementation.Mono2x);
+            ApplyRequestedBackend(
+                target,
+                namedBuildTarget,
+                currentBackend,
+                ScriptingImplementation.Mono2x,
+                allowIl2CppFallback: true);
+            return;
+        }
+
+        // Standalone is one Unity build-target group, but macOS may be
+        // installed with Mono-only support on a Windows editor. Do not show an
+        // IL2CPP prompt that can only end in a failed build; select Mono before
+        // any target-specific post-processing runs.
+        string il2CppAvailabilityReason;
+        if (!BasisBuildTargetCapabilities.IsScriptingBackendAvailable(
+                target,
+                ScriptingImplementation.IL2CPP,
+                out il2CppAvailabilityReason))
+        {
+            Debug.LogWarning(
+                $"[BasisBuild] IL2CPP is unavailable for {target}; automatically selecting Mono. " +
+                il2CppAvailabilityReason);
+            ApplyRequestedBackend(
+                target,
+                namedBuildTarget,
+                currentBackend,
+                ScriptingImplementation.Mono2x,
+                allowIl2CppFallback: true);
             return;
         }
 
@@ -96,10 +128,12 @@ public class BasisBuildDialogAndSettings : IPreprocessBuildWithReport
                 : BasisBuildScriptingBackendPreference.Mode.Mono;
         }
 
-        SetBackendIfNeeded(
+        ApplyRequestedBackend(
+            target,
             namedBuildTarget,
             currentBackend,
-            useIl2Cpp ? ScriptingImplementation.IL2CPP : ScriptingImplementation.Mono2x
+            useIl2Cpp ? ScriptingImplementation.IL2CPP : ScriptingImplementation.Mono2x,
+            allowIl2CppFallback: true
         );
     }
 
@@ -168,5 +202,41 @@ public class BasisBuildDialogAndSettings : IPreprocessBuildWithReport
     {
         if (current == desired) return;
         PlayerSettings.SetScriptingBackend(namedBuildTarget, desired);
+    }
+
+    private static void ApplyRequestedBackend(
+        BuildTarget target,
+        UnityEditor.Build.NamedBuildTarget namedBuildTarget,
+        ScriptingImplementation current,
+        ScriptingImplementation requested,
+        bool allowIl2CppFallback)
+    {
+        ScriptingImplementation desired = requested;
+        if (requested == ScriptingImplementation.IL2CPP)
+        {
+            string reason;
+            if (!BasisBuildTargetCapabilities.TryResolveBackend(
+                    target,
+                    requested,
+                    out desired,
+                    out reason))
+            {
+                throw new BuildFailedException(
+                    $"The requested IL2CPP backend is not available for {target}, and Mono cannot be selected. {reason}");
+            }
+
+            if (desired != requested)
+            {
+                if (!allowIl2CppFallback)
+                {
+                    throw new BuildFailedException(
+                        $"The build target {target} requires IL2CPP, but this Unity installation does not provide it. {reason}");
+                }
+
+                Debug.LogWarning($"[BasisBuild] {reason} Automatically using Mono for {target}.");
+            }
+        }
+
+        SetBackendIfNeeded(namedBuildTarget, current, desired);
     }
 }

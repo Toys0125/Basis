@@ -92,20 +92,52 @@ public partial class BasisProjectSetup : EditorWindow
 
         if (enforceIl2cpp)
         {
-            if (!SupportsIl2cpp(group))
+            ScriptingImplementation desiredBackend;
+            string backendReason;
+            if (target == BuildTarget.StandaloneLinux64)
+            {
+                // Linux is intentionally Mono-only in the build pipeline.
+                desiredBackend = ScriptingImplementation.Mono2x;
+                backendReason = "Linux builds use Mono in Basis.";
+            }
+            else if (!BasisBuildTargetCapabilities.TryResolveBackend(
+                         target,
+                         ScriptingImplementation.IL2CPP,
+                         out desiredBackend,
+                         out backendReason))
             {
                 EditorUtility.DisplayDialog(
                     Tr("projectSetup.platformQuality.il2cppNotAvailableTitle", "IL2CPP Not Available"),
                     string.Format(Tr("projectSetup.platformQuality.il2cppNotAvailableBody",
                         "IL2CPP scripting backend is not available for {0}. " +
-                        "Install the appropriate *Build Support (IL2CPP)* module via Unity Hub, some platforms won't have Il2cpp support."), group),
+                        "Install the appropriate *Build Support (IL2CPP)* module via Unity Hub, some platforms won't have IL2CPP support.\n\n{1}"), group, backendReason),
+                    Tr("projectSetup.dialog.ok", "OK"));
+                return;
+            }
+
+            bool monoFallbackAllowed = target == BuildTarget.StandaloneOSX ||
+                target == BuildTarget.StandaloneWindows64 ||
+                target == BuildTarget.StandaloneLinux64;
+            if (desiredBackend != ScriptingImplementation.IL2CPP && !monoFallbackAllowed)
+            {
+                EditorUtility.DisplayDialog(
+                    Tr("projectSetup.platformQuality.il2cppNotAvailableTitle", "IL2CPP Not Available"),
+                    string.Format(Tr("projectSetup.platformQuality.il2cppNotAvailableBody",
+                        "IL2CPP scripting backend is required for {0}, but this Unity installation only exposes Mono.\n\n{1}"), group, backendReason),
                     Tr("projectSetup.dialog.ok", "OK"));
                 return;
             }
 
             try
             {
-                SetScriptingBackendSafe(group, ScriptingImplementation.IL2CPP);
+                PlayerSettings.SetScriptingBackend(
+                    NamedBuildTarget.FromBuildTargetGroup(group),
+                    desiredBackend);
+                if (desiredBackend != ScriptingImplementation.IL2CPP)
+                {
+                    Debug.LogWarning(
+                        $"[BasisBuild] IL2CPP is unavailable for {target}; BasisProjectSetup selected Mono. {backendReason}");
+                }
             }
             catch (Exception ex)
             {
@@ -228,54 +260,11 @@ public partial class BasisProjectSetup : EditorWindow
     // IL2CPP helpers
     private static bool SupportsIl2cpp(BuildTargetGroup group)
     {
-        try
-        {
-            var backends = GetAvailableScriptingBackendsSafe(group);
-            foreach (var b in backends)
-            {
-                if (b == ScriptingImplementation.IL2CPP)
-                    return true;
-            }
-        }
-        catch { /* ignore */ }
-        return false;
-    }
-
-    private static ScriptingImplementation[] GetAvailableScriptingBackendsSafe(BuildTargetGroup group)
-    {
-        var direct = typeof(PlayerSettings).GetMethod(
-            "GetAvailableScriptingBackends",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-        if (direct != null)
-        {
-            return (ScriptingImplementation[])direct.Invoke(null, new object[] { group });
-        }
-
-        var any = typeof(PlayerSettings).GetMethod(
-            "GetAvailableScriptingBackends",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        if (any != null)
-        {
-            return (ScriptingImplementation[])any.Invoke(null, new object[] { group });
-        }
-
-        if (group == BuildTargetGroup.Android)
-            return new[] { ScriptingImplementation.Mono2x, ScriptingImplementation.IL2CPP };
-
-        return new[] {PlayerSettings.GetScriptingBackend(NamedBuildTarget.FromBuildTargetGroup(group))
-    };
-    }
-
-    private static void SetScriptingBackendSafe(BuildTargetGroup group, ScriptingImplementation impl)
-    {
-        if (PlayerSettings.GetScriptingBackend(NamedBuildTarget.FromBuildTargetGroup(group)) == impl) return;
-
-        var backends = GetAvailableScriptingBackendsSafe(group);
-        bool supported = Array.Exists(backends, b => b == impl);
-        if (!supported)
-            throw new InvalidOperationException($"IL2CPP not supported for {group} on this Editor install.");
-
-        PlayerSettings.SetScriptingBackend(NamedBuildTarget.FromBuildTargetGroup(group), impl);
+        string reason;
+        return BasisBuildTargetCapabilities.IsScriptingBackendAvailable(
+            group,
+            ScriptingImplementation.IL2CPP,
+            out reason);
     }
 
     private void DrawBuildScriptingBackendPreference()

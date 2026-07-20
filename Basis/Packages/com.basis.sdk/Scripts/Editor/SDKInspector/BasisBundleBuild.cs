@@ -17,6 +17,49 @@ using UnityEngine.SceneManagement;
 public static class BasisBundleBuild
 {
     public static event Func<BasisContentBase, List<BuildTarget>, Task> PreBuildBundleEvents;
+    private static int deferredBulkTargetRestoreDepth;
+    private static BuildTarget? deferredBulkOriginalTarget;
+
+    /// <summary>
+    /// Keeps the active editor target across a bulk sequence. Each individual
+    /// bundle still activates every requested target before its processors run,
+    /// but the editor avoids an unnecessary round-trip back to the original
+    /// target between adjacent prefabs.
+    /// </summary>
+    internal static IDisposable DeferBulkTargetRestore()
+    {
+        if (deferredBulkTargetRestoreDepth == 0)
+        {
+            deferredBulkOriginalTarget = EditorUserBuildSettings.activeBuildTarget;
+        }
+
+        deferredBulkTargetRestoreDepth++;
+        return new DeferredBulkTargetRestoreScope();
+    }
+
+    private sealed class DeferredBulkTargetRestoreScope : IDisposable
+    {
+        private bool disposed;
+
+        public void Dispose()
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            deferredBulkTargetRestoreDepth = Math.Max(0, deferredBulkTargetRestoreDepth - 1);
+            if (deferredBulkTargetRestoreDepth != 0 || !deferredBulkOriginalTarget.HasValue)
+            {
+                return;
+            }
+
+            BuildTarget originalTarget = deferredBulkOriginalTarget.Value;
+            deferredBulkOriginalTarget = null;
+            RestoreOriginalBuildTargetImmediately(originalTarget);
+        }
+    }
 
     public static async Task<(bool, string)> GameObjectBundleBuild(string Image, BasisContentBase BasisContentBase, List<BuildTarget> Targets, bool useProvidedPassword = false, string OverriddenPassword = "")
     {
@@ -283,8 +326,7 @@ public static class BasisBundleBuild
         {
             if (smr.sharedMesh != null)
             {
-                EnsureReadWriteEnabled(smr.sharedMesh);
-                triangleCount += smr.sharedMesh.triangles.Length / 3;
+                triangleCount += GetTriangleCount(smr.sharedMesh);
             }
 
             if (smr.bones != null)
@@ -319,9 +361,20 @@ public static class BasisBundleBuild
 
         long textureMemoryBytes = 0;
         HashSet<Texture> uniqueTextures = new HashSet<Texture>();
+        Dictionary<Shader, int[]> texturePropertyIdsByShader = new Dictionary<Shader, int[]>();
         foreach (var mat in uniqueMaterials)
         {
-            int[] texturePropertyIds = mat.GetTexturePropertyNameIDs();
+            Shader shader = mat.shader;
+            int[] texturePropertyIds;
+            if (shader == null || !texturePropertyIdsByShader.TryGetValue(shader, out texturePropertyIds))
+            {
+                texturePropertyIds = mat.GetTexturePropertyNameIDs();
+                if (shader != null)
+                {
+                    texturePropertyIdsByShader.Add(shader, texturePropertyIds);
+                }
+            }
+
             for (int i = 0; i < texturePropertyIds.Length; i++)
             {
                 Texture tex = mat.GetTexture(texturePropertyIds[i]);
@@ -345,8 +398,7 @@ public static class BasisBundleBuild
                 MeshFilter mf = harvest.UnsafeAs<MeshFilter>(i);
                 if (mf.sharedMesh != null)
                 {
-                    EnsureReadWriteEnabled(mf.sharedMesh);
-                    triangleCount += mf.sharedMesh.triangles.Length / 3;
+                    triangleCount += GetTriangleCount(mf.sharedMesh);
                 }
             }
 
@@ -376,6 +428,26 @@ public static class BasisBundleBuild
             .ToArray();
 
         return meta;
+    }
+
+    private static long GetTriangleCount(Mesh mesh)
+    {
+        if (mesh == null)
+        {
+            return 0;
+        }
+
+        long triangleCount = 0;
+        int subMeshCount = mesh.subMeshCount;
+        for (int subMeshIndex = 0; subMeshIndex < subMeshCount; subMeshIndex++)
+        {
+            if (mesh.GetTopology(subMeshIndex) == MeshTopology.Triangles)
+            {
+                triangleCount += (long)mesh.GetIndexCount(subMeshIndex) / 3;
+            }
+        }
+
+        return triangleCount;
     }
     // Identifies the render pipeline the bundle is being built against. Stored
     // verbatim as the asset type name (e.g. "UniversalRenderPipelineAsset",
@@ -664,6 +736,16 @@ public static class BasisBundleBuild
         return ByteArrayToHexString(randomBytes);
     }
     private static void RestoreOriginalBuildTarget(BuildTarget originalTarget)
+    {
+        if (deferredBulkTargetRestoreDepth > 0)
+        {
+            return;
+        }
+
+        RestoreOriginalBuildTargetImmediately(originalTarget);
+    }
+
+    private static void RestoreOriginalBuildTargetImmediately(BuildTarget originalTarget)
     {
         if (EditorUserBuildSettings.activeBuildTarget != originalTarget)
         {

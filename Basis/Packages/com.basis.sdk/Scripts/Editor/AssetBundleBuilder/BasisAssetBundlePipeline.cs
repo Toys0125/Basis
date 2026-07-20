@@ -160,12 +160,15 @@ public static class BasisAssetBundlePipeline
         string uniqueID = null;
         GameObject prefab = null;
         BasisPrefabBuildContext prefabContext = null;
+        IDisposable backendScope = null;
+        bool retainPrefabForAfterTargetHook = false;
 
         try
         {
             if (isScene)
             {
                 switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
+                backendScope = BasisBuildTargetCapabilities.EnsureCompatibleBackend(Target, originalActiveTarget);
 
                 if (settings.RebakeOcclusionCulling)
                 {
@@ -193,6 +196,8 @@ public static class BasisAssetBundlePipeline
                     switchedActiveTarget = SwitchActiveBuildTargetIfNeeded(Target);
                 }
 
+                backendScope = BasisBuildTargetCapabilities.EnsureCompatibleBackend(Target, originalActiveTarget);
+
                 // Create the mutable target clone only after any required platform
                 // switch has completed, so it reflects the target's compiled scripts.
                 prefab = Object.Instantiate(asset);
@@ -206,6 +211,17 @@ public static class BasisAssetBundlePipeline
                 OnFinalizeBuildTargetPrefab?.Invoke(prefab, prefabContext);
 
                 assetPath = TemporaryStorageHandler.SavePrefabToTemporaryStorage(prefab, settings, ref wasModified, out uniqueID);
+
+                // The serialized temporary asset is all the bundle builder
+                // needs. Release the hierarchy before Unity's build pipeline
+                // allocates its own import graph unless a target-aware after
+                // hook explicitly needs the live clone.
+                retainPrefabForAfterTargetHook = OnAfterBuildTargetPrefab != null;
+                if (!retainPrefabForAfterTargetHook)
+                {
+                    Object.DestroyImmediate(prefab);
+                    prefab = null;
+                }
             }
 
             AssetBundleBuild Build = new AssetBundleBuild()
@@ -279,6 +295,8 @@ public static class BasisAssetBundlePipeline
                     BuildPipeline.GetBuildTargetGroup(originalActiveTarget),
                     originalActiveTarget);
             }
+
+            backendScope?.Dispose();
 
             if (originalActiveScene.IsValid() && originalActiveScene.isLoaded && SceneManager.GetActiveScene() != originalActiveScene)
             {
