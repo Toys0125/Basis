@@ -143,7 +143,7 @@ namespace Basis.Shims.Tests
             SetWrapper(ref pickup.Inputs.leftHand, left, BasisBoneTrackedRole.LeftHand, BasisInteractInputState.Interacting);
             SetWrapper(ref pickup.Inputs.rightHand, right, BasisBoneTrackedRole.RightHand, BasisInteractInputState.Interacting);
 
-            BasisInput expected = Basis.BasisUI.BasisDominantHand.IsLeftHanded ? left : right;
+            BasisInput expected = BasisDominantHand.IsLeftHanded ? left : right;
             AssertReadMatches(expected);
         }
 
