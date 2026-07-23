@@ -1074,6 +1074,23 @@ namespace Basis.Scripts.BasisSdk.Interactions
         }
 
         /// <summary>
+        /// Retrieves the local input currently holding this pickup.
+        /// </summary>
+        /// <param name="input">The active local input, or <see langword="null"/> when the pickup is not held.</param>
+        /// <returns><see langword="true"/> when a local input is actively interacting; otherwise <see langword="false"/>.</returns>
+        public bool TryGetActiveInteractingInput(out BasisInput input)
+        {
+            input = null;
+            if (!GetActiveInteracting(out BasisInputWrapper wrapper) || wrapper.Source == null)
+            {
+                return false;
+            }
+
+            input = wrapper.Source;
+            return true;
+        }
+
+        /// <summary>
         /// Retrieves the active interacting input wrapper, if any.
         /// </summary>
         /// <param name="BasisInputWrapper">Outputs the active wrapper when interaction is in progress.</param>

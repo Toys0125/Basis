@@ -1,5 +1,6 @@
 using Basis.Shims;
 using Basis.Scripts.BasisSdk;
+using Basis.Scripts.BasisSdk.Interactions;
 using Basis.BasisUI;
 using System;
 using System.Collections.Generic;
@@ -51,6 +52,22 @@ namespace Basis
 
 			eventTrigger.triggers.Add(entry);
 		}
+		public static BasisPickupInputShim MakePickupInputReadable(BasisPickupInteractable pickup)
+		{
+			if (pickup == null)
+			{
+				return null;
+			}
+
+			if (pickup.TryGetComponent(out BasisPickupInputShim shim))
+			{
+				return shim.TryInitialize(pickup) ? shim : null;
+			}
+
+			shim = pickup.gameObject.AddComponent<BasisPickupInputShim>();
+			return shim.TryInitialize(pickup) ? shim : null;
+		}
+
 		public static BasisNetworkShim MakeNetworkable( object o )
 		{
 			if (o is not MonoBehaviour behaviour)
