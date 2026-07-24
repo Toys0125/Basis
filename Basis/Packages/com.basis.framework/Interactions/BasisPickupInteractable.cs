@@ -1076,11 +1076,11 @@ namespace Basis.Scripts.BasisSdk.Interactions
         /// <summary>
         /// Copies the complete readable state of the local input currently holding this pickup.
         /// </summary>
-        /// <param name="inputState">An immutable input snapshot, or its default value when the pickup is not held.</param>
+        /// <param name="inputSnapshot">An immutable input snapshot, or its default value when the pickup is not held.</param>
         /// <returns><see langword="true"/> when a valid local input is actively interacting; otherwise <see langword="false"/>.</returns>
-        public bool TryGetActiveInputState(out BasisPickupInputState inputState)
+        public bool TryGetActiveInputSnapshot(out BasisInputSnapshot inputSnapshot)
         {
-            inputState = default;
+            inputSnapshot = default;
             if (!isActiveAndEnabled ||
                 !GetActiveInteracting(out BasisInputWrapper wrapper) ||
                 wrapper.Source == null)
@@ -1094,7 +1094,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
                 return false;
             }
 
-            inputState = new BasisPickupInputState(nativeState);
+            inputSnapshot = new BasisInputSnapshot(nativeState);
             return true;
         }
 

@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace Basis.Shims.Tests
 {
-    public sealed class BasisPickupInputStateTestInput : BasisInput
+    public sealed class BasisInputSnapshotTestInput : BasisInput
     {
         public override void LateDoPollData() { }
         public override void ShowTrackedVisual() { }
@@ -19,14 +19,14 @@ namespace Basis.Shims.Tests
         public new void OnDestroy() { }
     }
 
-    public sealed class BasisPickupInputStateTestPickup : BasisPickupInteractable
+    public sealed class BasisInputSnapshotTestPickup : BasisPickupInteractable
     {
         public override void Awake() { }
         public override void OnDestroy() { }
     }
 
     [Cilboxable]
-    public sealed class BasisPickupInputStateCilboxProbe : MonoBehaviour
+    public sealed class BasisInputSnapshotCilboxProbe : MonoBehaviour
     {
         [SerializeField]
         private BasisPickupInteractable pickup;
@@ -41,7 +41,7 @@ namespace Basis.Shims.Tests
         {
             if (mode != BasisPickUpUseMode.OnPickUpStillDown ||
                 pickup == null ||
-                !pickup.TryGetActiveInputState(out BasisPickupInputState state))
+                !pickup.TryGetActiveInputSnapshot(out BasisInputSnapshot state))
             {
                 return;
             }
@@ -54,7 +54,7 @@ namespace Basis.Shims.Tests
         }
     }
 
-    public sealed class BasisPickupInputStateTests
+    public sealed class BasisInputSnapshotTests
     {
         private static readonly FieldInfo WrapperStateField = typeof(BasisInputWrapper).GetField(
             "State",
@@ -62,17 +62,17 @@ namespace Basis.Shims.Tests
 
         private GameObject pickupObject;
         private BasisPickupInteractable pickup;
-        private BasisPickupInputStateTestInput desktop;
-        private BasisPickupInputStateTestInput left;
-        private BasisPickupInputStateTestInput right;
+        private BasisInputSnapshotTestInput desktop;
+        private BasisInputSnapshotTestInput left;
+        private BasisInputSnapshotTestInput right;
 
         [SetUp]
         public void SetUp()
         {
             Assert.That(WrapperStateField, Is.Not.Null);
 
-            pickupObject = new GameObject("pickup-input-state-test");
-            pickup = pickupObject.AddComponent<BasisPickupInputStateTestPickup>();
+            pickupObject = new GameObject("pickup-input-snapshot-test");
+            pickup = pickupObject.AddComponent<BasisInputSnapshotTestPickup>();
             pickup.Inputs = new BasisInputSources(0);
 
             desktop = CreateInput("desktop");
@@ -209,7 +209,7 @@ namespace Basis.Shims.Tests
         public void Snapshot_DoesNotRetainMutableNativeState()
         {
             SetWrapper(ref pickup.Inputs.leftHand, left, BasisBoneTrackedRole.LeftHand, BasisInteractInputState.Interacting);
-            Assert.That(pickup.TryGetActiveInputState(out BasisPickupInputState snapshot), Is.True);
+            Assert.That(pickup.TryGetActiveInputSnapshot(out BasisInputSnapshot snapshot), Is.True);
 
             float trigger = snapshot.Trigger;
             Vector2 primaryAxis = snapshot.Primary2DAxisRaw;
@@ -227,7 +227,7 @@ namespace Basis.Shims.Tests
         [Test]
         public void Snapshot_MirrorsEveryReadableInputPropertyAndIsImmutable()
         {
-            Type snapshotType = typeof(BasisPickupInputState);
+            Type snapshotType = typeof(BasisInputSnapshot);
 
             Assert.That(snapshotType.IsValueType, Is.True);
             Assert.That(snapshotType.IsDefined(typeof(IsReadOnlyAttribute), false), Is.True);
@@ -258,13 +258,13 @@ namespace Basis.Shims.Tests
             SetWrapper(ref pickup.Inputs.leftHand, left, BasisBoneTrackedRole.LeftHand, BasisInteractInputState.Interacting);
             for (int index = 0; index < 128; index++)
             {
-                pickup.TryGetActiveInputState(out _);
+                pickup.TryGetActiveInputSnapshot(out _);
             }
 
             long before = GC.GetAllocatedBytesForCurrentThread();
             for (int index = 0; index < 10000; index++)
             {
-                pickup.TryGetActiveInputState(out _);
+                pickup.TryGetActiveInputSnapshot(out _);
             }
             long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
@@ -272,23 +272,23 @@ namespace Basis.Shims.Tests
         }
 
         [Test]
-        public void CilboxBoundary_AllowsImmutablePickupStateButRejectsNativeState()
+        public void CilboxBoundary_AllowsImmutableInputSnapshotButRejectsNativeState()
         {
             var cilbox = new CilboxPropBasis();
             var usage = new CilboxUsage(cilbox);
             Serializee[] noParameters = Array.Empty<Serializee>();
 
             Assert.That(cilbox.CheckTypeAllowed(typeof(BasisPickupInteractable).FullName), Is.True);
-            Assert.That(cilbox.CheckTypeAllowed(typeof(BasisPickupInputState).FullName), Is.True);
+            Assert.That(cilbox.CheckTypeAllowed(typeof(BasisInputSnapshot).FullName), Is.True);
             Assert.That(cilbox.CheckTypeAllowed(typeof(BasisInputState).FullName), Is.False);
             Assert.That(cilbox.CheckFieldAllowed(typeof(BasisInput).FullName, nameof(BasisInput.CurrentInputState)), Is.False);
 
             MethodInfo readMethod = typeof(BasisPickupInteractable).GetMethod(
-                nameof(BasisPickupInteractable.TryGetActiveInputState));
+                nameof(BasisPickupInteractable.TryGetActiveInputSnapshot));
             Assert.That(readMethod, Is.Not.Null);
             Serializee[] readParameters =
             {
-                CilboxUtil.GetSerializeeFromNativeType(typeof(BasisPickupInputState).MakeByRefType())
+                CilboxUtil.GetSerializeeFromNativeType(typeof(BasisInputSnapshot).MakeByRefType())
             };
             Assert.That(usage.GetNativeMethodFromTypeAndName(
                 typeof(BasisPickupInteractable),
@@ -297,12 +297,12 @@ namespace Basis.Shims.Tests
                 noParameters,
                 readMethod.ToString()), Is.EqualTo(readMethod));
 
-            foreach (PropertyInfo property in typeof(BasisPickupInputState).GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            foreach (PropertyInfo property in typeof(BasisInputSnapshot).GetProperties(BindingFlags.Instance | BindingFlags.Public))
             {
                 MethodInfo getter = property.GetMethod;
                 Assert.That(getter, Is.Not.Null);
                 Assert.That(usage.GetNativeMethodFromTypeAndName(
-                    typeof(BasisPickupInputState),
+                    typeof(BasisInputSnapshot),
                     getter.Name,
                     noParameters,
                     noParameters,
@@ -310,13 +310,13 @@ namespace Basis.Shims.Tests
                 Assert.That(property.SetMethod, Is.Null);
             }
 
-            Assert.That(CilboxUtil.HasCilboxableAttribute(typeof(BasisPickupInputStateCilboxProbe)), Is.True);
+            Assert.That(CilboxUtil.HasCilboxableAttribute(typeof(BasisInputSnapshotCilboxProbe)), Is.True);
         }
 
-        private BasisPickupInputStateTestInput CreateInput(string name)
+        private BasisInputSnapshotTestInput CreateInput(string name)
         {
             GameObject inputObject = new GameObject(name);
-            return inputObject.AddComponent<BasisPickupInputStateTestInput>();
+            return inputObject.AddComponent<BasisInputSnapshotTestInput>();
         }
 
         private static void SetInputState(
@@ -344,7 +344,7 @@ namespace Basis.Shims.Tests
             state.GripButton = gripButton;
         }
 
-        private static void DestroyInput(BasisPickupInputStateTestInput input)
+        private static void DestroyInput(BasisInputSnapshotTestInput input)
         {
             if (input != null)
             {
@@ -369,7 +369,7 @@ namespace Basis.Shims.Tests
 
         private void AssertReadMatches(BasisInputState expected)
         {
-            Assert.That(pickup.TryGetActiveInputState(out BasisPickupInputState actual), Is.True);
+            Assert.That(pickup.TryGetActiveInputSnapshot(out BasisInputSnapshot actual), Is.True);
 
             foreach (PropertyInfo inputProperty in typeof(BasisInputState).GetProperties(BindingFlags.Instance | BindingFlags.Public))
             {
@@ -378,7 +378,7 @@ namespace Basis.Shims.Tests
                     continue;
                 }
 
-                PropertyInfo snapshotProperty = typeof(BasisPickupInputState).GetProperty(inputProperty.Name);
+                PropertyInfo snapshotProperty = typeof(BasisInputSnapshot).GetProperty(inputProperty.Name);
                 Assert.That(snapshotProperty, Is.Not.Null, $"Snapshot is missing {inputProperty.Name}");
                 Assert.That(
                     snapshotProperty.GetValue(actual),
@@ -389,8 +389,8 @@ namespace Basis.Shims.Tests
 
         private void AssertReadFailsClosed()
         {
-            Assert.That(pickup.TryGetActiveInputState(out BasisPickupInputState state), Is.False);
-            Assert.That(state, Is.EqualTo(default(BasisPickupInputState)));
+            Assert.That(pickup.TryGetActiveInputSnapshot(out BasisInputSnapshot state), Is.False);
+            Assert.That(state, Is.EqualTo(default(BasisInputSnapshot)));
         }
     }
 }

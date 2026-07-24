@@ -15,7 +15,7 @@ namespace Cilbox
 			"BasisNetworkContentBase",
             "BasisNetworkContentBase+BasisContentInformation",
             "Basis.Scripts.BasisSdk.Interactions.BasisPickUpUseMode",
-			"Basis.Scripts.BasisSdk.Interactions.BasisPickupInputState",
+			"Basis.Scripts.Device_Management.Devices.BasisInputSnapshot",
 			"Basis.Scripts.Device_Management.Devices.BasisInput", // Restrictive, only used as a type.
 			"Basis.Scripts.BasisSdk.Interactions.BasisPickupInteractable", // Restrictive (See below), only access field.
 			"Basis.Scripts.BasisSdk.Interactions.BasisInteractableObject", // Restrictive (See below), only access field.
@@ -362,9 +362,9 @@ namespace Cilbox
 			{ typeof(UnityEngine.ScriptableObject),    new HashSet<string>{ ".ctor" } },
 			{ typeof(UnityEngine.Events.UnityAction),  new HashSet<string>{ ".ctor" } },
 			{ typeof(Basis.Scripts.BasisSdk.Interactions.BasisPickupInteractable), new HashSet<string> {
-				nameof(Basis.Scripts.BasisSdk.Interactions.BasisPickupInteractable.TryGetActiveInputState),
+				nameof(Basis.Scripts.BasisSdk.Interactions.BasisPickupInteractable.TryGetActiveInputSnapshot),
 			} },
-			{ typeof(Basis.Scripts.BasisSdk.Interactions.BasisPickupInputState), new HashSet<string> {
+			{ typeof(Basis.Scripts.Device_Management.Devices.BasisInputSnapshot), new HashSet<string> {
 				"get_GripButton",
 				"get_SystemOrMenuButton",
 				"get_PrimaryButtonGetState",
