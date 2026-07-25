@@ -1,4 +1,3 @@
-using System.Reflection;
 using Basis.Scripts.BasisSdk.Interactions;
 using NUnit.Framework;
 using UnityEngine;
@@ -7,18 +6,15 @@ namespace Basis.Tests.Sync
 {
     public class BasisPickupSyncNetworkingKinematicTests
     {
-        private static readonly MethodInfo AwakeMethod = typeof(BasisPickupSyncNetworking).GetMethod(
-            "Awake",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-
         [TestCase(false)]
         [TestCase(true)]
-        public void Awake_PreservesAuthoredKinematicState(bool authoredKinematic)
+        public void Initialization_PreservesAuthoredKinematicState(bool authoredKinematic)
         {
-            GameObject go = CreatePickup(authoredKinematic, out Rigidbody rigidbody, out BasisPickupSyncNetworking sync);
+            GameObject go = CreatePickup(authoredKinematic, assignRigidbodyReference: true,
+                out Rigidbody rigidbody, out _, out BasisPickupSyncNetworking sync);
             try
             {
-                InvokeAwake(sync);
+                sync.InitializePickupRigidbody();
 
                 Assert.AreEqual(authoredKinematic, rigidbody.isKinematic);
             }
@@ -32,10 +28,11 @@ namespace Basis.Tests.Sync
         [TestCase(true)]
         public void LocalOwner_ControlStateRestoresAuthoredKinematicState(bool authoredKinematic)
         {
-            GameObject go = CreatePickup(authoredKinematic, out Rigidbody rigidbody, out BasisPickupSyncNetworking sync);
+            GameObject go = CreatePickup(authoredKinematic, assignRigidbodyReference: true,
+                out Rigidbody rigidbody, out _, out BasisPickupSyncNetworking sync);
             try
             {
-                InvokeAwake(sync);
+                sync.InitializePickupRigidbody();
                 rigidbody.isKinematic = !authoredKinematic;
                 sync.IsOwnedLocallyOnClient = true;
 
@@ -58,10 +55,11 @@ namespace Basis.Tests.Sync
             bool remoteDeadReckon,
             bool expectedKinematic)
         {
-            GameObject go = CreatePickup(authoredKinematic, out Rigidbody rigidbody, out BasisPickupSyncNetworking sync);
+            GameObject go = CreatePickup(authoredKinematic, assignRigidbodyReference: true,
+                out Rigidbody rigidbody, out _, out BasisPickupSyncNetworking sync);
             try
             {
-                InvokeAwake(sync);
+                sync.InitializePickupRigidbody();
                 sync.IsOwnedLocallyOnClient = false;
                 sync.RemoteDeadReckon = remoteDeadReckon;
                 rigidbody.isKinematic = !expectedKinematic;
@@ -76,9 +74,67 @@ namespace Basis.Tests.Sync
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Initialization_AutoAssignsRigidbodyAndCapturesAuthoredState(bool authoredKinematic)
+        {
+            GameObject go = CreatePickup(authoredKinematic, assignRigidbodyReference: false,
+                out Rigidbody rigidbody, out BasisPickupInteractable pickup, out BasisPickupSyncNetworking sync);
+            try
+            {
+                Assert.IsNull(pickup.RigidRef);
+
+                sync.InitializePickupRigidbody();
+                rigidbody.isKinematic = !authoredKinematic;
+                sync.IsOwnedLocallyOnClient = true;
+                sync.ControlState();
+
+                Assert.AreSame(rigidbody, pickup.RigidRef);
+                Assert.AreEqual(authoredKinematic, rigidbody.isKinematic);
+            }
+            finally
+            {
+                Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void LateRigidbodyResolution_DoesNotCaptureRuntimeMutatedKinematicState()
+        {
+            var go = new GameObject("pickup-late-rigidbody-test");
+            go.SetActive(false);
+            try
+            {
+                var pickup = go.AddComponent<BasisPickupInteractable>();
+                var sync = go.AddComponent<BasisPickupSyncNetworking>();
+                sync.BasisPickupInteractable = pickup;
+                sync.Target = go.transform;
+
+                sync.InitializePickupRigidbody();
+
+                Rigidbody lateRigidbody = go.AddComponent<Rigidbody>();
+                lateRigidbody.isKinematic = true;
+                Assert.IsNull(pickup.RigidRef);
+                sync.IsOwnedLocallyOnClient = true;
+
+                sync.ControlState();
+
+                Assert.AreSame(lateRigidbody, pickup.RigidRef,
+                    "Late resolution should still populate the pickup reference.");
+                Assert.IsFalse(lateRigidbody.isKinematic,
+                    "A Rigidbody discovered after initialization must use the legacy dynamic fallback, not capture a runtime-mutated value as authored state.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(go);
+            }
+        }
+
         private static GameObject CreatePickup(
             bool authoredKinematic,
+            bool assignRigidbodyReference,
             out Rigidbody rigidbody,
+            out BasisPickupInteractable pickup,
             out BasisPickupSyncNetworking sync)
         {
             var go = new GameObject("pickup-kinematic-test");
@@ -87,19 +143,16 @@ namespace Basis.Tests.Sync
             rigidbody = go.AddComponent<Rigidbody>();
             rigidbody.isKinematic = authoredKinematic;
 
-            var pickup = go.AddComponent<BasisPickupInteractable>();
-            pickup.RigidRef = rigidbody;
+            pickup = go.AddComponent<BasisPickupInteractable>();
+            if (assignRigidbodyReference)
+            {
+                pickup.RigidRef = rigidbody;
+            }
 
             sync = go.AddComponent<BasisPickupSyncNetworking>();
             sync.BasisPickupInteractable = pickup;
             sync.Target = go.transform;
             return go;
-        }
-
-        private static void InvokeAwake(BasisPickupSyncNetworking sync)
-        {
-            Assert.NotNull(AwakeMethod);
-            AwakeMethod.Invoke(sync, null);
         }
     }
 }

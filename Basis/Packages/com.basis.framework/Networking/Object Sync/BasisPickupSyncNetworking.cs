@@ -22,8 +22,10 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     /// <summary>
     /// Opt-in: also stream the Rigidbody's linear/angular velocity, and let a free-flying remote copy simulate
     /// from it (prediction) with the synced pose pulling it back (correction), instead of being kinematic and
-    /// pose-driven. Default off keeps the existing pose-only behaviour.
+    /// pose-driven. This only applies to Rigidbodies authored as non-kinematic; authored-kinematic bodies stay
+    /// kinematic and pose-driven on remote clients. Default off keeps the existing pose-only behaviour.
     /// </summary>
+    [Tooltip("Simulate remote motion from synced velocity for Rigidbodies authored as non-kinematic. Authored-kinematic bodies remain pose-driven.")]
     public bool RemoteDeadReckon = false;
 
     /// <summary>
@@ -47,6 +49,8 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     // isKinematic on remote copies, but the local owner must return to the authored state.
     private Rigidbody _authoredRigidbody;
     private bool _authoredIsKinematic;
+    private bool _hasAuthoredKinematicState;
+    private bool _pickupRigidbodyInitialized;
 
     private BasisSyncHandle _velX = BasisSyncHandle.Invalid;
     private BasisSyncHandle _velY = BasisSyncHandle.Invalid;
@@ -82,13 +86,9 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         Extrapolate = true;
         JitterBufferDepth = 1f;
         base.Awake();
-        if (BasisPickupInteractable == null)
-        {
-            BasisPickupInteractable = this.transform.GetComponentInChildren<BasisPickupInteractable>();
-        }
+        InitializePickupRigidbody();
         if (BasisPickupInteractable != null)
         {
-            CaptureAuthoredKinematicState();
             BasisPickupInteractable.CanHoverInjected.Add(CanHover);
             BasisPickupInteractable.CanInteractInjected.Add(CanInteract);
             BasisPickupInteractable.OnInteractStartEvent.AddListener(OnInteractStartEvent);
@@ -348,6 +348,35 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         }
     }
 
+    /// <summary>
+    /// Resolves the pickup Rigidbody and snapshots its authored kinematic state exactly once during initialization.
+    /// A Rigidbody assigned later at runtime deliberately uses the legacy dynamic fallback rather than treating a
+    /// potentially network-mutated value as authored configuration.
+    /// </summary>
+    internal void InitializePickupRigidbody()
+    {
+        if (_pickupRigidbodyInitialized)
+        {
+            return;
+        }
+        _pickupRigidbodyInitialized = true;
+
+        if (BasisPickupInteractable == null)
+        {
+            BasisPickupInteractable = transform.GetComponentInChildren<BasisPickupInteractable>();
+        }
+
+        Rigidbody rigidbody = ResolvePickupRigidbody();
+        if (rigidbody == null)
+        {
+            return;
+        }
+
+        _authoredRigidbody = rigidbody;
+        _authoredIsKinematic = rigidbody.isKinematic;
+        _hasAuthoredKinematicState = true;
+    }
+
     private Rigidbody ResolvePickupRigidbody()
     {
         if (BasisPickupInteractable == null)
@@ -364,27 +393,21 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         return BasisPickupInteractable.RigidRef;
     }
 
-    private void CaptureAuthoredKinematicState()
+    private bool TryGetAuthoredKinematicState(out bool state)
     {
         Rigidbody rigidbody = ResolvePickupRigidbody();
-        if (rigidbody == null || rigidbody == _authoredRigidbody)
+        if (_hasAuthoredKinematicState && rigidbody == _authoredRigidbody)
         {
-            return;
+            state = _authoredIsKinematic;
+            return true;
         }
 
-        _authoredRigidbody = rigidbody;
-        _authoredIsKinematic = rigidbody.isKinematic;
-    }
-
-    private bool GetAuthoredKinematicState()
-    {
-        CaptureAuthoredKinematicState();
-        return _authoredRigidbody != null && _authoredIsKinematic;
+        state = false;
+        return false;
     }
 
     public void SetIsKinematicOnPickup(bool state)
     {
-        CaptureAuthoredKinematicState();
         Rigidbody rigidbody = ResolvePickupRigidbody();
         if (rigidbody != null)
         {
@@ -420,7 +443,8 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     public void ControlState()
     {
         if (Target == null) Target = transform;
-        bool authoredKinematic = GetAuthoredKinematicState();
+        bool hasAuthoredKinematic = TryGetAuthoredKinematicState(out bool authoredKinematic);
+        bool localKinematic = hasAuthoredKinematic && authoredKinematic;
 
         if (IsStatic)
         {
@@ -443,12 +467,12 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
                     {
                         // The remote-owner state is kinematic too, so it cannot be used as the value to
                         // restore on drop. Keep the authored value and leave an existing grab kinematic.
-                        BasisPickupInteractable._previousKinematicValue = authoredKinematic;
-                        SetIsKinematicOnPickup(alreadyInteracting || authoredKinematic);
+                        BasisPickupInteractable._previousKinematicValue = localKinematic;
+                        SetIsKinematicOnPickup(alreadyInteracting || localKinematic);
                     }
                     else
                     {
-                        SetIsKinematicOnPickup(authoredKinematic);
+                        SetIsKinematicOnPickup(localKinematic);
                     }
 
                     if (!alreadyInteracting)
@@ -466,7 +490,7 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
             }
             else
             {
-                SetIsKinematicOnPickup(authoredKinematic);
+                SetIsKinematicOnPickup(localKinematic);
             }
         }
         else
@@ -475,7 +499,7 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
             {
                 BasisPickupInteractable.Drop();
             }
-            SetIsKinematicOnPickup(authoredKinematic || !RemoteDeadReckon);
+            SetIsKinematicOnPickup(localKinematic || !RemoteDeadReckon);
         }
     }
 
