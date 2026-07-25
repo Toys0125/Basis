@@ -43,6 +43,11 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     /// </summary>
     public bool FullRateWhileHeld = true;
 
+    // Preserve the Rigidbody state authored on the prop. Network ownership temporarily overrides
+    // isKinematic on remote copies, but the local owner must return to the authored state.
+    private Rigidbody _authoredRigidbody;
+    private bool _authoredIsKinematic;
+
     private BasisSyncHandle _velX = BasisSyncHandle.Invalid;
     private BasisSyncHandle _velY = BasisSyncHandle.Invalid;
     private BasisSyncHandle _velZ = BasisSyncHandle.Invalid;
@@ -83,13 +88,10 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         }
         if (BasisPickupInteractable != null)
         {
+            CaptureAuthoredKinematicState();
             BasisPickupInteractable.CanHoverInjected.Add(CanHover);
             BasisPickupInteractable.CanInteractInjected.Add(CanInteract);
             BasisPickupInteractable.OnInteractStartEvent.AddListener(OnInteractStartEvent);
-            if (BasisPickupInteractable.RigidRef != null)
-            {
-                BasisPickupInteractable.RigidRef.isKinematic = false;
-            }
         }
 
         if (RemoteDeadReckon && BasisPickupInteractable != null && BasisPickupInteractable.RigidRef != null)
@@ -346,11 +348,47 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         }
     }
 
+    private Rigidbody ResolvePickupRigidbody()
+    {
+        if (BasisPickupInteractable == null)
+        {
+            return null;
+        }
+
+        if (BasisPickupInteractable.RigidRef == null
+            && BasisPickupInteractable.TryGetComponent(out Rigidbody rigidbody))
+        {
+            BasisPickupInteractable.RigidRef = rigidbody;
+        }
+
+        return BasisPickupInteractable.RigidRef;
+    }
+
+    private void CaptureAuthoredKinematicState()
+    {
+        Rigidbody rigidbody = ResolvePickupRigidbody();
+        if (rigidbody == null || rigidbody == _authoredRigidbody)
+        {
+            return;
+        }
+
+        _authoredRigidbody = rigidbody;
+        _authoredIsKinematic = rigidbody.isKinematic;
+    }
+
+    private bool GetAuthoredKinematicState()
+    {
+        CaptureAuthoredKinematicState();
+        return _authoredRigidbody != null && _authoredIsKinematic;
+    }
+
     public void SetIsKinematicOnPickup(bool state)
     {
-        if (BasisPickupInteractable != null && BasisPickupInteractable.RigidRef != null)
+        CaptureAuthoredKinematicState();
+        Rigidbody rigidbody = ResolvePickupRigidbody();
+        if (rigidbody != null)
         {
-            BasisPickupInteractable.RigidRef.isKinematic = state;
+            rigidbody.isKinematic = state;
         }
     }
 
@@ -382,6 +420,7 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     public void ControlState()
     {
         if (Target == null) Target = transform;
+        bool authoredKinematic = GetAuthoredKinematicState();
 
         if (IsStatic)
         {
@@ -397,14 +436,22 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         {
             if (pendingStealRequest != null)
             {
-                SetIsKinematicOnPickup(false);
                 if (BasisPickupInteractable != null)
                 {
+                    bool alreadyInteracting = BasisPickupInteractable.IsInteractingWith(pendingStealRequest);
                     if (BasisPickupInteractable.KinematicWhileInteracting)
                     {
-                        BasisPickupInteractable._previousKinematicValue = false;
+                        // The remote-owner state is kinematic too, so it cannot be used as the value to
+                        // restore on drop. Keep the authored value and leave an existing grab kinematic.
+                        BasisPickupInteractable._previousKinematicValue = authoredKinematic;
+                        SetIsKinematicOnPickup(alreadyInteracting || authoredKinematic);
                     }
-                    if (!BasisPickupInteractable.IsInteractingWith(pendingStealRequest))
+                    else
+                    {
+                        SetIsKinematicOnPickup(authoredKinematic);
+                    }
+
+                    if (!alreadyInteracting)
                     {
                         BasisPlayerInteract.Instance.ForceSetInteracting(BasisPickupInteractable, pendingStealRequest);
                     }
@@ -419,7 +466,7 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
             }
             else
             {
-                SetIsKinematicOnPickup(false);
+                SetIsKinematicOnPickup(authoredKinematic);
             }
         }
         else
@@ -428,7 +475,7 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
             {
                 BasisPickupInteractable.Drop();
             }
-            SetIsKinematicOnPickup(!RemoteDeadReckon);
+            SetIsKinematicOnPickup(authoredKinematic || !RemoteDeadReckon);
         }
     }
 
