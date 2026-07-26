@@ -31,7 +31,7 @@ public class BasisPickupSyncNetworkingInspector : BasisSyncedTransformInspector
         pickup.Add(BasisSyncInspectorUI.Described(new PropertyField(serializedObject.FindProperty("AttachToHandOnGrab"), "Attach To Hand While Held"),
             "While held, stream which hand + the hand-relative grab offset instead of the world position, so the prop stays glued to the holder's hand bone on every client with no interpolation lag. Snaps back to position sync on release."));
         pickup.Add(BasisSyncInspectorUI.Described(new PropertyField(serializedObject.FindProperty("FullRateWhileHeld"), "Use Avatar Rate While Held"),
-            "While held, send at least as often as the local avatar/armature stream and ignore distance throttling. A pickup configured faster than the avatar keeps its faster rate."));
+            "While held, send at least as often as the active avatar/armature stream and ignore distance throttling. When direct P2P is active, the pickup stream uses the P2P avatar rate; otherwise it uses the server avatar rate. A pickup configured faster than the avatar keeps its faster rate."));
         root.Insert(1, pickup);
         pickup.Bind(serializedObject);
 

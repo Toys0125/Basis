@@ -39,10 +39,11 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
 
     /// <summary>
     /// While the local owner holds this prop, send it at least as often as the local avatar/armature stream
-    /// and ignore distance-based send-rate reduction. A pickup configured faster than the avatar keeps its
-    /// faster rate. Turn off to keep the pickup's configured cadence and normal distance throttling while held.
+    /// and ignore distance-based send-rate reduction. When direct P2P is active for this pickup, its shared
+    /// stream uses the active P2P avatar cadence; otherwise it uses the server avatar cadence. A pickup configured
+    /// faster than the avatar keeps its faster rate. Turn off to keep its configured cadence and normal throttling.
     /// </summary>
-    [Tooltip("While held, match or exceed the local avatar/armature sync rate and ignore distance throttling.")]
+    [Tooltip("While held, match or exceed the active server or direct-P2P avatar/armature sync rate and ignore distance throttling.")]
     public bool FullRateWhileHeld = true;
 
     // Preserve the Rigidbody state authored on the prop. Network ownership temporarily overrides
@@ -266,25 +267,55 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         return interval > 0f && !float.IsNaN(interval) && !float.IsInfinity(interval);
     }
 
-    private static float GetLocalArmatureSendInterval()
+    private float GetLocalArmatureSendInterval()
     {
-        float interval = BasisNetworkManagement.LocalAccessTransmitter?.TransmissionResults?.DefaultInterval ?? 0f;
-        if (IsPositiveFinite(interval))
-        {
-            return interval;
-        }
+        bool p2pConnected = BasisP2PManager.HasAnyConnectedSession();
+        float p2pInterval = UseDirectP2P && p2pConnected
+            ? BasisP2PManager.FastAvatarIntervalSeconds
+            : 0f;
+        float transmitterInterval = BasisNetworkManagement.LocalAccessTransmitter?.TransmissionResults?.DefaultInterval ?? 0f;
+        int serverIntervalMs = BasisNetworkManagement.ServerMetaDataMessage.SyncInterval;
+        return ResolveArmatureSendInterval(
+            UseDirectP2P,
+            p2pConnected,
+            p2pInterval,
+            transmitterInterval,
+            serverIntervalMs);
+    }
 
-        if (BasisP2PManager.HasAnyConnectedSession())
+    internal static float ResolveArmatureSendInterval(
+        bool useDirectP2P,
+        bool p2pConnected,
+        float p2pInterval,
+        float transmitterInterval,
+        int serverIntervalMs)
+    {
+        // A direct P2P pickup must follow the same fast cadence as the P2P armature stream.
+        // Check this before the transmitter interval because that value may still contain the
+        // previous server cadence during the frame where the P2P topology changes.
+        if (useDirectP2P && p2pConnected)
         {
-            interval = BasisP2PManager.FastAvatarIntervalSeconds;
-            if (IsPositiveFinite(interval))
+            if (IsPositiveFinite(p2pInterval))
             {
-                return interval;
+                return p2pInterval;
+            }
+
+            // The transmitter also runs at the P2P cadence while any direct session is active,
+            // so it remains a valid fallback for a direct-P2P pickup when the configured rate is invalid.
+            if (IsPositiveFinite(transmitterInterval))
+            {
+                return transmitterInterval;
             }
         }
+        else if (!p2pConnected && IsPositiveFinite(transmitterInterval))
+        {
+            return transmitterInterval;
+        }
 
-        int syncIntervalMs = BasisNetworkManagement.ServerMetaDataMessage.SyncInterval;
-        return syncIntervalMs > 0 ? syncIntervalMs / 1000f : 0f;
+        // If P2P exists but this pickup is server-only, do not use the transmitter's globally-fast
+        // P2P interval. Match the server armature cadence instead.
+        float serverInterval = serverIntervalMs > 0 ? serverIntervalMs / 1000f : 0f;
+        return IsPositiveFinite(serverInterval) ? serverInterval : 0f;
     }
 
     /// <summary>Suppress distance throttling while the owner holds the pickup.</summary>

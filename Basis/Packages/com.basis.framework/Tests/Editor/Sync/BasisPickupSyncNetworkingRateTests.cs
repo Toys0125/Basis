@@ -30,5 +30,70 @@ namespace Basis.Tests.Sync
             Assert.AreEqual(0.2f,
                 BasisPickupSyncNetworking.ResolveHeldSendInterval(0.2f, float.NegativeInfinity), 1e-6f);
         }
+
+        [Test]
+        public void ResolveArmatureSendInterval_P2PDirectUsesP2PAvatarRateBeforeStaleServerRate()
+        {
+            float actual = BasisPickupSyncNetworking.ResolveArmatureSendInterval(
+                useDirectP2P: true,
+                p2pConnected: true,
+                p2pInterval: 1f / 60f,
+                transmitterInterval: 1f / 20f,
+                serverIntervalMs: 50);
+
+            Assert.AreEqual(1f / 60f, actual, 1e-6f);
+        }
+
+        [Test]
+        public void HeldPickup_P2PDirectPromotes5HzPickupTo60HzAvatarRate()
+        {
+            float armatureInterval = BasisPickupSyncNetworking.ResolveArmatureSendInterval(
+                useDirectP2P: true,
+                p2pConnected: true,
+                p2pInterval: 1f / 60f,
+                transmitterInterval: 1f / 20f,
+                serverIntervalMs: 50);
+
+            float actual = BasisPickupSyncNetworking.ResolveHeldSendInterval(1f / 5f, armatureInterval);
+
+            Assert.AreEqual(1f / 60f, actual, 1e-6f);
+        }
+
+        [Test]
+        public void ResolveArmatureSendInterval_ServerOnlyIgnoresGloballyFastP2PTransmitterRate()
+        {
+            float actual = BasisPickupSyncNetworking.ResolveArmatureSendInterval(
+                useDirectP2P: false,
+                p2pConnected: true,
+                p2pInterval: 1f / 60f,
+                transmitterInterval: 1f / 60f,
+                serverIntervalMs: 50);
+
+            Assert.AreEqual(1f / 20f, actual, 1e-6f);
+        }
+
+        [Test]
+        public void ResolveArmatureSendInterval_WithoutP2PUsesLiveTransmitterRate()
+        {
+            float actual = BasisPickupSyncNetworking.ResolveArmatureSendInterval(
+                useDirectP2P: true,
+                p2pConnected: false,
+                p2pInterval: 0f,
+                transmitterInterval: 1f / 20f,
+                serverIntervalMs: 100);
+
+            Assert.AreEqual(1f / 20f, actual, 1e-6f);
+        }
+
+        [Test]
+        public void ResolveArmatureSendInterval_InvalidP2PRateFallsBackToTransmitterThenServer()
+        {
+            Assert.AreEqual(1f / 20f,
+                BasisPickupSyncNetworking.ResolveArmatureSendInterval(
+                    true, true, float.NaN, 1f / 20f, 50), 1e-6f);
+            Assert.AreEqual(0.05f,
+                BasisPickupSyncNetworking.ResolveArmatureSendInterval(
+                    true, true, float.PositiveInfinity, 0f, 50), 1e-6f);
+        }
     }
 }
