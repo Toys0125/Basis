@@ -502,6 +502,12 @@ namespace Basis.Scripts.Networking.Sync
         protected virtual void OnBeforeTransmit() { }
 
         /// <summary>
+        /// Override to replace the configured base send interval for the current tick. This runs after the
+        /// normal server/P2P interval selection and before distance reduction is applied.
+        /// </summary>
+        protected virtual float ResolveBaseSendInterval(float configuredInterval) => configuredInterval;
+
+        /// <summary>
         /// Override to skip distance-based send-rate reduction for this tick even when DistanceReduction is on
         /// — e.g. while a pickup is actively held, so the thing the player is manipulating and watching stays
         /// full-rate instead of being throttled (and then buffered) by its distance to the nearest viewer.
@@ -621,6 +627,16 @@ namespace Basis.Scripts.Networking.Sync
             {
                 baseInterval = P2PSendIntervalSeconds;
                 keyframeInterval = P2PKeyframeIntervalSeconds;
+            }
+
+            baseInterval = ResolveBaseSendInterval(baseInterval);
+            if (baseInterval <= 0f || float.IsNaN(baseInterval) || float.IsInfinity(baseInterval))
+            {
+                baseInterval = SendIntervalSeconds > 0f
+                    && !float.IsNaN(SendIntervalSeconds)
+                    && !float.IsInfinity(SendIntervalSeconds)
+                    ? SendIntervalSeconds
+                    : 0.05f;
             }
 
             float effectiveInterval = baseInterval;

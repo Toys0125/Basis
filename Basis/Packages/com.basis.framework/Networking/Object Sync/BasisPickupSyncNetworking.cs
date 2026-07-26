@@ -38,11 +38,11 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     public bool AttachToHandOnGrab = true;
 
     /// <summary>
-    /// While a player holds this prop, ignore distance-based send-rate reduction so the item being actively
-    /// manipulated and watched stays full-rate (otherwise its send rate — and therefore the remote jitter
-    /// buffer that rides on it — is throttled by distance to the nearest viewer, which is the main cause of
-    /// laggy held props at range). Turn off to keep legacy distance throttling while held.
+    /// While the local owner holds this prop, send it at least as often as the local avatar/armature stream
+    /// and ignore distance-based send-rate reduction. A pickup configured faster than the avatar keeps its
+    /// faster rate. Turn off to keep the pickup's configured cadence and normal distance throttling while held.
     /// </summary>
+    [Tooltip("While held, match or exceed the local avatar/armature sync rate and ignore distance throttling.")]
     public bool FullRateWhileHeld = true;
 
     // Preserve the Rigidbody state authored on the prop. Network ownership temporarily overrides
@@ -231,7 +231,63 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         }
     }
 
-    /// <summary>Full-rate while the owner is holding it (see <see cref="FullRateWhileHeld"/>).</summary>
+    /// <summary>
+    /// While held, use the faster of the pickup's configured interval and the local avatar/armature interval.
+    /// This keeps a 5 Hz pickup from lagging behind a 20 Hz server avatar stream without slowing pickups that
+    /// were deliberately configured above the avatar rate.
+    /// </summary>
+    protected override float ResolveBaseSendInterval(float configuredInterval)
+    {
+        if (!FullRateWhileHeld || !IsHeldByOwner())
+        {
+            return configuredInterval;
+        }
+
+        return ResolveHeldSendInterval(configuredInterval, GetLocalArmatureSendInterval());
+    }
+
+    internal static float ResolveHeldSendInterval(float configuredInterval, float armatureInterval)
+    {
+        if (!IsPositiveFinite(armatureInterval))
+        {
+            return configuredInterval;
+        }
+
+        if (!IsPositiveFinite(configuredInterval))
+        {
+            return armatureInterval;
+        }
+
+        return Mathf.Min(configuredInterval, armatureInterval);
+    }
+
+    private static bool IsPositiveFinite(float interval)
+    {
+        return interval > 0f && !float.IsNaN(interval) && !float.IsInfinity(interval);
+    }
+
+    private static float GetLocalArmatureSendInterval()
+    {
+        float interval = BasisNetworkManagement.LocalAccessTransmitter?.TransmissionResults?.DefaultInterval ?? 0f;
+        if (IsPositiveFinite(interval))
+        {
+            return interval;
+        }
+
+        if (BasisP2PManager.HasAnyConnectedSession())
+        {
+            interval = BasisP2PManager.FastAvatarIntervalSeconds;
+            if (IsPositiveFinite(interval))
+            {
+                return interval;
+            }
+        }
+
+        int syncIntervalMs = BasisNetworkManagement.ServerMetaDataMessage.SyncInterval;
+        return syncIntervalMs > 0 ? syncIntervalMs / 1000f : 0f;
+    }
+
+    /// <summary>Suppress distance throttling while the owner holds the pickup.</summary>
     protected override bool ShouldSuppressDistanceReduction() => FullRateWhileHeld && IsHeldByOwner();
 
     /// <summary>True if the local owner currently has this prop grabbed in either hand (or desktop).</summary>

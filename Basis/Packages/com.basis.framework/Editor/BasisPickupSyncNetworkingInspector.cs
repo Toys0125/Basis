@@ -30,6 +30,8 @@ public class BasisPickupSyncNetworkingInspector : BasisSyncedTransformInspector
             "For Rigidbodies authored as non-kinematic, stream velocity and let free-flying remote copies simulate from it while the synced pose corrects drift. Rigidbodies authored as kinematic remain kinematic and pose-driven, so this option has no effect on them."));
         pickup.Add(BasisSyncInspectorUI.Described(new PropertyField(serializedObject.FindProperty("AttachToHandOnGrab"), "Attach To Hand While Held"),
             "While held, stream which hand + the hand-relative grab offset instead of the world position, so the prop stays glued to the holder's hand bone on every client with no interpolation lag. Snaps back to position sync on release."));
+        pickup.Add(BasisSyncInspectorUI.Described(new PropertyField(serializedObject.FindProperty("FullRateWhileHeld"), "Use Avatar Rate While Held"),
+            "While held, send at least as often as the local avatar/armature stream and ignore distance throttling. A pickup configured faster than the avatar keeps its faster rate."));
         root.Insert(1, pickup);
         pickup.Bind(serializedObject);
 
