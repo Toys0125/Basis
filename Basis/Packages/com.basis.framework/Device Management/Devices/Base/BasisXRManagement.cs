@@ -1,6 +1,8 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEngine.XR;
 using UnityEngine.XR.Management;
 
 namespace Basis.Scripts.Device_Management.Devices
@@ -37,6 +39,15 @@ namespace Basis.Scripts.Device_Management.Devices
         {
             if (ActiveOnModes.Contains(Mode))
             {
+                if (xRManagerSettings == null || AvaliableLoaders == null)
+                {
+                    BasisDebug.LogWarning(
+                        $"XR mode '{Mode}' was requested, but XR Management is unavailable; falling back to mobile/desktop mode.",
+                        BasisDebug.LogTag.Device);
+                    StartDevice(BasisConstants.Desktop);
+                    return true;
+                }
+
                 BasisDebug.Log($"Starting Attempt of load LoadXR {Mode}", BasisDebug.LogTag.Device);
                 List<XRLoader> Loaders = AvaliableLoaders;
 
@@ -51,7 +62,7 @@ namespace Basis.Scripts.Device_Management.Devices
                         xRManagerSettings.TryRemoveLoader(loader);
                     }
                 }
-                BasisDeviceManagement.Instance.StartCoroutine(LoadXR());
+                BasisDeviceManagement.Instance.StartCoroutine(LoadXR(Mode));
                 return true;
             }
             return false;
@@ -62,7 +73,8 @@ namespace Basis.Scripts.Device_Management.Devices
         /// On success, calls <see cref="StartDevice(string)"/> with the active loader name;
         /// on failure, falls back to <c>Desktop</c>.
         /// </summary>
-        public IEnumerator LoadXR()
+        /// <param name="requestedMode">The loader mode requested by device startup.</param>
+        public IEnumerator LoadXR(string requestedMode)
         {
             // Initialize the XR loader
             yield return xRManagerSettings.InitializeLoader();
@@ -73,7 +85,20 @@ namespace Basis.Scripts.Device_Management.Devices
             if (xRManagerSettings.activeLoader != null)
             {
                 xRManagerSettings.StartSubsystems();
-                result = xRManagerSettings.activeLoader?.name;
+
+                if (string.Equals(requestedMode, BasisConstants.OpenXRLoader, StringComparison.Ordinal) &&
+                    !IsOpenXRRuntimeActive())
+                {
+                    BasisDebug.LogWarning(
+                        "OpenXR initialized without an XR display subsystem; falling back to mobile/desktop mode.",
+                        BasisDebug.LogTag.Device);
+                    xRManagerSettings.StopSubsystems();
+                    xRManagerSettings.DeinitializeLoader();
+                }
+                else
+                {
+                    result = xRManagerSettings.activeLoader.name;
+                }
             }
             else
             {
@@ -83,6 +108,27 @@ namespace Basis.Scripts.Device_Management.Devices
 
             BasisDebug.Log($"Found Loader {result}", BasisDebug.LogTag.Device);
             StartDevice(result);
+        }
+
+        /// <summary>
+        /// Returns true after Unity has initialized the OpenXR loader and created its display subsystem.
+        /// A regular Android phone has no OpenXR runtime, so loader initialization fails and this remains false.
+        /// </summary>
+        public bool IsOpenXRRuntimeActive()
+        {
+            if (xRManagerSettings == null || !xRManagerSettings.isInitializationComplete)
+            {
+                return false;
+            }
+
+            XRLoader loader = xRManagerSettings.activeLoader;
+            if (loader == null ||
+                !string.Equals(loader.name, BasisConstants.OpenXRLoader, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return loader.GetLoadedSubsystem<XRDisplaySubsystem>() != null;
         }
 
         /// <summary>

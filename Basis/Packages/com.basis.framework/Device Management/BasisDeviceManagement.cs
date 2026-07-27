@@ -959,7 +959,8 @@ namespace Basis.Scripts.Device_Management
                 {
                     return BasisConstants.Desktop;
                 }
-                // On Android we assume OpenXR for VR headsets like Quest
+                // Probe OpenXR first. BasisXRManagement verifies that an OpenXR
+                // display subsystem was created and falls back to Desktop on phones.
                 return BasisConstants.OpenXRLoader;
             }
             else
