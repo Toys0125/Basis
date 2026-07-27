@@ -31,6 +31,22 @@ namespace Basis.Tests.Sync
                 BasisPickupSyncNetworking.ResolveHeldSendInterval(0.2f, float.NegativeInfinity), 1e-6f);
         }
 
+        [TestCase(true, true, false, true, TestName = "HeldWorldTransformPickup_UsesAvatarRate")]
+        [TestCase(true, true, true, false, TestName = "HeldHandAttachedPickup_KeepsConfiguredRate")]
+        [TestCase(true, false, false, false, TestName = "ReleasedPickup_KeepsConfiguredRate")]
+        [TestCase(false, true, false, false, TestName = "FullRateDisabled_KeepsConfiguredRate")]
+        public void ShouldUseAvatarRateWhileHeld_OnlyPromotesWorldTransformPickups(
+            bool fullRateWhileHeld,
+            bool isHeldByOwner,
+            bool attachToHandOnGrab,
+            bool expected)
+        {
+            Assert.AreEqual(expected, BasisPickupSyncNetworking.ShouldUseAvatarRateWhileHeld(
+                fullRateWhileHeld,
+                isHeldByOwner,
+                attachToHandOnGrab));
+        }
+
         [Test]
         public void ResolveArmatureSendInterval_P2PDirectUsesP2PAvatarRateBeforeStaleServerRate()
         {

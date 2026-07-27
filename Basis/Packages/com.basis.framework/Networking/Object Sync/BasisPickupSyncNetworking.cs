@@ -38,12 +38,12 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     public bool AttachToHandOnGrab = true;
 
     /// <summary>
-    /// While the local owner holds this prop, send it at least as often as the local avatar/armature stream
-    /// and ignore distance-based send-rate reduction. When direct P2P is active for this pickup, its shared
-    /// stream uses the active P2P avatar cadence; otherwise it uses the server avatar cadence. A pickup configured
-    /// faster than the avatar keeps its faster rate. Turn off to keep its configured cadence and normal throttling.
+    /// While the local owner holds this prop using world-transform synchronization, send it at least as often as
+    /// the local avatar/armature stream and ignore distance-based send-rate reduction. Hand-attached pickups already
+    /// follow the synchronized armature every frame, so they keep their configured pickup cadence to avoid redundant
+    /// traffic. Direct-P2P world-transform pickups use the P2P avatar cadence; server-routed pickups use the server cadence.
     /// </summary>
-    [Tooltip("While held, match or exceed the active server or direct-P2P avatar/armature sync rate and ignore distance throttling.")]
+    [Tooltip("For held world-transform pickups, match or exceed the active server or direct-P2P avatar sync rate. Hand-attached pickups keep their configured cadence.")]
     public bool FullRateWhileHeld = true;
 
     // Preserve the Rigidbody state authored on the prop. Network ownership temporarily overrides
@@ -233,18 +233,23 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
     }
 
     /// <summary>
-    /// While held, use the faster of the pickup's configured interval and the local avatar/armature interval.
-    /// This keeps a 5 Hz pickup from lagging behind a 20 Hz server avatar stream without slowing pickups that
-    /// were deliberately configured above the avatar rate.
+    /// While held in world-transform mode, use the faster of the pickup's configured interval and the local
+    /// avatar/armature interval. Hand-attached pickups already inherit armature motion remotely, so increasing
+    /// their scene-data cadence would only add redundant offset/state traffic.
     /// </summary>
     protected override float ResolveBaseSendInterval(float configuredInterval)
     {
-        if (!FullRateWhileHeld || !IsHeldByOwner())
+        if (!ShouldUseAvatarRateWhileHeld(FullRateWhileHeld, IsHeldByOwner(), AttachToHandOnGrab))
         {
             return configuredInterval;
         }
 
         return ResolveHeldSendInterval(configuredInterval, GetLocalArmatureSendInterval());
+    }
+
+    internal static bool ShouldUseAvatarRateWhileHeld(bool fullRateWhileHeld, bool isHeldByOwner, bool attachToHandOnGrab)
+    {
+        return fullRateWhileHeld && isHeldByOwner && !attachToHandOnGrab;
     }
 
     internal static float ResolveHeldSendInterval(float configuredInterval, float armatureInterval)
@@ -318,8 +323,9 @@ public class BasisPickupSyncNetworking : BasisSyncedTransform, IBasisStaticLocka
         return IsPositiveFinite(serverInterval) ? serverInterval : 0f;
     }
 
-    /// <summary>Suppress distance throttling while the owner holds the pickup.</summary>
-    protected override bool ShouldSuppressDistanceReduction() => FullRateWhileHeld && IsHeldByOwner();
+    /// <summary>Suppress distance throttling only for held pickups that still stream world transforms.</summary>
+    protected override bool ShouldSuppressDistanceReduction()
+        => ShouldUseAvatarRateWhileHeld(FullRateWhileHeld, IsHeldByOwner(), AttachToHandOnGrab);
 
     /// <summary>True if the local owner currently has this prop grabbed in either hand (or desktop).</summary>
     private bool IsHeldByOwner()
