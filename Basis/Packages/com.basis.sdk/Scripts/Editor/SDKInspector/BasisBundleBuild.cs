@@ -16,6 +16,11 @@ using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 public static class BasisBundleBuild
 {
+    // Keep the SDK editor writer aligned with the BEE file format without taking a bundle-management assembly dependency.
+    private const int BeeMagicHeaderSize = 4;
+    private const int BeeRemoteHeaderSize = 8;
+    private static readonly byte[] BeeMagicBytes = Encoding.ASCII.GetBytes("BEE ");
+
     public static event Func<BasisContentBase, List<BuildTarget>, Task> PreBuildBundleEvents;
 
     public static async Task<(bool, string)> GameObjectBundleBuild(string Image, BasisContentBase BasisContentBase, List<BuildTarget> Targets, bool useProvidedPassword = false, string OverriddenPassword = "")
@@ -661,7 +666,7 @@ public static class BasisBundleBuild
                 throw new FileNotFoundException("File not found", p);
             dataLen += new FileInfo(p).Length;
         }
-        long totalLen = 8L + headerLen + dataLen; // 8 bytes: header length prefix
+        long totalLen = BeeMagicHeaderSize + BeeRemoteHeaderSize + headerLen + dataLen;
 
         // --- big reusable buffer from the pool ---
         const int BufferSize = 8 * 1024 * 1024;  // try 4–8 MiB; 8 MiB if RAM allows
@@ -680,7 +685,10 @@ public static class BasisBundleBuild
                 // pre-size once — reduces fragmentation and page faults
                 output.SetLength(totalLen);
 
-                // write 8-byte length + header
+                // write magic prefix + 8-byte connector length + encrypted connector
+                await output.WriteAsync(BeeMagicBytes, 0, BeeMagicHeaderSize, ct);
+                bytesDone += BeeMagicHeaderSize;
+
                 await output.WriteAsync(lenBytes, 0, lenBytes.Length, ct);
                 bytesDone += lenBytes.Length;
 

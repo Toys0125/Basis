@@ -127,7 +127,8 @@ public static class BasisIOManagement
     }
 
     /// <summary>
-    /// Downloads a remote BEE blob (with 8-byte Int64 header), decrypts/parses the connector,
+    /// Downloads a remote BEE blob (legacy-compatible optional magic prefix + 8-byte Int64 header),
+    /// decrypts/parses the connector,
     /// downloads the platform-matching section, writes a local .bee file (4-byte Int32 header),
     /// and returns all artifacts.
     /// </summary>
@@ -140,16 +141,13 @@ public static class BasisIOManagement
         if (string.IsNullOrWhiteSpace(vp))
             return BeeResult<BeeDownloadResult>.Fail("DownloadBEEEx: VP is null or empty.");
 
-        // 1) Read 8-byte remote header (Int64)
-        var headerRes = await DownloadRangeInternal(url, startByte: 0, endByteInclusive: BasisBeeConstants.RemoteHeaderSize - 1, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+        // 1) Read magic prefix policy + 8-byte remote header (Int64)
+        var remoteHeaderRes = await ReadRemoteConnectorHeaderAsync(url, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+        if (!remoteHeaderRes.IsSuccess)
+            return BeeResult<BeeDownloadResult>.Fail(remoteHeaderRes.Error, remoteHeaderRes.ResponseCode);
 
-        if (!headerRes.IsSuccess || headerRes.Value?.Data == null)
-            return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Failed to read remote header. {headerRes.Error ?? "No data"}", headerRes.ResponseCode);
-
-        if (headerRes.Value.Data.Length != BasisBeeConstants.RemoteHeaderSize)
-            return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Remote header size mismatch. Expected {BasisBeeConstants.RemoteHeaderSize} bytes, got {headerRes.Value.Data.Length}.", headerRes.ResponseCode);
-
-        long connectorLength = ReadInt64LittleEndian(headerRes.Value.Data);
+        long connectorLength = remoteHeaderRes.Value.ConnectorLength;
+        long remoteHeaderOffset = remoteHeaderRes.Value.HeaderOffset;
         if (connectorLength <= 0)
             return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Invalid connector length {connectorLength}. Remote file may be corrupt or not a BEE.");
 
@@ -157,8 +155,8 @@ public static class BasisIOManagement
             return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Connector length {connectorLength} exceeds max allowed {BasisBeeConstants.MaxConnectorBytes}.");
 
         // 2) Download connector bytes (immediately after header)
-        long connectorStart = BasisBeeConstants.RemoteHeaderSize;
-        long connectorEndInclusive = BasisBeeConstants.RemoteHeaderSize + connectorLength - 1;
+        long connectorStart = remoteHeaderOffset + BasisBeeConstants.RemoteHeaderSize;
+        long connectorEndInclusive = connectorStart + connectorLength - 1;
 
         var connectorRes = await DownloadRangeInternal(url, connectorStart, connectorEndInclusive, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
 
@@ -264,7 +262,7 @@ public static class BasisIOManagement
         return BeeResult<BeeDownloadResult>.Ok(new BeeDownloadResult(connector, localPath, platformSectionData));
     }
     /// <summary>
-    /// Downloads only the connector bytes from the remote BEE (8-byte Int64 header) and parses them.
+    /// Downloads only the connector bytes from the remote BEE (legacy-compatible optional magic prefix + 8-byte Int64 header) and parses them.
     /// </summary>
     public static async Task<BeeResult<(BasisBundleConnector, string)>> DownloadConnectorOnlyEx(string url, string vp, BasisProgressReport progressCallback, CancellationToken cancellationToken = default, long MaxDownloadSizeInMB = 4L * 1024 * 1024 * 1024)
     {
@@ -275,14 +273,12 @@ public static class BasisIOManagement
             return BeeResult<(BasisBundleConnector, string)>.Fail("DownloadConnectorOnlyEx: VP is null or empty.");
 
         // Header
-        var headerRes = await DownloadRangeInternal(url, 0, BasisBeeConstants.RemoteHeaderSize - 1, null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
-        if (!headerRes.IsSuccess || headerRes.Value?.Data == null)
-            return BeeResult<(BasisBundleConnector, string)>.Fail($"DownloadConnectorOnlyEx: Failed to read header. {headerRes.Error ?? "No data"}", headerRes.ResponseCode);
+        var remoteHeaderRes = await ReadRemoteConnectorHeaderAsync(url, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+        if (!remoteHeaderRes.IsSuccess)
+            return BeeResult<(BasisBundleConnector, string)>.Fail(remoteHeaderRes.Error, remoteHeaderRes.ResponseCode);
 
-        if (headerRes.Value.Data.Length != BasisBeeConstants.RemoteHeaderSize)
-            return BeeResult<(BasisBundleConnector, string)>.Fail($"DownloadConnectorOnlyEx: Header size mismatch. Expected {BasisBeeConstants.RemoteHeaderSize}, got {headerRes.Value.Data.Length}.", headerRes.ResponseCode);
-
-        long connectorLength = ReadInt64LittleEndian(headerRes.Value.Data);
+        long connectorLength = remoteHeaderRes.Value.ConnectorLength;
+        long remoteHeaderOffset = remoteHeaderRes.Value.HeaderOffset;
         if (connectorLength <= 0)
             return BeeResult<(BasisBundleConnector, string)>.Fail($"DownloadConnectorOnlyEx: Invalid connector length {connectorLength}.");
 
@@ -290,8 +286,8 @@ public static class BasisIOManagement
             return BeeResult<(BasisBundleConnector, string)>.Fail($"DownloadConnectorOnlyEx: Connector length {connectorLength} exceeds max allowed {BasisBeeConstants.MaxConnectorBytes}.");
 
         // Connector bytes
-        long start = BasisBeeConstants.RemoteHeaderSize;
-        long end = BasisBeeConstants.RemoteHeaderSize + connectorLength - 1;
+        long start = remoteHeaderOffset + BasisBeeConstants.RemoteHeaderSize;
+        long end = start + connectorLength - 1;
 
         var connectorRes = await DownloadRangeInternal(url, start, end, null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
 
@@ -356,7 +352,18 @@ public static class BasisIOManagement
 
         using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 96 * 1024, useAsync: true);
 
-        if (fs.Length < BasisBeeConstants.DiskHeaderSize)
+        // Check for magic header before minimum length validation
+        bool hasMagic = await TryReadMagicAsync(fs, cancellationToken);
+#if BASIS_BEE_REQUIRE_MAGIC_HEADER
+        if (!hasMagic)
+        {
+            return BeeResult<BeeReadResult>.Fail("ReadBEEFileEx: Missing required BEE magic header.");
+        }
+#endif
+
+        long minimumLength = BasisBeeConstants.DiskHeaderSize +
+                             (hasMagic ? BasisBeeConstants.MagicHeaderSize : 0);
+        if (fs.Length < minimumLength)
         {
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: File too small to contain header. Size={fs.Length} bytes.");
         }
@@ -370,9 +377,10 @@ public static class BasisIOManagement
 
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
-        if (connectorSize <= 0 || connectorSize > remainingPossible)
+        const int minConnector = 1;
+        if (connectorSize < minConnector || connectorSize > BasisBeeConstants.MaxConnectorBytes || connectorSize > remainingPossible)
         {
-            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Remaining file bytes: {remainingPossible}. File may be corrupt.");
+            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte, no more than {BasisBeeConstants.MaxConnectorBytes} bytes, and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
         }
 
         // Read connector bytes
@@ -424,7 +432,16 @@ public static class BasisIOManagement
 
         using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 96 * 1024, useAsync: true);
 
-        if (fs.Length < BasisBeeConstants.DiskHeaderSize)
+        // Check for magic header before minimum length validation
+        bool hasMagic = await TryReadMagicAsync(fs, cancellationToken);
+#if BASIS_BEE_REQUIRE_MAGIC_HEADER
+        if (!hasMagic)
+            return BeeResult<BeeReadResult>.Fail("ReadBEEFileEx: Missing required BEE magic header.");
+#endif
+
+        long minimumLength = BasisBeeConstants.DiskHeaderSize +
+                             (hasMagic ? BasisBeeConstants.MagicHeaderSize : 0);
+        if (fs.Length < minimumLength)
             return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: File too small to contain header. Size={fs.Length} bytes.");
 
         // Read Int32 connector size (little-endian)
@@ -434,8 +451,9 @@ public static class BasisIOManagement
 
         int connectorSize = ReadInt32LittleEndian(sizeBytes);
         long remainingPossible = fs.Length - fs.Position;
-        if (connectorSize <= 0 || connectorSize > remainingPossible)
-            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Remaining file bytes: {remainingPossible}. File may be corrupt.");
+        const int minConnector = 1;
+        if (connectorSize < minConnector || connectorSize > BasisBeeConstants.MaxConnectorBytes || connectorSize > remainingPossible)
+            return BeeResult<BeeReadResult>.Fail($"ReadBEEFileEx: Invalid connector size {connectorSize}. Connector size must be at least {minConnector} byte, no more than {BasisBeeConstants.MaxConnectorBytes} bytes, and no more than the remaining {remainingPossible} file bytes. File may be corrupt.");
 
         // Read connector bytes
         byte[] connectorBytes = await ReadExactAsync(fs, connectorSize, cancellationToken).ConfigureAwait(false);
@@ -765,7 +783,7 @@ public static class BasisIOManagement
         bool writeSection = !IgnoreSectionBytes && (sectionBytes?.Length ?? 0) > 0;
 
         // Compute total size we expect to write
-        long totalSize = sizeLE.Length + connectorBytes.Length + (writeSection ? sectionBytes.Length : 0);
+        long totalSize = BasisBeeConstants.MagicHeaderSize + sizeLE.Length + connectorBytes.Length + (writeSection ? sectionBytes.Length : 0);
 
         // Auto-tune buffer: min 32KB, max 1MB
         int buffer = Clamp((int)(totalSize / 8), 32 * 1024, 1 * 1024 * 1024);
@@ -777,6 +795,7 @@ public static class BasisIOManagement
         {
             using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, buffer, useAsync: true))
             {
+                await fs.WriteAsync(BasisBeeConstants.MagicBytes, 0, BasisBeeConstants.MagicHeaderSize).ConfigureAwait(false);
                 await fs.WriteAsync(sizeLE, 0, sizeLE.Length).ConfigureAwait(false);
                 await fs.WriteAsync(connectorBytes, 0, connectorBytes.Length).ConfigureAwait(false);
 
@@ -981,6 +1000,66 @@ public static class BasisIOManagement
         if (value < min) return min;
         if (value > max) return max;
         return value;
+    }
+
+    private static async Task<bool> TryReadMagicAsync(Stream fs, CancellationToken ct)
+    {
+        long originalPosition = fs.Position;
+        byte[] prefix = await ReadExactAsync(fs, BasisBeeConstants.MagicHeaderSize, ct);
+        if (prefix.Length != BasisBeeConstants.MagicHeaderSize)
+        {
+            fs.Position = originalPosition;
+            return false;
+        }
+
+        bool hasMagic = HasMagicHeader(prefix);
+
+        if (!hasMagic)
+            fs.Position = originalPosition;
+
+        return hasMagic;
+    }
+
+    private static async Task<BeeResult<(long ConnectorLength, long HeaderOffset)>> ReadRemoteConnectorHeaderAsync(string url, BasisProgressReport progressCallback, CancellationToken cancellationToken, long maxDownloadSizeInMB)
+    {
+        var prefixRes = await DownloadRangeInternal(url, 0, BasisBeeConstants.MagicHeaderSize - 1, toFilePath: null, progressCallback, cancellationToken, maxDownloadSizeInMB);
+        if (!prefixRes.IsSuccess || prefixRes.Value?.Data == null)
+            return BeeResult<(long ConnectorLength, long HeaderOffset)>.Fail($"Failed to read remote prefix. {prefixRes.Error ?? "No data"}", prefixRes.ResponseCode);
+
+        byte[] prefixBytes = prefixRes.Value.Data;
+        if (prefixBytes.Length != BasisBeeConstants.MagicHeaderSize)
+            return BeeResult<(long ConnectorLength, long HeaderOffset)>.Fail($"Remote prefix size mismatch. Expected {BasisBeeConstants.MagicHeaderSize} bytes, got {prefixBytes.Length}.", prefixRes.ResponseCode);
+
+        bool hasMagic = HasMagicHeader(prefixBytes);
+#if BASIS_BEE_REQUIRE_MAGIC_HEADER
+        if (!hasMagic)
+            return BeeResult<(long ConnectorLength, long HeaderOffset)>.Fail("Missing required BEE magic header.", prefixRes.ResponseCode);
+#endif
+        long headerStart = hasMagic ? BasisBeeConstants.MagicHeaderSize : 0;
+        long headerEnd = headerStart + BasisBeeConstants.RemoteHeaderSize - 1;
+        var headerRes = await DownloadRangeInternal(url, headerStart, headerEnd, toFilePath: null, progressCallback, cancellationToken, maxDownloadSizeInMB);
+        if (!headerRes.IsSuccess || headerRes.Value?.Data == null)
+            return BeeResult<(long ConnectorLength, long HeaderOffset)>.Fail($"Failed to read remote header. {headerRes.Error ?? "No data"}", headerRes.ResponseCode);
+
+        if (headerRes.Value.Data.Length != BasisBeeConstants.RemoteHeaderSize)
+            return BeeResult<(long ConnectorLength, long HeaderOffset)>.Fail($"Remote header size mismatch. Expected {BasisBeeConstants.RemoteHeaderSize} bytes, got {headerRes.Value.Data.Length}.", headerRes.ResponseCode);
+
+        long connectorLength = ReadInt64LittleEndian(headerRes.Value.Data);
+        return BeeResult<(long ConnectorLength, long HeaderOffset)>.Ok((connectorLength, headerStart));
+    }
+
+    private static bool HasMagicHeader(byte[] prefix)
+    {
+        if (prefix == null || prefix.Length != BasisBeeConstants.MagicHeaderSize)
+            return false;
+
+        for (int i = 0; i < BasisBeeConstants.MagicHeaderSize; i++)
+        {
+            if (prefix[i] != BasisBeeConstants.MagicBytes[i])
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
