@@ -114,7 +114,18 @@ The following are Basis experiments and are not upstream wire-compatible:
 - output snapping instead of quarter filtering;
 - Gray correction sourced from the original value;
 - per-bone absolute escapes;
-- rotating per-bone refresh records.
+- rotating per-bone refresh records;
+- Quaternion-4 armature coding with optional q/-q temporal sign continuity and component precision offsets.
+
+### Quaternion-4 experiment
+
+Upstream's current GUI demo also experiments with treating quaternion x/y/z/w as four independent Numerel numbers and normalizing after decode. `BasisNumerelQuaternion4ArmatureCodec` implements that idea without changing the production Basis payload representation: it decodes each captured smallest-three bone to a unit quaternion, Numerel-codes four components, normalizes the decoded four-vector, and repacks it to the original Basis smallest-three format for apples-to-apples angular-error measurement.
+
+The Basis experiment adds optional temporal sign continuity. Since q and -q represent the same rotation, the encoder negates the current source quaternion when its dot product with the previous source representation is negative. This avoids turning a harmless smallest-three representation sign flip into four large Numerel deltas.
+
+Benchmark variants include the upstream-style same-BPC mapping, sign-continuous mapping, component precision offsets of -2, -1, +1, and +2 bits relative to each bone's existing Basis BPC, and an adaptive profile that uses +2 bits on coarse <=6-BPC bones and +1 bit on the rest. These are benchmark modes only and are not selected by the live armature protocol.
+
+Initial ARM64 synthetic High-quality results show why precision must be benchmarked rather than assumed: same-BPC Quaternion-4 is about 130.1 framed B/frame but has 4.875-degree idle p95, while +1 reaches about 132.3 B/frame and 0.069-degree idle p95. The adaptive profile is about 133.2 B/frame with 0.079-degree idle p95, 5.03-degree active no-loss p95, and 5.30-degree burst no-loss p95. A fixed 12-bit/component mode is also included to match the upstream author's suggested starting point; its four self-delimiting Numerel codes are concatenated directly with no per-component length or byte alignment. It measured about 136.8 B/frame and 0.148-degree idle p95, 179.1 B/frame and 2.18-degree active no-loss p95, and 185.1 B/frame and 2.71-degree burst no-loss p95. Sign continuity is most visible around smallest-three representation flips and materially reduces some catastrophic loss maxima, but Quaternion-4 loss recovery remains worse than the exact V3.1 direction. These numbers are synthetic screening results; the cleaned Windows Humanoid corpus is required before making a design decision.
 
 ## Validation
 

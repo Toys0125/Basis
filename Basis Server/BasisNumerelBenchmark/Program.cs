@@ -14,6 +14,7 @@ internal enum MotionProfile
 }
 
 internal sealed record CodecSpec(string Name, BasisNumerelArmatureCodec.Options Value);
+internal sealed record Quaternion4Spec(string Name, BasisNumerelQuaternion4ArmatureCodec.Options Value);
 internal sealed record V3Spec(string Name, BasisAvatarDeltaRecoveryV3.Options Value, bool RecoveryRequests);
 
 internal sealed class LegacyResult
@@ -160,6 +161,18 @@ internal static class Program
         new("delta-v3-cycle12", BasisAvatarDeltaRecoveryV3.Options.LowOverhead, false),
     };
 
+    private static readonly Quaternion4Spec[] Quaternion4Tunings =
+    {
+        new("quat4-upstream", BasisNumerelQuaternion4ArmatureCodec.Options.Upstream),
+        new("quat4-upstream-continuous", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuous),
+        new("quat4-upstream-continuous-minus1", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousMinus1),
+        new("quat4-upstream-continuous-minus2", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousMinus2),
+        new("quat4-upstream-continuous-plus1", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousPlus1),
+        new("quat4-upstream-continuous-plus2", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousPlus2),
+        new("quat4-upstream-continuous-adaptive", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousAdaptive),
+        new("quat4-upstream-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuous12Bit),
+    };
+
     private static readonly CodecSpec[] Tunings =
     {
         new("reference", BasisNumerelArmatureCodec.Options.NumerelOnly(BasisNumerel.Tuning.Reference)),
@@ -204,6 +217,14 @@ internal static class Program
                     }
                 }
 
+                foreach (Quaternion4Spec tuning in Quaternion4Tunings)
+                {
+                    foreach ((double loss, double reorder) in new[] { (0.0, 0.0), (0.05, 0.0), (0.10, 0.02), (0.20, 0.05) })
+                    {
+                        document.Numerel.Add(RunQuaternion4(frames, quality, motion, tuning, loss, reorder));
+                    }
+                }
+
                 foreach (CodecSpec tuning in Tunings)
                 {
                     foreach ((double loss, double reorder) in new[] { (0.0, 0.0), (0.05, 0.0), (0.10, 0.02), (0.20, 0.05) })
@@ -216,6 +237,7 @@ internal static class Program
 
         byte[][] cpuFrames = GenerateFrames(BitQuality.High, MotionProfile.Idle, 256, fullAvatarMotion: true);
         foreach (V3Spec tuning in V3Tunings) document.Cpu.Add(RunV3Cpu(cpuFrames, tuning));
+        foreach (Quaternion4Spec tuning in Quaternion4Tunings) document.Cpu.Add(RunQuaternion4Cpu(cpuFrames, tuning));
         foreach (CodecSpec tuning in Tunings) document.Cpu.Add(RunCpu(cpuFrames, tuning));
 
         string json = JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true });
@@ -396,6 +418,104 @@ internal static class Program
         };
     }
 
+    private static NumerelResult RunQuaternion4(
+        byte[][] frames,
+        BitQuality quality,
+        MotionProfile motion,
+        Quaternion4Spec tuning,
+        double loss,
+        double reorder)
+    {
+        var encoder = new BasisNumerelQuaternion4ArmatureCodec.Encoder(quality, tuning.Value);
+        var steadyDecoder = new BasisNumerelQuaternion4ArmatureCodec.Decoder(quality, tuning.Value);
+        var lateDecoder = new BasisNumerelQuaternion4ArmatureCodec.Decoder(quality, tuning.Value);
+        byte[] encodeBuffer = new byte[encoder.MaxBodySize];
+        byte[] steadyOutput = new byte[encoder.PayloadSize];
+        byte[] lateOutput = new byte[encoder.PayloadSize];
+        var sizes = new List<int>(frames.Length);
+        var steadyErrors = new ErrorAccumulator(0);
+        var lateErrors = new ErrorAccumulator(LateJoinFrame);
+        var rng = new Random(StableSeed(quality, motion, tuning.Name, loss, reorder));
+        Packet? held = null;
+        int delivered = 0;
+        long framedTotal = 0;
+
+        void Deliver(Packet packet)
+        {
+            delivered++;
+            if (steadyDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, steadyOutput, out _)
+                && packet.FrameIndex >= 100)
+                steadyErrors.AddFrame(frames[packet.FrameIndex], steadyOutput, quality, packet.FrameIndex);
+
+            if (packet.FrameIndex >= LateJoinFrame
+                && lateDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, lateOutput, out _))
+                lateErrors.AddFrame(frames[packet.FrameIndex], lateOutput, quality, packet.FrameIndex);
+        }
+
+        for (int frame = 0; frame < frames.Length; frame++)
+        {
+            byte sequence = (byte)frame;
+            int length = encoder.Encode(frames[frame], sequence, encodeBuffer, 0);
+            if (length <= 0) throw new InvalidOperationException("Quaternion-4 Numerel encode failed");
+            sizes.Add(length);
+            framedTotal += length + 4;
+
+            if (rng.NextDouble() < loss) continue;
+            byte[] packetBytes = new byte[length];
+            Buffer.BlockCopy(encodeBuffer, 0, packetBytes, 0, length);
+            var packet = new Packet(packetBytes, length, sequence, frame);
+
+            if (held != null)
+            {
+                Deliver(packet);
+                Deliver(held);
+                held = null;
+            }
+            else if (rng.NextDouble() < reorder)
+            {
+                held = packet;
+            }
+            else
+            {
+                Deliver(packet);
+            }
+        }
+        if (held != null) Deliver(held);
+
+        sizes.Sort();
+        var steady = steadyErrors.Summarize();
+        var late = lateErrors.Summarize();
+        return new NumerelResult
+        {
+            Tuning = tuning.Name,
+            Quality = quality.ToString(),
+            Motion = motion.ToString(),
+            LossPercent = loss * 100,
+            ReorderPercent = reorder * 100,
+            AverageBodyBytes = sizes.Average(),
+            AverageFramedBytes = framedTotal / (double)frames.Length,
+            P50BodyBytes = PercentileSorted(sizes, 0.50),
+            P95BodyBytes = PercentileSorted(sizes, 0.95),
+            P99BodyBytes = PercentileSorted(sizes, 0.99),
+            MaxBodyBytes = sizes[^1],
+            BytesPerSecond20Hz = framedTotal / (double)frames.Length * SendHz,
+            OfferedFrames = frames.Length,
+            DeliveredDatagrams = delivered,
+            SteadyAcceptedFrames = steadyErrors.AcceptedFrames,
+            LateAcceptedFrames = lateErrors.AcceptedFrames,
+            SteadyMeanAngularErrorDeg = steady.mean,
+            SteadyP95AngularErrorDeg = steady.p95,
+            SteadyP99AngularErrorDeg = steady.p99,
+            SteadyMaxAngularErrorDeg = steady.max,
+            LateMeanAngularErrorDeg = late.mean,
+            LateP95AngularErrorDeg = late.p95,
+            LateP99AngularErrorDeg = late.p99,
+            LateMaxAngularErrorDeg = late.max,
+            LateJoinStableUnder1DegMs = lateErrors.StableUnder1Ms,
+            LateJoinStableUnder025DegMs = lateErrors.StableUnder025Ms,
+        };
+    }
+
     private static NumerelResult RunNumerel(
         byte[][] frames,
         BitQuality quality,
@@ -547,6 +667,72 @@ internal static class Program
         elapsed = Stopwatch.GetTimestamp() - start;
         long decodeAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeAlloc;
         double decodeNs = elapsed * 1_000_000_000.0 / Stopwatch.Frequency / iterations;
+
+        return new CpuResult
+        {
+            Tuning = tuning.Name,
+            EncodeNanosecondsPerFrame = encodeNs,
+            DecodeNanosecondsPerFrame = decodeNs,
+            EncodeAllocatedBytes = encodeAlloc,
+            DecodeAllocatedBytes = decodeAlloc,
+        };
+    }
+
+    private static CpuResult RunQuaternion4Cpu(byte[][] frames, Quaternion4Spec tuning)
+    {
+        const int iterations = 100_000;
+        var encoder = new BasisNumerelQuaternion4ArmatureCodec.Encoder(BitQuality.High, tuning.Value);
+        byte[] buffer = new byte[encoder.MaxBodySize];
+
+        for (int i = 0; i < 2000; i++)
+            if (encoder.Encode(frames[i & 255], (byte)i, buffer, 0) <= 0)
+                throw new InvalidOperationException("Quaternion-4 warmup encode failed");
+        encoder.Reset();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        long beforeAlloc = GC.GetAllocatedBytesForCurrentThread();
+        long start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < iterations; i++)
+            if (encoder.Encode(frames[i & 255], (byte)i, buffer, 0) <= 0)
+                throw new InvalidOperationException("Quaternion-4 timed encode failed");
+        long encodeElapsed = Stopwatch.GetTimestamp() - start;
+        long encodeAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeAlloc;
+        double encodeNs = encodeElapsed * 1_000_000_000.0 / Stopwatch.Frequency / iterations;
+
+        var packetEncoder = new BasisNumerelQuaternion4ArmatureCodec.Encoder(BitQuality.High, tuning.Value);
+        byte[][] packets = new byte[256][];
+        int[] lengths = new int[256];
+        for (int i = 0; i < packets.Length; i++)
+        {
+            byte[] p = new byte[packetEncoder.MaxBodySize];
+            lengths[i] = packetEncoder.Encode(frames[i], (byte)i, p, 0);
+            if (lengths[i] <= 0)
+                throw new InvalidOperationException("Quaternion-4 corpus encode failed");
+            packets[i] = p;
+        }
+
+        var decoder = new BasisNumerelQuaternion4ArmatureCodec.Decoder(BitQuality.High, tuning.Value);
+        byte[] output = new byte[decoder.PayloadSize];
+        for (int i = 0; i < 2000; i++)
+        {
+            int index = i & 255;
+            if (index == 0 && i != 0) decoder.Reset();
+            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)index, output, out _))
+                throw new InvalidOperationException("Quaternion-4 warmup decode failed");
+        }
+        decoder.Reset();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        beforeAlloc = GC.GetAllocatedBytesForCurrentThread();
+        start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < iterations; i++)
+        {
+            int index = i & 255;
+            if (index == 0 && i != 0) decoder.Reset();
+            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)index, output, out _))
+                throw new InvalidOperationException("Quaternion-4 timed decode failed");
+        }
+        long decodeElapsed = Stopwatch.GetTimestamp() - start;
+        long decodeAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeAlloc;
+        double decodeNs = decodeElapsed * 1_000_000_000.0 / Stopwatch.Frequency / iterations;
 
         return new CpuResult
         {
