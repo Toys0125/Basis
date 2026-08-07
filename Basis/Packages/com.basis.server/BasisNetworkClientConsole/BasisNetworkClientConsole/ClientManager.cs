@@ -132,6 +132,7 @@ namespace Basis.Network
         {
             for (int Index = 0; Index < ClientCount; Index++)
             {
+                cts.Token.ThrowIfCancellationRequested();
                 var name = NameGenerator.GenerateRandomPlayerName();
                 var identity = new ConsoleClientIdentity();
                 var (avatarBytes, avatarLoadMode) = PickAvatar();
@@ -186,7 +187,7 @@ namespace Basis.Network
         }
         public async Task ReconnectClientAsync(int index)
         {
-            if (index < 0 || index >= FinalClients.Length) return;
+            if (cts.IsCancellationRequested || index < 0 || index >= FinalClients.Length) return;
 
             var oldClient = Volatile.Read(ref FinalClients[index]);
 
@@ -197,7 +198,14 @@ namespace Basis.Network
             oldClient?.Disconnect();
             BNL.Log($"Disconnected client at index {index}");
 
-            await Task.Delay(3000); // wait before reconnecting
+            try
+            {
+                await Task.Delay(3000, cts.Token); // wait before reconnecting
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                return;
+            }
 
             var name = NameGenerator.GenerateRandomPlayerName();
             var identity = new ConsoleClientIdentity();
@@ -249,8 +257,14 @@ namespace Basis.Network
                 BNL.Log($"Reconnected: {name} ({identity.Did}) at index {index}");
             }
         }
+        public void RequestStop()
+        {
+            cts.Cancel();
+        }
+
         public Task StopClientsAsync()
         {
+            RequestStop();
             if (FinalClients != null)
                 foreach (var client in FinalClients) client?.Disconnect();
             return Task.CompletedTask;

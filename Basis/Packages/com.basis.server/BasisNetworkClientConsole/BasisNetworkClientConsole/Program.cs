@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Basis.Logging;
 using Basis.Network;
 using Basis.Config;
@@ -13,6 +14,8 @@ namespace Basis
         private const double MovementIntervalMs = 90.0;
         private const int MaxVoiceCatchUpFrames = 5;
         private static volatile bool _running = true;
+        private static readonly object ShutdownLock = new();
+        private static bool _shutdownComplete;
 
         /// <summary>Driver iterations that took longer than DriverTickMs — the harness falling behind.</summary>
         private static long DriverOverruns;
@@ -57,13 +60,40 @@ namespace Basis
             var clientManager = new ClientManager();
             clientManager.Prepare();
 
-            AppDomain.CurrentDomain.ProcessExit += (_, __) =>
+            var shutdownRequested = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            void RequestShutdown()
             {
-                Console.WriteLine("Shutting down...");
                 _running = false;
-                MicrophoneCapture.Stop();
-                clientManager.StopClientsAsync().GetAwaiter().GetResult();
+                clientManager.RequestStop();
+                shutdownRequested.TrySetResult(true);
+            }
+
+            ConsoleCancelEventHandler cancelKeyPressHandler = (_, eventArgs) =>
+            {
+                // Keep the process alive long enough for Main to send LiteNetLib disconnect packets.
+                eventArgs.Cancel = true;
+                RequestShutdown();
             };
+            Console.CancelKeyPress += cancelKeyPressHandler;
+
+            EventHandler processExitHandler = (_, __) =>
+            {
+                // Last-chance fallback for exits that do not pass through CancelKeyPress/SIGTERM.
+                RequestShutdown();
+                Shutdown(clientManager);
+            };
+            AppDomain.CurrentDomain.ProcessExit += processExitHandler;
+
+            PosixSignalRegistration? sigTermRegistration = null;
+            if (!OperatingSystem.IsWindows())
+            {
+                sigTermRegistration = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+                {
+                    context.Cancel = true;
+                    RequestShutdown();
+                });
+            }
 
             MovementSender.Initialize(clientManager.ClientCount);
             MovementSender.VoiceSender.Initialize(clientManager.ClientCount);
@@ -83,7 +113,14 @@ namespace Basis
                 BNL.Log($"[FaceObserver] Simulating {lossPct}% packet loss on every client.");
             }
 
-            await clientManager.StartClientsAsync();
+            try
+            {
+                await clientManager.StartClientsAsync();
+            }
+            catch (OperationCanceledException) when (!_running)
+            {
+                // Shutdown may be requested while a large client set is still connecting.
+            }
 
             // Periodic observer summary so a timed run ends with machine-readable totals.
             if (MovementSender.EmitFaceData || MessageHandler.ObserveOnly)
@@ -148,7 +185,30 @@ namespace Basis
             // Start random reconnects
             _ = StartRandomReconnectLoop(clientManager);
 
-            await Task.Delay(-1); // keep main alive
+            await shutdownRequested.Task;
+
+            Shutdown(clientManager);
+            sigTermRegistration?.Dispose();
+            Console.CancelKeyPress -= cancelKeyPressHandler;
+            AppDomain.CurrentDomain.ProcessExit -= processExitHandler;
+        }
+
+        private static void Shutdown(ClientManager clientManager)
+        {
+            lock (ShutdownLock)
+            {
+                if (_shutdownComplete)
+                {
+                    return;
+                }
+
+                Console.WriteLine("Shutting down...");
+                _running = false;
+                MicrophoneCapture.Stop();
+                clientManager.StopClientsAsync().GetAwaiter().GetResult();
+                _shutdownComplete = true;
+                Console.WriteLine("Shutdown complete.");
+            }
         }
 
         public static void StopClient(ClientManager manager, int index)
@@ -339,10 +399,11 @@ namespace Basis
         {
             int totalClients = clientManager.ClientCount;
 
-            while (true)
+            while (_running)
             {
                 int waitMinutes = Random.Shared.Next(1, 21); // 1–20 minutes
                 await Task.Delay(TimeSpan.FromMinutes(waitMinutes));
+                if (!_running) return;
 
                 int indexToRestart = Random.Shared.Next(0, totalClients);
                 BNL.Log($"Randomly restarting client at index {indexToRestart}");
