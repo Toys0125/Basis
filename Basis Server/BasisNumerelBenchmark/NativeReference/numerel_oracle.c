@@ -5,7 +5,7 @@
 
 /*
  * Native comparison harness for cnlohr/numerel revision
- * ea184345c109ef1915b1dfe6603d5b188bca8e4e.
+ * 8676848ae268f3a8eee672413f272ee422521d09.
  *
  * Build example:
  *   cc -std=c11 -O2 numerel_oracle.c -I/path/to/numerel -lm -o numerel_oracle

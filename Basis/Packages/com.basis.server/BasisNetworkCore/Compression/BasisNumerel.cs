@@ -5,7 +5,7 @@ namespace Basis.Network.Core.Compression
 {
     /// <summary>
     /// Safe C# port of cnlohr/numerel at upstream revision
-    /// ea184345c109ef1915b1dfe6603d5b188bca8e4e (2026-08-06).
+    /// 8676848ae268f3a8eee672413f272ee422521d09 (2026-08-07).
     ///
     /// Upstream source: https://codeberg.org/cnlohr/numerel
     /// Upstream license: MIT, Copyright (c) 2026 cnlohr.
@@ -15,12 +15,12 @@ namespace Basis.Network.Core.Compression
     /// for a missing sample, then later self-heal its estimate as different Gray bits arrive.
     ///
     /// <see cref="Tuning.Reference"/> preserves the upstream algorithm, including its
-    /// literal pow(v, 0.3333333) cube-root approximation. Other tuning modes are Basis
+    /// literal ((int)(pow(v, 0.3333333)+0.4)) cube-root approximation. Other tuning modes are Basis
     /// experiments and are not wire-compatible with the upstream reference mode.
     /// </summary>
     public static class BasisNumerel
     {
-        public const string UpstreamRevision = "ea184345c109ef1915b1dfe6603d5b188bca8e4e";
+        public const string UpstreamRevision = "8676848ae268f3a8eee672413f272ee422521d09";
 
         public struct TxState
         {
@@ -47,7 +47,7 @@ namespace Basis.Network.Core.Compression
 
         public enum DifferenceCompressionMode : byte
         {
-            /// <summary>Matches upstream NumerelDiffCompress: (int)pow(abs(v), 0.3333333).</summary>
+            /// <summary>Matches upstream NumerelDiffCompress: (int)(pow(abs(v), 0.3333333) + 0.4).</summary>
             UpstreamPow = 0,
             /// <summary>Deterministic mathematical floor cube root; Basis experimental mode.</summary>
             FloorCubeRoot = 1,
@@ -146,7 +146,9 @@ namespace Basis.Network.Core.Compression
 
             uint valueMask = (1u << numBits) - 1u;
             value &= valueMask;
-            uint estimate = tx.RemoteEstimate & valueMask;
+            uint estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+                ? tx.RemoteEstimate
+                : tx.RemoteEstimate & valueMask;
 
             int difference = (int)value - (int)estimate;
             if (looping)
@@ -158,7 +160,9 @@ namespace Basis.Network.Core.Compression
 
             int compressed = CompressDifference(difference, tuning.CompressionMode);
             int reconstructedDelta = DecompressDifference(compressed);
-            estimate = ApplyDeltaToValue(estimate, reconstructedDelta, numBits, looping);
+            estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+                ? ApplyUpstreamTransmitterDelta(estimate, reconstructedDelta, valueMask, looping)
+                : ApplyDeltaToValue(estimate, reconstructedDelta, numBits, looping);
 
             uint encoded;
             if (compressed == 0)
@@ -316,7 +320,9 @@ namespace Basis.Network.Core.Compression
 
             uint valueMask = (1u << numBits) - 1u;
             value &= valueMask;
-            uint estimate = remoteEstimate & valueMask;
+            uint estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+                ? remoteEstimate
+                : remoteEstimate & valueMask;
             int difference = (int)value - (int)estimate;
             if (looping)
             {
@@ -326,7 +332,10 @@ namespace Basis.Network.Core.Compression
             }
 
             int compressed = CompressDifference(difference, tuning.CompressionMode);
-            estimate = ApplyDeltaToValue(estimate, DecompressDifference(compressed), numBits, looping);
+            int reconstructedDelta = DecompressDifference(compressed);
+            estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+                ? ApplyUpstreamTransmitterDelta(estimate, reconstructedDelta, valueMask, looping)
+                : ApplyDeltaToValue(estimate, reconstructedDelta, numBits, looping);
             if (tuning.CorrectEstimateFromValueGray)
             {
                 uint estimateGray = ToGrayCode(estimate);
@@ -372,9 +381,10 @@ namespace Basis.Network.Core.Compression
             switch (mode)
             {
                 case DifferenceCompressionMode.UpstreamPow:
-                    // Preserve the literal upstream exponent. It intentionally differs from
-                    // a mathematical floor cube root at exact cubes and nearby boundaries.
-                    root = (int)Math.Pow(magnitude, 0.3333333d);
+                    // Upstream 8676848 adds 0.4 before truncation. This fixes a differential
+                    // compression case that could fail to converge while deliberately remaining
+                    // distinct from both mathematical floor and nearest-integer cube roots.
+                    root = (int)(Math.Pow(magnitude, 0.3333333d) + 0.4d);
                     break;
                 case DifferenceCompressionMode.FloorCubeRoot:
                     root = IntegerCubeRoot(magnitude);
@@ -416,6 +426,16 @@ namespace Basis.Network.Core.Compression
                 else high = middle;
             }
             return low;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static uint ApplyUpstreamTransmitterDelta(uint value, int delta, uint mask, bool looping)
+        {
+            // NumerelEncode stores remote_estimate as an unsigned value and only masks it in
+            // looping mode. In non-looping mode the lossy cube can temporarily overshoot the
+            // nominal scalar range; preserving that state is required for upstream bit parity.
+            uint result = unchecked(value + (uint)delta);
+            return looping ? result & mask : result;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

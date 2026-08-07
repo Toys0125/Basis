@@ -5,7 +5,7 @@ namespace BasisServerTests;
 
 /// <summary>
 /// Known-answer vectors generated from cnlohr/numerel revision
-/// ea184345c109ef1915b1dfe6603d5b188bca8e4e with GCC/glibc on Linux ARM64.
+/// 8676848ae268f3a8eee672413f272ee422521d09 with GCC/glibc on Linux ARM64.
 /// The native oracle source and comparison notes live in NUMEREL_BASIS_PORT.md.
 /// </summary>
 public class BasisNumerelReferenceTests
@@ -32,22 +32,32 @@ public class BasisNumerelReferenceTests
     [Fact]
     public void ReferenceNonLooping_MatchesNativeEncodeDecodeVectors()
     {
-        uint[] expectedEstimate =
+        uint[] expectedTx =
         {
-            2048, 2049, 2076, 2012, 3740, 365, 1094, 1219, 2947, 2218, 21, 3396,
+            2048, 2056, 2083, 2019, 4216, 120, 1120, 1245, 2973, 1973, 245, 4341,
+        };
+        uint[] expectedRaw =
+        {
+            2048, 2056, 2083, 2019, 3968, 0, 1000, 1178, 2909, 1909, 181, 4095,
+        };
+        uint[] expectedOutput =
+        {
+            2048, 2056, 2083, 2019, 4063, 0, 1000, 1138, 2876, 1884, 162, 4095,
         };
         uint[] expectedBits =
         {
-            0xc0000000, 0x40000000, 0x30000000, 0x12000000,
-            0x0c400000, 0x0f800000, 0x09000000, 0x15000000,
-            0x0c000000, 0x09800000, 0x0dc00000, 0x0f400000,
+            0xc0000000, 0x20000000, 0x30000000, 0x12000000,
+            0x0d400000, 0x04200000, 0x0a400000, 0x15000000,
+            0x0c000000, 0x0a800000, 0x0cc00000, 0x04100000,
         };
-        int[] expectedLengths = { 2, 4, 6, 8, 10, 10, 10, 8, 10, 10, 10, 10 };
-        int[] expectedDelta = { 0, 1, 27, -64, 1728, -3375, 729, 125, 1728, -729, -2197, 3375 };
+        int[] expectedLengths = { 2, 6, 6, 8, 10, 12, 10, 8, 10, 10, 10, 12 };
+        int[] expectedDelta = { 0, 8, 27, -64, 2197, -4096, 1000, 125, 1728, -1000, -1728, 4096 };
 
         RunReferenceSequence(
             looping: false,
-            expectedEstimate,
+            expectedTx,
+            expectedRaw,
+            expectedOutput,
             expectedBits,
             expectedLengths,
             expectedDelta);
@@ -58,19 +68,21 @@ public class BasisNumerelReferenceTests
     {
         uint[] expectedEstimate =
         {
-            2048, 2049, 2076, 2012, 284, 68, 1068, 1193, 2921, 2192, 3920, 4045,
+            2048, 2056, 2083, 2019, 3918, 38, 1369, 1244, 2972, 1972, 244, 28,
         };
         uint[] expectedBits =
         {
-            0xc0000000, 0x40000000, 0x30000000, 0x12000000,
-            0x0c800000, 0x1b000000, 0x0a400000, 0x15000000,
-            0x0c400000, 0x09800000, 0x0c000000, 0x15000000,
+            0xc0000000, 0x20000000, 0x30000000, 0x12000000,
+            0x0dc00000, 0x19000000, 0x0b400000, 0x17000000,
+            0x0c000000, 0x0a800000, 0x0c800000, 0x1a000000,
         };
-        int[] expectedLengths = { 2, 4, 6, 8, 10, 8, 10, 8, 10, 10, 10, 8 };
-        int[] expectedDelta = { 0, 1, 27, -64, -1728, -216, 1000, 125, 1728, -729, 1728, 125 };
+        int[] expectedLengths = { 2, 6, 6, 8, 10, 8, 10, 8, 10, 10, 10, 8 };
+        int[] expectedDelta = { 0, 8, 27, -64, -2197, 216, 1331, -125, 1728, -1000, -1728, -216 };
 
         RunReferenceSequence(
             looping: true,
+            expectedEstimate,
+            expectedEstimate,
             expectedEstimate,
             expectedBits,
             expectedLengths,
@@ -82,10 +94,10 @@ public class BasisNumerelReferenceTests
     {
         uint[] values = { 2048, 2100, 2200, 2300, 2400, 2500, 2600, 2700 };
         bool[] dropped = { false, false, true, true, false, false, true, false };
-        uint[] expectedTx = { 2048, 2075, 2139, 2264, 2389, 2453, 2578, 2642 };
-        uint[] expectedRaw = { 2048, 2075, 2102, 2129, 2225, 2289, 2353, 2446 };
-        int[] expectedLastDelta = { 0, 27, 27, 27, 125, 64, 64, 64 };
-        uint[] expectedOutput = { 2048, 2075, 2102, 2129, 2246, 2304, 2368, 2435 };
+        uint[] expectedTx = { 2048, 2112, 2176, 2301, 2426, 2490, 2615, 2679 };
+        uint[] expectedRaw = { 2048, 2112, 2176, 2240, 2370, 2493, 2557, 2621 };
+        int[] expectedLastDelta = { 0, 64, 64, 64, 125, 64, 64, 64 };
+        uint[] expectedOutput = { 2048, 2112, 2176, 2240, 2366, 2445, 2509, 2585 };
 
         var tx = new BasisNumerel.TxState();
         var rx = new BasisNumerel.RxState();
@@ -132,8 +144,8 @@ public class BasisNumerelReferenceTests
         };
         int[] compressed =
         {
-            1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5,
-            5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9,
+            1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5,
+            6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10, 10,
         };
 
         var packet = new byte[8];
@@ -160,7 +172,7 @@ public class BasisNumerelReferenceTests
     [Fact]
     public void ReferencePowCubeRoot_ExhaustiveTwelveBitRangeMatchesNativeChecksum()
     {
-        const ulong expectedNativeHash = 0x56c42c8cc4f31f27UL;
+        const ulong expectedNativeHash = 0xb0e90ea47c60370fUL;
         ulong hash = 14695981039346656037UL;
 
         for (int difference = -4095; difference <= 4095; difference++)
@@ -239,7 +251,9 @@ public class BasisNumerelReferenceTests
 
     private static void RunReferenceSequence(
         bool looping,
-        uint[] expectedEstimate,
+        uint[] expectedTx,
+        uint[] expectedRaw,
+        uint[] expectedOutput,
         uint[] expectedBits,
         int[] expectedLengths,
         int[] expectedDelta)
@@ -261,7 +275,7 @@ public class BasisNumerelReferenceTests
 
             Assert.Equal(expectedLengths[frame], write);
             Assert.Equal(expectedBits[frame], ReadTopAligned(packet, write));
-            Assert.Equal(expectedEstimate[frame], tx.RemoteEstimate);
+            Assert.Equal(expectedTx[frame], tx.RemoteEstimate);
 
             int read = 0;
             Assert.True(BasisNumerel.TryDecode(
@@ -269,9 +283,9 @@ public class BasisNumerelReferenceTests
                 BasisNumerel.Tuning.Reference, packet, ref read, write, out uint output));
 
             Assert.Equal(write, read);
-            Assert.Equal(expectedEstimate[frame], rx.RawEstimate);
-            Assert.Equal(expectedEstimate[frame], output);
-            Assert.Equal(expectedEstimate[frame], rx.OutputValue);
+            Assert.Equal(expectedRaw[frame], rx.RawEstimate);
+            Assert.Equal(expectedOutput[frame], output);
+            Assert.Equal(expectedOutput[frame], rx.OutputValue);
             Assert.Equal(expectedDelta[frame], rx.LastDelta);
         }
     }

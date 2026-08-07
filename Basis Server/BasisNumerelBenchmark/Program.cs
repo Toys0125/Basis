@@ -14,7 +14,7 @@ internal enum MotionProfile
 }
 
 internal sealed record CodecSpec(string Name, BasisNumerelArmatureCodec.Options Value);
-internal sealed record V3Spec(string Name, BasisAvatarDeltaRecoveryV3.Options Value);
+internal sealed record V3Spec(string Name, BasisAvatarDeltaRecoveryV3.Options Value, bool RecoveryRequests);
 
 internal sealed class LegacyResult
 {
@@ -154,9 +154,10 @@ internal static class Program
 
     private static readonly V3Spec[] V3Tunings =
     {
-        new("delta-v3", BasisAvatarDeltaRecoveryV3.Options.Default),
-        new("delta-v3-cycle10", BasisAvatarDeltaRecoveryV3.Options.CurrentCadence),
-        new("delta-v3-cycle12", BasisAvatarDeltaRecoveryV3.Options.LowOverhead),
+        new("delta-v3.1", BasisAvatarDeltaRecoveryV3.Options.Default, true),
+        new("delta-v3-legacy-cycle8", BasisAvatarDeltaRecoveryV3.Options.LegacyCycle8, false),
+        new("delta-v3-cycle10", BasisAvatarDeltaRecoveryV3.Options.CurrentCadence, false),
+        new("delta-v3-cycle12", BasisAvatarDeltaRecoveryV3.Options.LowOverhead, false),
     };
 
     private static readonly CodecSpec[] Tunings =
@@ -313,7 +314,13 @@ internal static class Program
         for (int frame = 0; frame < frames.Length; frame++)
         {
             byte sequence = (byte)frame;
-            int length = encoder.Encode(frames[frame], sequence, encodeBuffer, 0);
+            byte recoveryRequest = 0;
+            if (tuning.RecoveryRequests)
+            {
+                recoveryRequest |= steadyDecoder.MissingGroupMask;
+                if (frame > LateJoinFrame) recoveryRequest |= lateDecoder.MissingGroupMask;
+            }
+            int length = encoder.Encode(frames[frame], sequence, recoveryRequest, encodeBuffer, 0);
             if (length <= 0) throw new InvalidOperationException("V3 encode failed");
             sizes.Add(length);
             framedTotal += length + 4; // V3 mode + id + interval + sequence; refresh schedule is implicit.

@@ -40,7 +40,7 @@ SOFTWARE.
 - **Author:** cnlohr
 - **License:** MIT
 - **Source:** https://codeberg.org/cnlohr/numerel
-- **Compared revision:** `ea184345c109ef1915b1dfe6603d5b188bca8e4e`
+- **Compared revision:** `8676848ae268f3a8eee672413f272ee422521d09`
 - **Copyright:** Copyright (c) 2026 cnlohr
 
 ### MIT License

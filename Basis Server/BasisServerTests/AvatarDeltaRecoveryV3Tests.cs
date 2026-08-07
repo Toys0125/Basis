@@ -8,9 +8,9 @@ namespace BasisServerTests;
 public class AvatarDeltaRecoveryV3Tests
 {
     [Fact]
-    public void DefaultSchedule_RefreshesEveryGroupOncePerCompleteCycle()
+    public void LegacyCycle8Schedule_RefreshesEveryGroupOncePerCompleteCycle()
     {
-        var options = BasisAvatarDeltaRecoveryV3.Options.Default;
+        var options = BasisAvatarDeltaRecoveryV3.Options.LegacyCycle8;
         int cycle = options.RefreshCycleFrames;
 
         for (int start = 0; start + cycle <= 250; start += cycle)
@@ -30,9 +30,48 @@ public class AvatarDeltaRecoveryV3Tests
     }
 
     [Fact]
-    public void DefaultSchedule_BoundsRefreshGapAcrossSequenceWrap()
+    public void V31DefaultSchedule_RefreshesAllGroupsAndBoundsRecoveryGap()
     {
         var options = BasisAvatarDeltaRecoveryV3.Options.Default;
+        Assert.Equal(12, options.RefreshCycleFrames);
+        Assert.Equal(4, options.MaxRecoveryGroupsPerFrame);
+        Assert.True(options.BootstrapOnReset);
+
+        for (int start = 0; start + options.RefreshCycleFrames <= 252; start += options.RefreshCycleFrames)
+        {
+            byte groups = 0;
+            int refreshFrames = 0;
+            for (int i = 0; i < options.RefreshCycleFrames; i++)
+            {
+                byte mask = BasisAvatarDeltaRecoveryV3.ScheduledRefreshMask((byte)(start + i), options);
+                groups |= mask;
+                if (mask != 0) refreshFrames++;
+            }
+            Assert.Equal(BasisAvatarDeltaRecoveryV3.GroupCount, refreshFrames);
+            Assert.Equal(BasisAvatarDeltaRecoveryV3.AllGroupsMask, groups);
+        }
+
+        for (int group = 0; group < BasisAvatarDeltaRecoveryV3.GroupCount; group++)
+        {
+            var positions = new List<int>();
+            for (int sequence = 0; sequence < 256; sequence++)
+                if ((BasisAvatarDeltaRecoveryV3.ScheduledRefreshMask((byte)sequence, options) & (1 << group)) != 0)
+                    positions.Add(sequence);
+
+            int maxGap = 0;
+            for (int i = 0; i < positions.Count; i++)
+            {
+                int next = positions[(i + 1) % positions.Count];
+                maxGap = Math.Max(maxGap, (next - positions[i] + 256) & 255);
+            }
+            Assert.InRange(maxGap, 1, 22);
+        }
+    }
+
+    [Fact]
+    public void LegacyCycle8Schedule_BoundsRefreshGapAcrossSequenceWrap()
+    {
+        var options = BasisAvatarDeltaRecoveryV3.Options.LegacyCycle8;
         for (int group = 0; group < BasisAvatarDeltaRecoveryV3.GroupCount; group++)
         {
             var positions = new List<int>();
@@ -59,7 +98,7 @@ public class AvatarDeltaRecoveryV3Tests
     [InlineData(BitQuality.Low)]
     [InlineData(BitQuality.Medium)]
     [InlineData(BitQuality.High)]
-    public void NoLoss_AfterInitialShardCycle_EveryFrameIsExact(BitQuality quality)
+    public void V31_NoLoss_EveryFrameIsExactFromBootstrap(BitQuality quality)
     {
         var options = BasisAvatarDeltaRecoveryV3.Options.Default;
         var encoder = new BasisAvatarDeltaRecoveryV3.Encoder(quality, options);
@@ -77,11 +116,9 @@ public class AvatarDeltaRecoveryV3Tests
             Assert.True(decoder.TryDecode(packet, 0, length, (byte)frame, output, out int consumed));
             Assert.Equal(length, consumed);
 
-            if (decoder.IsFullySynchronized)
-            {
-                sawFullSync = true;
-                Assert.Equal(current, output);
-            }
+            Assert.True(decoder.IsFullySynchronized);
+            sawFullSync = true;
+            Assert.Equal(current, output);
         }
 
         Assert.True(sawFullSync);
@@ -227,6 +264,104 @@ public class AvatarDeltaRecoveryV3Tests
         Assert.False(decoder.TryDecode(packet, 0, length, sequence, output, out _));
         Assert.False(decoder.HasSequence);
         Assert.Equal((byte)0, decoder.ValidGroupMask);
+    }
+
+    [Fact]
+    public void V31_TargetedBaselineRepair_RestoresMissingGroupWithoutChangingSharedBaseline()
+    {
+        const BitQuality quality = BitQuality.High;
+        var options = BasisAvatarDeltaRecoveryV3.Options.Default;
+        var encoder = new BasisAvatarDeltaRecoveryV3.Encoder(quality, options);
+        var lossy = new BasisAvatarDeltaRecoveryV3.Decoder(quality, options);
+        var control = new BasisAvatarDeltaRecoveryV3.Decoder(quality, options);
+        var rng = new Random(73131);
+        byte[] packet = new byte[encoder.MaxBodySize];
+        byte[] lossyOutput = new byte[encoder.PayloadSize];
+        byte[] controlOutput = new byte[encoder.PayloadSize];
+
+        // Bootstrap both receivers exactly.
+        byte[] first = S.MakeRealisticPayload(quality, rng);
+        int length = encoder.Encode(first, 0, packet, 0);
+        Assert.True(lossy.TryDecode(packet, 0, length, 0, lossyOutput, out _));
+        Assert.True(control.TryDecode(packet, 0, length, 0, controlOutput, out _));
+        Assert.True(lossy.IsFullySynchronized);
+        Assert.Equal(first, lossyOutput);
+
+        int droppedFrame = Enumerable.Range(1, 32)
+            .First(frame => BasisAvatarDeltaRecoveryV3.ScheduledRefreshMask((byte)frame, options) != 0);
+
+        for (int frame = 1; frame < droppedFrame; frame++)
+        {
+            byte[] pose = S.MakeRealisticPayload(quality, rng);
+            length = encoder.Encode(pose, (byte)frame, packet, 0);
+            Assert.True(lossy.TryDecode(packet, 0, length, (byte)frame, lossyOutput, out _));
+            Assert.True(control.TryDecode(packet, 0, length, (byte)frame, controlOutput, out _));
+        }
+
+        // Only the lossy receiver misses the scheduled refresh; the shared stream continues.
+        byte[] droppedPose = S.MakeRealisticPayload(quality, rng);
+        length = encoder.Encode(droppedPose, (byte)droppedFrame, packet, 0);
+        Assert.True(control.TryDecode(packet, 0, length, (byte)droppedFrame, controlOutput, out _));
+
+        int detectFrame = droppedFrame + 1;
+        byte[] detectPose = S.MakeRealisticPayload(quality, rng);
+        length = encoder.Encode(detectPose, (byte)detectFrame, packet, 0);
+        Assert.True(lossy.TryDecode(packet, 0, length, (byte)detectFrame, lossyOutput, out _));
+        Assert.True(control.TryDecode(packet, 0, length, (byte)detectFrame, controlOutput, out _));
+        Assert.NotEqual((byte)0, lossy.MissingGroupMask);
+        Assert.Equal((byte)0, control.MissingGroupMask);
+
+        int repairFrame = detectFrame + 1;
+        byte request = lossy.MissingGroupMask;
+        byte[] repairPose = S.MakeRealisticPayload(quality, rng);
+        length = encoder.Encode(repairPose, (byte)repairFrame, request, packet, 0);
+        Assert.NotEqual((byte)0, encoder.LastRecoveryMask);
+        Assert.True(lossy.TryDecode(packet, 0, length, (byte)repairFrame, lossyOutput, out _));
+        Assert.True(control.TryDecode(packet, 0, length, (byte)repairFrame, controlOutput, out _));
+        Assert.True(lossy.IsFullySynchronized);
+        Assert.Equal(repairPose, lossyOutput);
+        Assert.Equal(repairPose, controlOutput);
+    }
+
+    [Fact]
+    public void V31_LateJoin_RequestedRepairConvergesWithinTwoPackets()
+    {
+        const BitQuality quality = BitQuality.High;
+        var options = BasisAvatarDeltaRecoveryV3.Options.Default;
+        var encoder = new BasisAvatarDeltaRecoveryV3.Encoder(quality, options);
+        var late = new BasisAvatarDeltaRecoveryV3.Decoder(quality, options);
+        var rng = new Random(73132);
+        byte[] packet = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[encoder.PayloadSize];
+
+        // Advance the sender well past bootstrap without delivering anything to the late receiver.
+        for (int frame = 0; frame < 20; frame++)
+        {
+            byte[] pose = S.MakeRealisticPayload(quality, rng);
+            Assert.True(encoder.Encode(pose, (byte)frame, packet, 0) > 0);
+        }
+
+        int joinFrame = 20;
+        byte[] joinPose = S.MakeRealisticPayload(quality, rng);
+        int length = encoder.Encode(joinPose, (byte)joinFrame, packet, 0);
+        Assert.True(late.TryDecode(packet, 0, length, (byte)joinFrame, output, out _));
+        Assert.NotEqual((byte)0, late.MissingGroupMask);
+
+        bool converged = false;
+        for (int frame = joinFrame + 1; frame <= joinFrame + 2; frame++)
+        {
+            byte request = late.MissingGroupMask;
+            byte[] pose = S.MakeRealisticPayload(quality, rng);
+            length = encoder.Encode(pose, (byte)frame, request, packet, 0);
+            Assert.True(late.TryDecode(packet, 0, length, (byte)frame, output, out _));
+            if (late.IsFullySynchronized)
+            {
+                Assert.Equal(pose, output);
+                converged = true;
+                break;
+            }
+        }
+        Assert.True(converged);
     }
 
     [Fact]
