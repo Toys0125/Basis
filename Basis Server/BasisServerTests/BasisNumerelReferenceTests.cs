@@ -258,6 +258,57 @@ public class BasisNumerelReferenceTests
         }
     }
 
+    public static IEnumerable<object[]> FixedPowerCurves()
+    {
+        yield return new object[] { BasisNumerel.Tuning.Power1Reference };
+        yield return new object[] { BasisNumerel.Tuning.Power1_5Reference };
+        yield return new object[] { BasisNumerel.Tuning.Power2Reference };
+        yield return new object[] { BasisNumerel.Tuning.Power2_5Reference };
+        yield return new object[] { BasisNumerel.Tuning.Power3Reference };
+        yield return new object[] { BasisNumerel.Tuning.Power4Reference };
+        yield return new object[] { BasisNumerel.Tuning.Power5Reference };
+    }
+
+    [Theory]
+    [MemberData(nameof(FixedPowerCurves))]
+    public void FixedPowerCurves_EncodeDecode16BitExtremes(BasisNumerel.Tuning tuning)
+    {
+        uint[] values = { 32768, 32769, 33000, 40000, 65535, 0, 12345, 50000, 32768 };
+        var tx = new BasisNumerel.TxState();
+        var rx = new BasisNumerel.RxState();
+        tx.Reset(32768);
+        rx.Reset(32768);
+        byte[] packet = new byte[16];
+
+        for (int frame = 0; frame < values.Length; frame++)
+        {
+            int grayBit = BasisNumerel.GrayScramble(frame % 16, 16);
+            int write = 0;
+            Assert.True(BasisNumerel.TryEncode(ref tx, values[frame], grayBit, 16, false,
+                tuning, packet, ref write, packet.Length * 8));
+            Assert.InRange(write, 1, BasisNumerel.MaxEncodedBits(16, tuning));
+
+            int read = 0;
+            Assert.True(BasisNumerel.TryDecode(ref rx, grayBit, 16, false,
+                tuning, packet, ref read, write, out _));
+            Assert.Equal(write, read);
+            Assert.InRange(rx.RawEstimate, 0u, 65535u);
+        }
+    }
+
+    [Fact]
+    public void Power1Curve_ReconstructsExactDelta()
+    {
+        var tuning = BasisNumerel.Tuning.Power1Reference;
+        foreach (int difference in new[] { -32768, -4095, -17, -1, 0, 1, 17, 4095, 32767 })
+        {
+            uint initial = difference < 0 ? 32768u : 0u;
+            uint value = (uint)((int)initial + difference);
+            uint predicted = BasisNumerel.PredictRemoteEstimate(initial, value, 0, 16, false, tuning);
+            Assert.Equal(value, predicted);
+        }
+    }
+
     [Fact]
     public void TryDecode_TruncatedCodeIsTransactional()
     {

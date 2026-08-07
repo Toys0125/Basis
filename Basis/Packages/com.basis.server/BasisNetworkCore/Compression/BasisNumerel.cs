@@ -21,6 +21,10 @@ namespace Basis.Network.Core.Compression
     public static class BasisNumerel
     {
         public const string UpstreamRevision = "8676848ae268f3a8eee672413f272ee422521d09";
+        private static readonly ushort[] Power15Lookup = BuildPowerLookup(DifferenceCompressionMode.Power1_5);
+        private static readonly ushort[] Power25Lookup = BuildPowerLookup(DifferenceCompressionMode.Power2_5);
+        private static readonly ushort[] Power4Lookup = BuildPowerLookup(DifferenceCompressionMode.Power4);
+        private static readonly ushort[] Power5Lookup = BuildPowerLookup(DifferenceCompressionMode.Power5);
 
         public struct TxState
         {
@@ -57,6 +61,16 @@ namespace Basis.Network.Core.Compression
             SquareRoot04 = 3,
             /// <summary>Nearest integer square root, reconstructed by signed square.</summary>
             NearestSquareRoot = 4,
+            /// <summary>Lossless identity delta curve: transmitted magnitude reconstructs exactly.</summary>
+            Power1 = 5,
+            /// <summary>Deterministic 1.5-power curve: reconstructed magnitude is round(k^(3/2)).</summary>
+            Power1_5 = 6,
+            /// <summary>Deterministic 2.5-power curve: reconstructed magnitude is round(k^(5/2)).</summary>
+            Power2_5 = 7,
+            /// <summary>Deterministic fourth-power curve.</summary>
+            Power4 = 8,
+            /// <summary>Deterministic fifth-power curve.</summary>
+            Power5 = 9,
         }
 
         /// <summary>
@@ -81,7 +95,7 @@ namespace Basis.Network.Core.Compression
                 if (grayBits < 1 || grayBits > 8) throw new ArgumentOutOfRangeException(nameof(grayBits));
                 if (outputFilterShift < -1 || outputFilterShift > 8) throw new ArgumentOutOfRangeException(nameof(outputFilterShift));
                 if (compressionMode < DifferenceCompressionMode.UpstreamPow
-                    || compressionMode > DifferenceCompressionMode.NearestSquareRoot)
+                    || compressionMode > DifferenceCompressionMode.Power5)
                     throw new ArgumentOutOfRangeException(nameof(compressionMode));
 
                 GrayBits = grayBits;
@@ -126,6 +140,17 @@ namespace Basis.Network.Core.Compression
                 2,
                 DifferenceCompressionMode.NearestSquareRoot,
                 false);
+
+            public static Tuning Power1Reference => PowerCurve(DifferenceCompressionMode.Power1);
+            public static Tuning Power1_5Reference => PowerCurve(DifferenceCompressionMode.Power1_5);
+            public static Tuning Power2Reference => PowerCurve(DifferenceCompressionMode.NearestSquareRoot);
+            public static Tuning Power2_5Reference => PowerCurve(DifferenceCompressionMode.Power2_5);
+            public static Tuning Power3Reference => PowerCurve(DifferenceCompressionMode.NearestCubeRoot);
+            public static Tuning Power4Reference => PowerCurve(DifferenceCompressionMode.Power4);
+            public static Tuning Power5Reference => PowerCurve(DifferenceCompressionMode.Power5);
+
+            private static Tuning PowerCurve(DifferenceCompressionMode mode)
+                => new Tuning(1, 2, mode, false);
         }
 
         /// <summary>
@@ -422,6 +447,21 @@ namespace Basis.Network.Core.Compression
                     long upperSquareError = Math.Abs((long)upperSquare * upperSquare - magnitude);
                     if (upperSquareError < lowerSquareError) root = upperSquare;
                     break;
+                case DifferenceCompressionMode.Power1:
+                    root = (int)magnitude;
+                    break;
+                case DifferenceCompressionMode.Power1_5:
+                    root = magnitude <= ushort.MaxValue ? Power15Lookup[magnitude] : NearestPowerCode(magnitude, mode);
+                    break;
+                case DifferenceCompressionMode.Power2_5:
+                    root = magnitude <= ushort.MaxValue ? Power25Lookup[magnitude] : NearestPowerCode(magnitude, mode);
+                    break;
+                case DifferenceCompressionMode.Power4:
+                    root = magnitude <= ushort.MaxValue ? Power4Lookup[magnitude] : NearestPowerCode(magnitude, mode);
+                    break;
+                case DifferenceCompressionMode.Power5:
+                    root = magnitude <= ushort.MaxValue ? Power5Lookup[magnitude] : NearestPowerCode(magnitude, mode);
+                    break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(mode));
             }
@@ -433,21 +473,97 @@ namespace Basis.Network.Core.Compression
         private static int DecompressDifference(int compressed, DifferenceCompressionMode mode)
         {
             long value;
-            if (mode == DifferenceCompressionMode.SquareRoot04
-                || mode == DifferenceCompressionMode.NearestSquareRoot)
+            long magnitude = Math.Abs((long)compressed);
+            switch (mode)
             {
-                long magnitude = Math.Abs((long)compressed);
-                value = magnitude * magnitude;
-                if (compressed < 0) value = -value;
+                case DifferenceCompressionMode.SquareRoot04:
+                case DifferenceCompressionMode.NearestSquareRoot:
+                    value = SaturatingPow(magnitude, 2);
+                    break;
+                case DifferenceCompressionMode.Power1:
+                    value = magnitude;
+                    break;
+                case DifferenceCompressionMode.Power1_5:
+                    value = RoundedIntegerSqrt(SaturatingPow(magnitude, 3));
+                    break;
+                case DifferenceCompressionMode.Power2_5:
+                    value = RoundedIntegerSqrt(SaturatingPow(magnitude, 5));
+                    break;
+                case DifferenceCompressionMode.Power4:
+                    value = SaturatingPow(magnitude, 4);
+                    break;
+                case DifferenceCompressionMode.Power5:
+                    value = SaturatingPow(magnitude, 5);
+                    break;
+                default:
+                    value = SaturatingPow(magnitude, 3);
+                    break;
             }
-            else
-            {
-                value = (long)compressed * compressed * compressed;
-            }
+            if (compressed < 0) value = -value;
 
             if (value > int.MaxValue) return int.MaxValue;
             if (value < int.MinValue) return int.MinValue;
             return (int)value;
+        }
+
+        private static ushort[] BuildPowerLookup(DifferenceCompressionMode mode)
+        {
+            var lookup = new ushort[ushort.MaxValue + 1];
+            for (int magnitude = 1; magnitude < lookup.Length; magnitude++)
+                lookup[magnitude] = checked((ushort)NearestPowerCode((uint)magnitude, mode));
+            return lookup;
+        }
+
+        private static int NearestPowerCode(uint magnitude, DifferenceCompressionMode mode)
+        {
+            int low = 0;
+            int high = (int)Math.Min(magnitude, int.MaxValue);
+            while (low < high)
+            {
+                int middle = low + ((high - low) >> 1);
+                int reconstructed = DecompressDifference(middle, mode);
+                if ((uint)reconstructed < magnitude) low = middle + 1;
+                else high = middle;
+            }
+
+            int upper = low;
+            int lower = Math.Max(0, upper - 1);
+            long lowerError = Math.Abs((long)DecompressDifference(lower, mode) - magnitude);
+            long upperError = Math.Abs((long)DecompressDifference(upper, mode) - magnitude);
+            return upperError < lowerError ? upper : lower;
+        }
+
+        private static long SaturatingPow(long value, int exponent)
+        {
+            long result = 1;
+            for (int i = 0; i < exponent; i++)
+            {
+                if (value != 0 && result > long.MaxValue / value) return long.MaxValue;
+                result *= value;
+            }
+            return result;
+        }
+
+        private static long RoundedIntegerSqrt(long value)
+        {
+            if (value <= 0) return 0;
+            ulong target = (ulong)value;
+            ulong low = 0;
+            ulong high = Math.Min(target, 3037000500UL);
+            while (low < high)
+            {
+                ulong middle = low + ((high - low + 1) >> 1);
+                if (middle <= target / middle) low = middle;
+                else high = middle - 1;
+            }
+
+            ulong lower = low;
+            ulong upper = lower + 1;
+            ulong lowerSquare = lower * lower;
+            ulong upperSquare = upper > 3037000499UL ? ulong.MaxValue : upper * upper;
+            ulong lowerError = target - lowerSquare;
+            ulong upperError = upperSquare >= target ? upperSquare - target : ulong.MaxValue;
+            return (long)(upperError < lowerError ? upper : lower);
         }
 
         /// <summary>Floor cube root using integer arithmetic only.</summary>
@@ -470,7 +586,12 @@ namespace Basis.Network.Core.Compression
         private static bool UsesUnclampedTransmitterEstimate(DifferenceCompressionMode mode)
             => mode == DifferenceCompressionMode.UpstreamPow
                 || mode == DifferenceCompressionMode.SquareRoot04
-                || mode == DifferenceCompressionMode.NearestSquareRoot;
+                || mode == DifferenceCompressionMode.NearestSquareRoot
+                || mode == DifferenceCompressionMode.Power1
+                || mode == DifferenceCompressionMode.Power1_5
+                || mode == DifferenceCompressionMode.Power2_5
+                || mode == DifferenceCompressionMode.Power4
+                || mode == DifferenceCompressionMode.Power5;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static uint ApplyUpstreamTransmitterDelta(uint value, int delta, uint mask, bool looping)

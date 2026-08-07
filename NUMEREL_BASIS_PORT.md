@@ -124,6 +124,8 @@ Upstream's current GUI demo also experiments with treating quaternion x/y/z/w as
 
 The Basis experiment adds optional temporal sign continuity. Since q and -q represent the same rotation, the encoder negates the current source quaternion when its dot product with the previous source representation is negative. This avoids turning a harmless smallest-three representation sign flip into four large Numerel deltas.
 
+A fixed-16-bit power-curve experiment now keeps the quaternion component domain constant and moves LOD/quality into the nonlinear delta curve instead of changing component BPC. Benchmark modes are power 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, and 5.0. Power 1.0 is an exact delta curve. Fractional powers are deterministic integer mappings (`round(sqrt(k^3))` and `round(sqrt(k^5))`) with 16-bit lookup tables on the common path, avoiding cross-platform floating-point `pow` in the wire mapping. The encoder records actual bits consumed by each of the 204 quaternion scalars so the corpus benchmark can report mean/p50/p95/p99 scalar bit cost and the percentage above 6/8/12 bits.
+
 Benchmark variants include the upstream-style same-BPC mapping, sign-continuous mapping, component precision offsets of -2, -1, +1, and +2 bits relative to each bone's existing Basis BPC, and an adaptive profile that uses +2 bits on coarse <=6-BPC bones and +1 bit on the rest. These are benchmark modes only and are not selected by the live armature protocol.
 
 Initial ARM64 synthetic High-quality results show why precision must be benchmarked rather than assumed: same-BPC Quaternion-4 is about 130.1 framed B/frame but has 4.875-degree idle p95, while +1 reaches about 132.3 B/frame and 0.069-degree idle p95. The adaptive profile is about 133.2 B/frame with 0.079-degree idle p95, 5.03-degree active no-loss p95, and 5.30-degree burst no-loss p95. A fixed 12-bit/component mode is also included to match the upstream author's suggested starting point; its four self-delimiting Numerel codes are concatenated directly with no per-component length or byte alignment. It measured about 136.8 B/frame and 0.148-degree idle p95, 179.1 B/frame and 2.18-degree active no-loss p95, and 185.1 B/frame and 2.71-degree burst no-loss p95. With the experimental square-root Numerel mapping, the same 12-bit Quaternion-4 stream measured roughly 136.0 B/frame / 0.056-degree idle p95, 193.4 B/frame / 0.39-degree active p95, and 203.3 B/frame / 0.47-degree burst p95. Sign continuity is most visible around smallest-three representation flips and materially reduces some catastrophic loss maxima, but Quaternion-4 loss recovery remains worse than the exact V3.1 direction. These numbers are synthetic screening results; the cleaned Windows Humanoid corpus is required before making a design decision.
@@ -132,7 +134,7 @@ Initial ARM64 synthetic High-quality results show why precision must be benchmar
 
 Completed validation:
 
-- 46 focused Numerel, square-root, Quaternion-4, Hybrid V2, and V3/V3.1 tests passed;
+- 54 focused Numerel, square-root/power-curve, Quaternion-4, Hybrid V2, and V3/V3.1 tests passed;
 - native oracle checksum updated to `b0e90ea47c60370f` for revision `8676848`;
 - native non-looping bitstream vectors passed;
 - native looping bitstream vectors passed;

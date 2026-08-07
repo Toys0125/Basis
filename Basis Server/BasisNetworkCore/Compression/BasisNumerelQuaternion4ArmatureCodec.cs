@@ -45,6 +45,14 @@ namespace Basis.Network.Core.Compression
             public static Options UpstreamContinuous12Bit => new Options(BasisNumerel.Tuning.Reference, true, fixedComponentBits: 12);
             public static Options SquareRoot04Continuous12Bit => new Options(BasisNumerel.Tuning.SquareRoot04Reference, true, fixedComponentBits: 12);
             public static Options NearestSquareRootContinuous12Bit => new Options(BasisNumerel.Tuning.NearestSquareRootReference, true, fixedComponentBits: 12);
+
+            public static Options Power1Continuous16Bit => new Options(BasisNumerel.Tuning.Power1Reference, true, fixedComponentBits: 16);
+            public static Options Power1_5Continuous16Bit => new Options(BasisNumerel.Tuning.Power1_5Reference, true, fixedComponentBits: 16);
+            public static Options Power2Continuous16Bit => new Options(BasisNumerel.Tuning.Power2Reference, true, fixedComponentBits: 16);
+            public static Options Power2_5Continuous16Bit => new Options(BasisNumerel.Tuning.Power2_5Reference, true, fixedComponentBits: 16);
+            public static Options Power3Continuous16Bit => new Options(BasisNumerel.Tuning.Power3Reference, true, fixedComponentBits: 16);
+            public static Options Power4Continuous16Bit => new Options(BasisNumerel.Tuning.Power4Reference, true, fixedComponentBits: 16);
+            public static Options Power5Continuous16Bit => new Options(BasisNumerel.Tuning.Power5Reference, true, fixedComponentBits: 16);
         }
 
         public sealed class Encoder
@@ -58,6 +66,8 @@ namespace Basis.Network.Core.Compression
             private BasisNumerel.TxState[] _scratchStates;
             private float[] _previousQuaternion;
             private float[] _scratchPreviousQuaternion;
+            private readonly byte[] _lastScalarBits = new byte[StateCount];
+            private readonly byte[] _scratchScalarBits = new byte[StateCount];
             private readonly int _positionBytes;
             private readonly int _rotationBytes;
             private readonly int _tailOffset;
@@ -86,6 +96,7 @@ namespace Basis.Network.Core.Compression
             public int PayloadSize => _payloadBytes;
             public int MaxBodySize => _maxBodySize;
             public int LastArmatureBits { get; private set; }
+            public byte[] LastScalarBits => _lastScalarBits;
 
             public void Reset()
             {
@@ -113,6 +124,8 @@ namespace Basis.Network.Core.Compression
                     _scratchPreviousQuaternion[state++] = 1f;
                 }
                 LastArmatureBits = 0;
+                Array.Clear(_lastScalarBits, 0, _lastScalarBits.Length);
+                Array.Clear(_scratchScalarBits, 0, _scratchScalarBits.Length);
             }
 
             public int Encode(byte[] payload, byte sequence, byte[] destination, int destinationStart)
@@ -167,10 +180,10 @@ namespace Basis.Network.Core.Compression
                     uint z = QuantizeComponent(qz, componentBits);
                     uint w = QuantizeComponent(qw, componentBits);
 
-                    if (!BasisNumerel.TryEncode(ref _scratchStates[stateIndex++], x, grayBit, componentBits, false, _options.Numerel, destination, ref bitPosition, bitLimit)
-                        || !BasisNumerel.TryEncode(ref _scratchStates[stateIndex++], y, grayBit, componentBits, false, _options.Numerel, destination, ref bitPosition, bitLimit)
-                        || !BasisNumerel.TryEncode(ref _scratchStates[stateIndex++], z, grayBit, componentBits, false, _options.Numerel, destination, ref bitPosition, bitLimit)
-                        || !BasisNumerel.TryEncode(ref _scratchStates[stateIndex++], w, grayBit, componentBits, false, _options.Numerel, destination, ref bitPosition, bitLimit))
+                    if (!TryEncodeScalar(ref _scratchStates[stateIndex], x, grayBit, componentBits, destination, ref bitPosition, bitLimit, stateIndex++)
+                        || !TryEncodeScalar(ref _scratchStates[stateIndex], y, grayBit, componentBits, destination, ref bitPosition, bitLimit, stateIndex++)
+                        || !TryEncodeScalar(ref _scratchStates[stateIndex], z, grayBit, componentBits, destination, ref bitPosition, bitLimit, stateIndex++)
+                        || !TryEncodeScalar(ref _scratchStates[stateIndex], w, grayBit, componentBits, destination, ref bitPosition, bitLimit, stateIndex++))
                         return -1;
                 }
 
@@ -191,7 +204,20 @@ namespace Basis.Network.Core.Compression
                 _previousQuaternion = _scratchPreviousQuaternion;
                 _scratchPreviousQuaternion = oldPrevious;
                 LastArmatureBits = armatureBits;
+                Buffer.BlockCopy(_scratchScalarBits, 0, _lastScalarBits, 0, StateCount);
                 return bodyOffset - destinationStart;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private bool TryEncodeScalar(ref BasisNumerel.TxState state, uint value, int grayBit, int componentBits,
+                byte[] destination, ref int bitPosition, int bitLimit, int scalarIndex)
+            {
+                int before = bitPosition;
+                if (!BasisNumerel.TryEncode(ref state, value, grayBit, componentBits, false, _options.Numerel,
+                    destination, ref bitPosition, bitLimit))
+                    return false;
+                _scratchScalarBits[scalarIndex] = checked((byte)(bitPosition - before));
+                return true;
             }
         }
 

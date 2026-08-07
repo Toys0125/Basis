@@ -58,6 +58,13 @@ internal sealed class NumerelResult
     public double LateMaxAngularErrorDeg { get; set; }
     public double? LateJoinStableUnder1DegMs { get; set; }
     public double? LateJoinStableUnder025DegMs { get; set; }
+    public double? AverageScalarBits { get; set; }
+    public int? P50ScalarBits { get; set; }
+    public int? P95ScalarBits { get; set; }
+    public int? P99ScalarBits { get; set; }
+    public double? ScalarPercentOver6Bits { get; set; }
+    public double? ScalarPercentOver8Bits { get; set; }
+    public double? ScalarPercentOver12Bits { get; set; }
 }
 
 internal sealed class CpuResult
@@ -176,6 +183,13 @@ internal static class Program
         new("quat4-upstream-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuous12Bit),
         new("quat4-sqrt-0.4-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.SquareRoot04Continuous12Bit),
         new("quat4-sqrt-nearest-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.NearestSquareRootContinuous12Bit),
+        new("quat4-power1-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power1Continuous16Bit),
+        new("quat4-power1.5-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power1_5Continuous16Bit),
+        new("quat4-power2-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2Continuous16Bit),
+        new("quat4-power2.5-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2_5Continuous16Bit),
+        new("quat4-power3-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power3Continuous16Bit),
+        new("quat4-power4-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power4Continuous16Bit),
+        new("quat4-power5-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power5Continuous16Bit),
     };
 
     private static readonly CodecSpec[] Tunings =
@@ -440,6 +454,7 @@ internal static class Program
         byte[] steadyOutput = new byte[encoder.PayloadSize];
         byte[] lateOutput = new byte[encoder.PayloadSize];
         var sizes = new List<int>(frames.Length);
+        var scalarBits = new List<int>(frames.Length * BasisBoneRotationCompression.SyncBoneCount * 4);
         var steadyErrors = new ErrorAccumulator(0);
         var lateErrors = new ErrorAccumulator(LateJoinFrame);
         var rng = new Random(StableSeed(quality, motion, tuning.Name, loss, reorder));
@@ -466,6 +481,7 @@ internal static class Program
             int length = encoder.Encode(frames[frame], sequence, encodeBuffer, 0);
             if (length <= 0) throw new InvalidOperationException("Quaternion-4 Numerel encode failed");
             sizes.Add(length);
+            foreach (byte bits in encoder.LastScalarBits) scalarBits.Add(bits);
             framedTotal += length + 4;
 
             if (rng.NextDouble() >= loss)
@@ -534,6 +550,13 @@ internal static class Program
             LateMaxAngularErrorDeg = late.max,
             LateJoinStableUnder1DegMs = lateErrors.StableUnder1Ms,
             LateJoinStableUnder025DegMs = lateErrors.StableUnder025Ms,
+            AverageScalarBits = scalarBits.Average(),
+            P50ScalarBits = PercentileUnsorted(scalarBits, 0.50),
+            P95ScalarBits = PercentileUnsorted(scalarBits, 0.95),
+            P99ScalarBits = PercentileUnsorted(scalarBits, 0.99),
+            ScalarPercentOver6Bits = scalarBits.Count(v => v > 6) * 100.0 / scalarBits.Count,
+            ScalarPercentOver8Bits = scalarBits.Count(v => v > 8) * 100.0 / scalarBits.Count,
+            ScalarPercentOver12Bits = scalarBits.Count(v => v > 12) * 100.0 / scalarBits.Count,
         };
     }
 
@@ -1035,6 +1058,13 @@ internal static class Program
 
     private static int PercentileSorted(List<int> sorted, double percentile)
         => sorted[Math.Clamp((int)Math.Ceiling(sorted.Count * percentile) - 1, 0, sorted.Count - 1)];
+
+    private static int PercentileUnsorted(List<int> values, double percentile)
+    {
+        var sorted = new List<int>(values);
+        sorted.Sort();
+        return PercentileSorted(sorted, percentile);
+    }
 
     private static double PercentileSorted(List<double> sorted, double percentile)
         => sorted[Math.Clamp((int)Math.Ceiling(sorted.Count * percentile) - 1, 0, sorted.Count - 1)];
