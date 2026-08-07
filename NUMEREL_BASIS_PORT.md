@@ -118,6 +118,7 @@ The following are Basis experiments and are not upstream wire-compatible:
 Completed validation:
 
 - 20 focused Numerel and armature tests passed;
+- 10 focused V3 distributed-recovery tests passed;
 - native non-looping bitstream vectors passed;
 - native looping bitstream vectors passed;
 - native loss and `NumerelApplyDelta` state vectors passed;
@@ -177,7 +178,37 @@ With a 12-bone rotating refresh, the synthetic High-quality sanity matrix measur
 | Active | 232.0 B/frame | 190.5 B/frame | 0.384 degrees | 5.027 degrees |
 | Burst | 233.7 B/frame | 197.1 B/frame | 0.363 degrees | 9.461 degrees |
 
-These results are a synthetic sanity check only. The Windows Humanoid clip matrix must be rerun against Hybrid V2 before selecting a production protocol. Hybrid V2 remains experimental and must not replace the production keyframe/delta protocol yet.
+These results are a synthetic sanity check only. The Windows Humanoid clip matrix subsequently showed that the existing exact Basis delta codec is substantially smaller than Hybrid V2 on sustained real animation, while V2 still develops large recovery errors under packet loss. Numerel is therefore retained as a reference/experiment rather than the preferred production armature codec.
+
+### Hybrid V3 exact distributed recovery
+
+`BasisAvatarDeltaRecoveryV3` keeps the existing exact Basis dirty-field representation and changes only baseline recovery semantics:
+
+- the 57 avatar fields are deterministically balanced across eight baseline groups;
+- one complete group is forced dirty per default frame, so the group refresh is receiver-independent;
+- the refresh group is derived from the sequence byte, so the body needs no extra per-frame generation bytes;
+- the eight-frame default schedule phase-shifts between blocks so fixed periodic loss walks across groups instead of permanently targeting one;
+- missing refresh packets invalidate only the groups scheduled in the missing sequence range;
+- valid groups continue reconstructing exactly;
+- invalid groups still apply dirty fields because Basis dirty values are absolute current values; only omitted fields are held;
+- a later complete shard replaces the stale group baseline and restores full exact reconstruction;
+- malformed refresh shards, stale/reordered packets, and truncation are rejected transactionally.
+
+The implicit generation scheme requires sender/receiver lifecycle reset semantics before live integration: a sequence reset without a corresponding codec reset would be ambiguous.
+
+The synthetic High-quality 20 Hz sanity matrix for the default eight-frame cycle measured:
+
+| Motion | Current keyframe + delta | V3 | V3 no-loss display p95 | V3 10% loss display p95 |
+|---|---:|---:|---:|---:|
+| Idle | 198.8 B/frame | 198.0 B/frame | 0.000 degrees | 0.040 degrees |
+| Active | 232.0 B/frame | 238.3 B/frame | 0.000 degrees | about 4.8 degrees |
+| Burst | 233.7 B/frame | 239.1 B/frame | 0.000 degrees | about 7.3 degrees |
+
+Unlike the earlier Numerel benchmark metric, V3 loss quality is scored from the pose actually displayed on every offered frame. Lost or rejected packets therefore contribute held-pose error instead of disappearing from the angular-error statistics.
+
+On the ARM64 benchmark host, default V3 High/Idle measured approximately 2.7 microseconds encode and 3.3 microseconds decode per frame with zero timed allocations.
+
+V3 is not wired into the live avatar protocol yet. The next required validation is the cleaned Windows Humanoid clip set (minimum 0.5-second clips), followed by Mono/IL2CPP, temporary server, relay/P2P, reconnect, sequence-reset, and capability-negotiation testing.
 
 ### Cross-platform determinism
 
@@ -185,7 +216,7 @@ The upstream-compatible mode intentionally preserves the literal `pow(v, 0.33333
 
 ## Integration status
 
-The verified scalar port and experimental armature codec are available to both server and Unity client source trees. They are not yet selected by the live Basis network protocol. Production integration still requires:
+The verified scalar port, experimental Numerel armature codec, and exact V3 distributed-recovery codec are available to both server and Unity client source trees. They are not yet selected by the live Basis network protocol. Production integration still requires:
 
 - explicit protocol or capability negotiation;
 - per-avatar stream lifecycle and reset rules;

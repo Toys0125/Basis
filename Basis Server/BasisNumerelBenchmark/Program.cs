@@ -14,6 +14,7 @@ internal enum MotionProfile
 }
 
 internal sealed record CodecSpec(string Name, BasisNumerelArmatureCodec.Options Value);
+internal sealed record V3Spec(string Name, BasisAvatarDeltaRecoveryV3.Options Value);
 
 internal sealed class LegacyResult
 {
@@ -75,6 +76,7 @@ internal sealed class BenchmarkDocument
     public int SendRateHz { get; set; }
     public List<LegacyResult> Legacy { get; set; } = new();
     public List<NumerelResult> Numerel { get; set; } = new();
+    public List<NumerelResult> RecoveryV3 { get; set; } = new();
     public List<CpuResult> Cpu { get; set; } = new();
 }
 
@@ -150,6 +152,13 @@ internal static class Program
     private const int SendHz = 20;
     private const int LateJoinFrame = 200;
 
+    private static readonly V3Spec[] V3Tunings =
+    {
+        new("delta-v3", BasisAvatarDeltaRecoveryV3.Options.Default),
+        new("delta-v3-cycle10", BasisAvatarDeltaRecoveryV3.Options.CurrentCadence),
+        new("delta-v3-cycle12", BasisAvatarDeltaRecoveryV3.Options.LowOverhead),
+    };
+
     private static readonly CodecSpec[] Tunings =
     {
         new("reference", BasisNumerelArmatureCodec.Options.NumerelOnly(BasisNumerel.Tuning.Reference)),
@@ -186,6 +195,14 @@ internal static class Program
                 byte[][] frames = GenerateFrames(quality, motion, Frames, fullAvatarMotion: true);
                 document.Legacy.Add(RunLegacy(frames, quality, motion));
 
+                foreach (V3Spec tuning in V3Tunings)
+                {
+                    foreach ((double loss, double reorder) in new[] { (0.0, 0.0), (0.05, 0.0), (0.10, 0.02), (0.20, 0.05) })
+                    {
+                        document.RecoveryV3.Add(RunV3(frames, quality, motion, tuning, loss, reorder));
+                    }
+                }
+
                 foreach (CodecSpec tuning in Tunings)
                 {
                     foreach ((double loss, double reorder) in new[] { (0.0, 0.0), (0.05, 0.0), (0.10, 0.02), (0.20, 0.05) })
@@ -197,6 +214,7 @@ internal static class Program
         }
 
         byte[][] cpuFrames = GenerateFrames(BitQuality.High, MotionProfile.Idle, 256, fullAvatarMotion: true);
+        foreach (V3Spec tuning in V3Tunings) document.Cpu.Add(RunV3Cpu(cpuFrames, tuning));
         foreach (CodecSpec tuning in Tunings) document.Cpu.Add(RunCpu(cpuFrames, tuning));
 
         string json = JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true });
@@ -254,6 +272,120 @@ internal static class Program
             Keyframes = keyframes,
             Deltas = deltas,
             BytesPerSecond20Hz = framedTotal / (double)frames.Length * SendHz,
+        };
+    }
+
+    private static NumerelResult RunV3(
+        byte[][] frames,
+        BitQuality quality,
+        MotionProfile motion,
+        V3Spec tuning,
+        double loss,
+        double reorder)
+    {
+        var encoder = new BasisAvatarDeltaRecoveryV3.Encoder(quality, tuning.Value);
+        var steadyDecoder = new BasisAvatarDeltaRecoveryV3.Decoder(quality, tuning.Value);
+        var lateDecoder = new BasisAvatarDeltaRecoveryV3.Decoder(quality, tuning.Value);
+        byte[] encodeBuffer = new byte[encoder.MaxBodySize];
+        byte[] steadyOutput = new byte[encoder.PayloadSize];
+        byte[] lateOutput = new byte[encoder.PayloadSize];
+        var sizes = new List<int>(frames.Length);
+        var steadyErrors = new ErrorAccumulator(0);
+        var lateErrors = new ErrorAccumulator(LateJoinFrame);
+        var rng = new Random(StableSeed(quality, motion, tuning.Name, loss, reorder));
+        Packet? held = null;
+        int delivered = 0;
+        int steadyAccepted = 0;
+        int lateAccepted = 0;
+        long framedTotal = 0;
+
+        void Deliver(Packet packet)
+        {
+            delivered++;
+            if (steadyDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, steadyOutput, out _))
+                steadyAccepted++;
+
+            if (packet.FrameIndex >= LateJoinFrame
+                && lateDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, lateOutput, out _))
+                lateAccepted++;
+        }
+
+        for (int frame = 0; frame < frames.Length; frame++)
+        {
+            byte sequence = (byte)frame;
+            int length = encoder.Encode(frames[frame], sequence, encodeBuffer, 0);
+            if (length <= 0) throw new InvalidOperationException("V3 encode failed");
+            sizes.Add(length);
+            framedTotal += length + 4; // V3 mode + id + interval + sequence; refresh schedule is implicit.
+
+            if (rng.NextDouble() >= loss)
+            {
+                byte[] packetBytes = new byte[length];
+                Buffer.BlockCopy(encodeBuffer, 0, packetBytes, 0, length);
+                var packet = new Packet(packetBytes, length, sequence, frame);
+
+                if (held != null)
+                {
+                    Deliver(packet);
+                    Deliver(held);
+                    held = null;
+                }
+                else if (rng.NextDouble() < reorder)
+                {
+                    held = packet;
+                }
+                else
+                {
+                    Deliver(packet);
+                }
+            }
+
+            // Score what a user would actually see on every offered frame, not only successfully
+            // decoded datagrams. Lost or rejected packets therefore measure the held displayed pose.
+            if (frame >= 100)
+            {
+                steadyDecoder.CopyDisplayedPose(steadyOutput);
+                steadyErrors.AddFrame(frames[frame], steadyOutput, quality, frame);
+            }
+            if (frame >= LateJoinFrame)
+            {
+                lateDecoder.CopyDisplayedPose(lateOutput);
+                lateErrors.AddFrame(frames[frame], lateOutput, quality, frame);
+            }
+        }
+        if (held != null) Deliver(held);
+
+        sizes.Sort();
+        var steady = steadyErrors.Summarize();
+        var late = lateErrors.Summarize();
+        return new NumerelResult
+        {
+            Tuning = tuning.Name,
+            Quality = quality.ToString(),
+            Motion = motion.ToString(),
+            LossPercent = loss * 100,
+            ReorderPercent = reorder * 100,
+            AverageBodyBytes = sizes.Average(),
+            AverageFramedBytes = framedTotal / (double)frames.Length,
+            P50BodyBytes = PercentileSorted(sizes, 0.50),
+            P95BodyBytes = PercentileSorted(sizes, 0.95),
+            P99BodyBytes = PercentileSorted(sizes, 0.99),
+            MaxBodyBytes = sizes[^1],
+            BytesPerSecond20Hz = framedTotal / (double)frames.Length * SendHz,
+            OfferedFrames = frames.Length,
+            DeliveredDatagrams = delivered,
+            SteadyAcceptedFrames = steadyAccepted,
+            LateAcceptedFrames = lateAccepted,
+            SteadyMeanAngularErrorDeg = steady.mean,
+            SteadyP95AngularErrorDeg = steady.p95,
+            SteadyP99AngularErrorDeg = steady.p99,
+            SteadyMaxAngularErrorDeg = steady.max,
+            LateMeanAngularErrorDeg = late.mean,
+            LateP95AngularErrorDeg = late.p95,
+            LateP99AngularErrorDeg = late.p99,
+            LateMaxAngularErrorDeg = late.max,
+            LateJoinStableUnder1DegMs = lateErrors.StableUnder1Ms,
+            LateJoinStableUnder025DegMs = lateErrors.StableUnder025Ms,
         };
     }
 
@@ -354,6 +486,68 @@ internal static class Program
             LateMaxAngularErrorDeg = late.max,
             LateJoinStableUnder1DegMs = lateErrors.StableUnder1Ms,
             LateJoinStableUnder025DegMs = lateErrors.StableUnder025Ms,
+        };
+    }
+
+    private static CpuResult RunV3Cpu(byte[][] frames, V3Spec tuning)
+    {
+        const int iterations = 100_000;
+        var encoder = new BasisAvatarDeltaRecoveryV3.Encoder(BitQuality.High, tuning.Value);
+        byte[] buffer = new byte[encoder.MaxBodySize];
+
+        for (int i = 0; i < 2000; i++)
+            encoder.Encode(frames[i & 255], (byte)i, buffer, 0);
+        encoder.Reset();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        long beforeAlloc = GC.GetAllocatedBytesForCurrentThread();
+        long start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < iterations; i++)
+            encoder.Encode(frames[i & 255], (byte)i, buffer, 0);
+        long elapsed = Stopwatch.GetTimestamp() - start;
+        long encodeAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeAlloc;
+        double encodeNs = elapsed * 1_000_000_000.0 / Stopwatch.Frequency / iterations;
+
+        var packetEncoder = new BasisAvatarDeltaRecoveryV3.Encoder(BitQuality.High, tuning.Value);
+        byte[][] packets = new byte[256][];
+        int[] lengths = new int[256];
+        for (int i = 0; i < packets.Length; i++)
+        {
+            byte[] p = new byte[packetEncoder.MaxBodySize];
+            lengths[i] = packetEncoder.Encode(frames[i], (byte)i, p, 0);
+            packets[i] = p;
+        }
+
+        var decoder = new BasisAvatarDeltaRecoveryV3.Decoder(BitQuality.High, tuning.Value);
+        byte[] output = new byte[decoder.PayloadSize];
+        for (int i = 0; i < 2000; i++)
+        {
+            int index = i & 255;
+            if (index == 0 && i != 0) decoder.Reset();
+            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)index, output, out _))
+                throw new InvalidOperationException("V3 warmup decode failed");
+        }
+        decoder.Reset();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        beforeAlloc = GC.GetAllocatedBytesForCurrentThread();
+        start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < iterations; i++)
+        {
+            int index = i & 255;
+            if (index == 0 && i != 0) decoder.Reset();
+            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)index, output, out _))
+                throw new InvalidOperationException("V3 timed decode failed");
+        }
+        elapsed = Stopwatch.GetTimestamp() - start;
+        long decodeAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeAlloc;
+        double decodeNs = elapsed * 1_000_000_000.0 / Stopwatch.Frequency / iterations;
+
+        return new CpuResult
+        {
+            Tuning = tuning.Name,
+            EncodeNanosecondsPerFrame = encodeNs,
+            DecodeNanosecondsPerFrame = decodeNs,
+            EncodeAllocatedBytes = encodeAlloc,
+            DecodeAllocatedBytes = decodeAlloc,
         };
     }
 
@@ -596,6 +790,11 @@ internal static class Program
         Console.WriteLine("High / Idle summary:");
         LegacyResult legacy = document.Legacy.Single(x => x.Quality == "High" && x.Motion == "Idle");
         Console.WriteLine($"  legacy keyframe+delta: {legacy.AverageFramedBytes:F1} B/frame, {legacy.BytesPerSecond20Hz:F0} B/s, keyframes={legacy.Keyframes}");
+        foreach (NumerelResult result in document.RecoveryV3.Where(x => x.Quality == "High" && x.Motion == "Idle" && x.LossPercent is 0 or 10))
+        {
+            Console.WriteLine($"  {result.Tuning,-22} loss={result.LossPercent,2:F0}% {result.AverageFramedBytes,6:F1} B/frame " +
+                              $"display-p95={result.SteadyP95AngularErrorDeg,6:F3}deg late<1deg={result.LateJoinStableUnder1DegMs?.ToString("F0") ?? "never"}ms");
+        }
         foreach (NumerelResult result in document.Numerel.Where(x => x.Quality == "High" && x.Motion == "Idle" && x.LossPercent is 0 or 10))
         {
             Console.WriteLine($"  {result.Tuning,-22} loss={result.LossPercent,2:F0}% {result.AverageFramedBytes,6:F1} B/frame " +
