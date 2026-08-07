@@ -120,6 +120,133 @@ public class NumerelArmatureCodecTests
     }
 
     [Fact]
+    public void HybridV2_LowBpcBonesRecoverExactlyByRollingRefreshAfterPacketLoss()
+    {
+        const BitQuality quality = BitQuality.High;
+        var options = BasisNumerelArmatureCodec.Options.HybridV2;
+        var encoder = new BasisNumerelArmatureCodec.Encoder(quality, options);
+        var decoder = new BasisNumerelArmatureCodec.Decoder(quality, options);
+        var rng = new Random(20260807);
+        byte[] first = S.MakeRealisticPayload(quality, rng);
+        byte[] dropped = S.MakeRealisticPayload(quality, rng);
+        byte[] current = S.MakeRealisticPayload(quality, rng);
+        byte[] packet = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[S.PayloadSize(quality)];
+        byte[] bpc = S.Bpc(quality);
+
+        // Seven refresh-8 frames cover all 51 bones once and establish a valid exact-delta base.
+        for (byte sequence = 0; sequence < 7; sequence++)
+        {
+            int length = encoder.Encode(first, sequence, packet, 0);
+            Assert.True(decoder.TryDecode(packet, 0, length, sequence, output, out _));
+        }
+        for (int bone = 0; bone < bpc.Length; bone++)
+        {
+            if (bpc[bone] <= options.ExactDeltaMaxBits)
+                Assert.Equal(S.GetBone(first, quality, bone), S.GetBone(output, quality, bone));
+        }
+
+        // Sequence 7 is intentionally lost, invalidating the receiver's exact-delta bases.
+        Assert.True(encoder.Encode(dropped, 7, packet, 0) > 0);
+
+        // Another full rolling-refresh cycle must re-establish every low-BPC bone exactly even
+        // though the intervening temporal deltas were decoded against an intentionally stale base.
+        for (byte sequence = 8; sequence < 15; sequence++)
+        {
+            int length = encoder.Encode(current, sequence, packet, 0);
+            Assert.True(decoder.TryDecode(packet, 0, length, sequence, output, out _));
+        }
+        for (int bone = 0; bone < bpc.Length; bone++)
+        {
+            if (bpc[bone] <= options.ExactDeltaMaxBits)
+                Assert.Equal(S.GetBone(current, quality, bone), S.GetBone(output, quality, bone));
+        }
+    }
+
+    [Fact]
+    public void HybridV2_StaleExactDeltaAtRangeBoundaryDoesNotRejectPacket()
+    {
+        const BitQuality quality = BitQuality.High;
+        const int bone = 19; // first 5-BPC toe bone
+        var options = BasisNumerelArmatureCodec.Options.HybridV2;
+        var encoder = new BasisNumerelArmatureCodec.Encoder(quality, options);
+        var decoder = new BasisNumerelArmatureCodec.Decoder(quality, options);
+        var rng = new Random(1905);
+        byte[] pose = S.MakeRealisticPayload(quality, rng);
+        byte[] packet = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[S.PayloadSize(quality)];
+
+        byte componentBits = S.Bpc(quality)[bone];
+        ulong componentMask = (1UL << componentBits) - 1UL;
+        ulong packed = S.GetBone(pose, quality, bone);
+        ulong cleared = packed & ~(componentMask << 2);
+
+        int length0 = encoder.Encode(pose, 0, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, length0, 0, output, out _));
+
+        // Sequence 1 refreshes slots 12..23 absolutely with Hybrid V2's refresh-12 schedule.
+        S.SetBone(pose, quality, bone, cleared);
+        int length1 = encoder.Encode(pose, 1, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, length1, 1, output, out _));
+
+        // The sender moves 0 -> max in sequence 2, but that packet is lost. Sequence 3 then
+        // carries an exact -1 delta. Applied to the receiver's stale zero base it would become
+        // -1; V2 must clamp that loss-induced stale-base prediction rather than reject the body.
+        S.SetBone(pose, quality, bone, cleared | (componentMask << 2));
+        Assert.True(encoder.Encode(pose, 2, packet, 0) > 0); // dropped
+        S.SetBone(pose, quality, bone, cleared | ((componentMask - 1) << 2));
+        int length3 = encoder.Encode(pose, 3, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, length3, 3, output, out _));
+        Assert.Equal((byte)3, decoder.LastSequence);
+    }
+
+    [Fact]
+    public void HybridV2_OrdinaryGapDoesNotGloballyFreezeTrustedBones()
+    {
+        const BitQuality quality = BitQuality.High;
+        var options = new BasisNumerelArmatureCodec.Options(
+            new BasisNumerel.Tuning(1, -1, true, false),
+            boneAbsoluteEscape: true,
+            residualDivisor: 256,
+            refreshBonesPerFrame: 1,
+            exactDeltaMaxBits: 6,
+            maxPredictionAge: 8,
+            refreshNumerelBonesOnly: true);
+        var encoder = new BasisNumerelArmatureCodec.Encoder(quality, options);
+        var decoder = new BasisNumerelArmatureCodec.Decoder(quality, options);
+        var rng = new Random(84);
+        byte[] pose = S.MakeRealisticPayload(quality, rng);
+        byte[] packet = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[S.PayloadSize(quality)];
+
+        // High-quality bone 0 is the first eligible Numerel bone, so sequence 0 refreshes it
+        // absolutely and establishes a trusted displayed value.
+        int initialLength = encoder.Encode(pose, 0, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, initialLength, 0, output, out _));
+        ulong before = S.GetBone(output, quality, 0);
+
+        byte componentBits = S.Bpc(quality)[0];
+        ulong componentMask = (1UL << componentBits) - 1UL;
+        ulong packed = S.GetBone(pose, quality, 0);
+        ulong a = (packed >> 2) & componentMask;
+        ulong a1 = a < componentMask - 2 ? a + 1 : a - 1;
+        ulong a2 = a < componentMask - 2 ? a + 2 : a - 2;
+        ulong cleared = packed & ~(componentMask << 2);
+
+        S.SetBone(pose, quality, 0, cleared | (a1 << 2));
+        Assert.True(encoder.Encode(pose, 1, packet, 0) > 0); // dropped
+
+        S.SetBone(pose, quality, 0, cleared | (a2 << 2));
+        int recoveryLength = encoder.Encode(pose, 2, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, recoveryLength, 2, output, out _));
+
+        // First-generation HybridPoc would hold the entire previously displayed skeleton on
+        // this gap. V2 keeps the trusted prediction visible; bone 0 advances even though its
+        // hidden state is temporarily one exact code point behind the sender.
+        Assert.NotEqual(before, S.GetBone(output, quality, 0));
+    }
+
+    [Fact]
     public void HybridTruncatedPacket_DoesNotCommitPoseOrValidityState()
     {
         const BitQuality quality = BitQuality.High;

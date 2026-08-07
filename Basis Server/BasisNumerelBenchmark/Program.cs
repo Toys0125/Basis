@@ -160,6 +160,9 @@ internal static class Program
         new("hybrid-r512-refresh2", new BasisNumerelArmatureCodec.Options(new BasisNumerel.Tuning(1, -1, true, false), true, 512, 2)),
         new("hybrid-r512-refresh4", BasisNumerelArmatureCodec.Options.HybridPoc),
         new("hybrid-r512-refresh8", new BasisNumerelArmatureCodec.Options(new BasisNumerel.Tuning(1, -1, true, false), true, 512, 8)),
+        new("hybrid-v2-r8", new BasisNumerelArmatureCodec.Options(new BasisNumerel.Tuning(1, -1, true, false), true, 256, 8, 6, 8, false)),
+        new("hybrid-v2", BasisNumerelArmatureCodec.Options.HybridV2),
+        new("hybrid-v2-r16", new BasisNumerelArmatureCodec.Options(new BasisNumerel.Tuning(1, -1, true, false), true, 256, 16, 6, 8, false)),
     };
 
     public static int Main(string[] args)
@@ -384,7 +387,15 @@ internal static class Program
         var decoder = new BasisNumerelArmatureCodec.Decoder(BitQuality.High, tuning.Value);
         byte[] output = new byte[decoder.PayloadSize];
         for (int i = 0; i < 2000; i++)
-            decoder.TryDecode(packets[i & 255], 0, lengths[i & 255], (byte)i, output, out _);
+        {
+            int index = i & 255;
+            // The packet corpus is a captured 0..255 stateful stream. Replaying packet zero
+            // after packet 255 is not a real sequence wrap (a live encoder would continue its
+            // state), so reset at corpus boundaries rather than feeding an invalid temporal base.
+            if (index == 0 && i != 0) decoder.Reset();
+            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)index, output, out _))
+                throw new InvalidOperationException("Warmup decode failed");
+        }
         decoder.Reset();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         beforeAlloc = GC.GetAllocatedBytesForCurrentThread();
@@ -392,7 +403,8 @@ internal static class Program
         for (int i = 0; i < iterations; i++)
         {
             int index = i & 255;
-            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)i, output, out _))
+            if (index == 0 && i != 0) decoder.Reset();
+            if (!decoder.TryDecode(packets[index], 0, lengths[index], (byte)index, output, out _))
                 throw new InvalidOperationException("Timed decode failed");
         }
         elapsed = Stopwatch.GetTimestamp() - start;

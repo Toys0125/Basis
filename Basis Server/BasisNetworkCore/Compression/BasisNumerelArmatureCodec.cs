@@ -6,13 +6,13 @@ namespace Basis.Network.Core.Compression
     /// <summary>
     /// Experimental keyframe-free armature stream built on <see cref="BasisNumerel"/>.
     ///
-    /// Each of the 51 existing smallest-three bone values is split into:
-    ///   - 2 exact bits for the omitted quaternion component index;
-    ///   - three Numerel-coded quantized components at the quality's existing BPC.
+    /// Each of the 51 existing smallest-three bone values is split into an exact omitted
+    /// quaternion-component index plus three temporally coded quantized components at the
+    /// quality's existing BPC. Pure modes use Numerel for every component; Hybrid V2 uses
+    /// exact small temporal deltas for coarse fingers/toes and Numerel for higher-BPC bones.
     ///
-    /// Every bone is present in every frame. A zero temporal delta costs only the Numerel
-    /// zero code plus Gray correction bits, which also lets a late receiver converge from
-    /// a neutral midpoint without ever receiving a full armature keyframe. Position, scale,
+    /// Every bone is present in every frame. Rotating per-bone absolutes provide bounded
+    /// resynchronization without requiring a whole-armature keyframe. Position, scale,
     /// hips and High-quality end-effector anchors remain absolute per frame in this POC so
     /// the experiment isolates armature behavior and cannot accumulate world-position drift.
     ///
@@ -31,19 +31,49 @@ namespace Basis.Network.Core.Compression
             public readonly bool BoneAbsoluteEscape;
             public readonly ushort ResidualDivisor;
             public readonly byte RefreshBonesPerFrame;
+            public readonly byte ExactDeltaMaxBits;
+            public readonly byte MaxPredictionAge;
+            public readonly bool RefreshNumerelBonesOnly;
 
-            public Options(BasisNumerel.Tuning numerel, bool boneAbsoluteEscape, ushort residualDivisor = 512, byte refreshBonesPerFrame = 0)
+            public Options(
+                BasisNumerel.Tuning numerel,
+                bool boneAbsoluteEscape,
+                ushort residualDivisor = 512,
+                byte refreshBonesPerFrame = 0,
+                byte exactDeltaMaxBits = 0,
+                byte maxPredictionAge = 0,
+                bool refreshNumerelBonesOnly = false)
             {
                 if (boneAbsoluteEscape && residualDivisor < 2) throw new ArgumentOutOfRangeException(nameof(residualDivisor));
                 if (refreshBonesPerFrame > BasisBoneRotationCompression.SyncBoneCount) throw new ArgumentOutOfRangeException(nameof(refreshBonesPerFrame));
+                if (exactDeltaMaxBits > 30) throw new ArgumentOutOfRangeException(nameof(exactDeltaMaxBits));
                 Numerel = numerel;
                 BoneAbsoluteEscape = boneAbsoluteEscape;
                 ResidualDivisor = residualDivisor;
                 RefreshBonesPerFrame = refreshBonesPerFrame;
+                ExactDeltaMaxBits = exactDeltaMaxBits;
+                MaxPredictionAge = maxPredictionAge;
+                RefreshNumerelBonesOnly = refreshNumerelBonesOnly;
             }
 
             public static Options NumerelOnly(BasisNumerel.Tuning tuning) => new Options(tuning, false, 2, 0);
             public static Options HybridPoc => new Options(new BasisNumerel.Tuning(1, -1, true, false), true, 512, 4);
+
+            /// <summary>
+            /// Second-generation Basis experiment derived from the real Humanoid clip matrix:
+            /// low-BPC fingers/toes use exact temporal deltas with rotating absolute recovery,
+            /// while high-BPC body bones use nearest-cube Numerel with a less aggressive residual
+            /// escape. Receivers keep bounded per-bone prediction confidence
+            /// across ordinary packet gaps instead of freezing the entire skeleton.
+            /// </summary>
+            public static Options HybridV2 => new Options(
+                new BasisNumerel.Tuning(1, -1, true, false),
+                boneAbsoluteEscape: true,
+                residualDivisor: 256,
+                refreshBonesPerFrame: 12,
+                exactDeltaMaxBits: 6,
+                maxPredictionAge: 8,
+                refreshNumerelBonesOnly: false);
         }
 
         public sealed class Encoder
@@ -138,13 +168,18 @@ namespace Basis.Network.Core.Compression
                     uint b = (uint)((packed >> (2 + componentBits)) & mask);
                     uint c = (uint)((packed >> (2 + componentBits * 2)) & mask);
                     int grayBit = BasisNumerel.GrayScramble(sequence % componentBits, componentBits);
-                    bool absolute = IsScheduledRefreshBone(bone, sequence, _options.RefreshBonesPerFrame);
-                    if (_options.BoneAbsoluteEscape)
+                    bool exactDelta = UsesExactDeltaPath(componentBits, _options);
+                    bool absolute = IsScheduledRefreshBone(bone, sequence, _bpc, _options);
+                    if (exactDelta)
                     {
-                        // Zero is intentional for coarse BPC bones: one quantized step can already
-                        // be several degrees, so those bones use the local absolute escape whenever
-                        // the Numerel prediction would miss by even one code point.
-                        int threshold = (int)((mask + 1u) / _options.ResidualDivisor);
+                        int exactDeltaBits = ExactDeltaBitCount(_scratchStates[stateIndex].RemoteEstimate, a, componentBits)
+                            + ExactDeltaBitCount(_scratchStates[stateIndex + 1].RemoteEstimate, b, componentBits)
+                            + ExactDeltaBitCount(_scratchStates[stateIndex + 2].RemoteEstimate, c, componentBits);
+                        absolute |= exactDeltaBits >= ComponentsPerBone * componentBits;
+                    }
+                    else if (_options.BoneAbsoluteEscape)
+                    {
+                        int threshold = Math.Max(1, (int)((mask + 1u) / _options.ResidualDivisor));
                         uint predictedA = BasisNumerel.PredictRemoteEstimate(_scratchStates[stateIndex].RemoteEstimate, a, grayBit, componentBits, false, _tuning);
                         uint predictedB = BasisNumerel.PredictRemoteEstimate(_scratchStates[stateIndex + 1].RemoteEstimate, b, grayBit, componentBits, false, _tuning);
                         uint predictedC = BasisNumerel.PredictRemoteEstimate(_scratchStates[stateIndex + 2].RemoteEstimate, c, grayBit, componentBits, false, _tuning);
@@ -152,7 +187,7 @@ namespace Basis.Network.Core.Compression
                             || Math.Abs((int)b - (int)predictedB) > threshold
                             || Math.Abs((int)c - (int)predictedC) > threshold;
                     }
-                    if (_options.BoneAbsoluteEscape || _options.RefreshBonesPerFrame > 0)
+                    if (UsesPerBoneMode(_options))
                     {
                         if (!TryWriteRawBits(destination, ref bitPosition, bitLimit, absolute ? 1u : 0u, 1)) return -1;
                     }
@@ -167,6 +202,12 @@ namespace Basis.Network.Core.Compression
                         _scratchStates[stateIndex++].Reset(b);
                         _scratchStates[stateIndex++].Reset(c);
                         absoluteBones++;
+                    }
+                    else if (exactDelta)
+                    {
+                        if (!TryWriteExactDelta(ref _scratchStates[stateIndex++], a, componentBits, destination, ref bitPosition, bitLimit)
+                            || !TryWriteExactDelta(ref _scratchStates[stateIndex++], b, componentBits, destination, ref bitPosition, bitLimit)
+                            || !TryWriteExactDelta(ref _scratchStates[stateIndex++], c, componentBits, destination, ref bitPosition, bitLimit)) return -1;
                     }
                     else
                     {
@@ -206,6 +247,8 @@ namespace Basis.Network.Core.Compression
             private byte[] _payloadScratch;
             private bool[] _boneValid;
             private bool[] _scratchBoneValid;
+            private byte[] _bonePredictionAge;
+            private byte[] _scratchBonePredictionAge;
             private readonly int _positionBytes;
             private readonly int _rotationBytes;
             private readonly int _tailOffset;
@@ -236,6 +279,8 @@ namespace Basis.Network.Core.Compression
                 _payloadScratch = new byte[_payloadBytes];
                 _boneValid = new bool[BasisBoneRotationCompression.SyncBoneCount];
                 _scratchBoneValid = new bool[BasisBoneRotationCompression.SyncBoneCount];
+                _bonePredictionAge = new byte[BasisBoneRotationCompression.SyncBoneCount];
+                _scratchBonePredictionAge = new byte[BasisBoneRotationCompression.SyncBoneCount];
                 Reset();
             }
 
@@ -262,11 +307,13 @@ namespace Basis.Network.Core.Compression
                 Array.Clear(_payloadScratch, 0, _payloadScratch.Length);
                 InitializeNeutralArmature(_payload, _positionBytes, _bpc);
                 InitializeNeutralArmature(_payloadScratch, _positionBytes, _bpc);
-                bool startsTrusted = !_options.BoneAbsoluteEscape && _options.RefreshBonesPerFrame == 0;
+                bool startsTrusted = !UsesPerBoneMode(_options) && _options.ExactDeltaMaxBits == 0;
                 for (int bone = 0; bone < _boneValid.Length; bone++)
                 {
                     _boneValid[bone] = startsTrusted;
                     _scratchBoneValid[bone] = startsTrusted;
+                    _bonePredictionAge[bone] = 0;
+                    _scratchBonePredictionAge[bone] = 0;
                 }
                 _hasSequence = false;
                 _lastSequence = 0;
@@ -303,28 +350,46 @@ namespace Basis.Network.Core.Compression
                 Array.Copy(_states, _scratchStates, StateCount);
                 Buffer.BlockCopy(_payload, 0, _payloadScratch, 0, _payloadBytes);
                 Array.Copy(_boneValid, _scratchBoneValid, _boneValid.Length);
+                Array.Copy(_bonePredictionAge, _scratchBonePredictionAge, _bonePredictionAge.Length);
 
                 if (forward > 1)
                 {
-                    // Match upstream NumerelApplyDelta once for every missing sample. Each bone
-                    // component has its own bit width and last delta, so prediction must advance
-                    // per scalar rather than once for the whole armature.
+                    // Match upstream NumerelApplyDelta once for every missing sample. V2 exact
+                    // low-BPC deltas cannot be advanced safely without the lost packet, so only
+                    // Numerel bones extrapolate their hidden predictor across the gap.
                     for (int missing = 1; missing < forward; missing++)
                     {
                         int missingState = 0;
                         for (int bone = 0; bone < _bpc.Length; bone++)
                         {
                             int componentBits = _bpc[bone];
+                            if (UsesExactDeltaPath(componentBits, _options))
+                            {
+                                // The exact-delta base is now stale, but keeping the offset
+                                // prediction visible is substantially less disruptive than
+                                // freezing every finger/toe until its rotating absolute refresh.
+                                missingState += ComponentsPerBone;
+                                continue;
+                            }
                             for (int component = 0; component < ComponentsPerBone; component++)
                                 BasisNumerel.ApplyLastDelta(ref _scratchStates[missingState++], componentBits, false);
                         }
                     }
 
-                    if (_options.BoneAbsoluteEscape || _options.RefreshBonesPerFrame > 0)
+                    if (_options.MaxPredictionAge > 0)
                     {
-                        // Hybrid mode additionally conceals uncertain predictions. The hidden
-                        // Numerel states continue advancing, but the last valid displayed bone is
-                        // held until a local absolute escape or rotating refresh re-establishes it.
+                        int missed = forward - 1;
+                        for (int bone = 0; bone < _scratchBoneValid.Length; bone++)
+                        {
+                            int age = _scratchBonePredictionAge[bone] + missed;
+                            _scratchBonePredictionAge[bone] = (byte)Math.Min(byte.MaxValue, age);
+                            if (_scratchBonePredictionAge[bone] > _options.MaxPredictionAge)
+                                _scratchBoneValid[bone] = false;
+                        }
+                    }
+                    else if (UsesPerBoneMode(_options))
+                    {
+                        // Preserve the first-generation POC behavior for benchmark comparison.
                         for (int bone = 0; bone < _scratchBoneValid.Length; bone++)
                             _scratchBoneValid[bone] = false;
                     }
@@ -338,8 +403,9 @@ namespace Basis.Network.Core.Compression
                 for (int bone = 0; bone < _bpc.Length; bone++)
                 {
                     int componentBits = _bpc[bone];
+                    bool exactDelta = UsesExactDeltaPath(componentBits, _options);
                     bool absolute = false;
-                    if (_options.BoneAbsoluteEscape || _options.RefreshBonesPerFrame > 0)
+                    if (UsesPerBoneMode(_options))
                     {
                         if (!TryReadRawBits(source, ref bitPosition, bitLimit, 1, out uint mode)) return false;
                         absolute = mode != 0;
@@ -357,12 +423,27 @@ namespace Basis.Network.Core.Compression
                         _scratchStates[stateIndex++].Reset(b);
                         _scratchStates[stateIndex++].Reset(c);
                         _scratchBoneValid[bone] = true;
+                        _scratchBonePredictionAge[bone] = 0;
+                    }
+                    else if (exactDelta)
+                    {
+                        bool staleBase = _scratchBonePredictionAge[bone] > 0 || !_scratchBoneValid[bone];
+                        if (!TryReadExactDelta(ref _scratchStates[stateIndex++], componentBits, staleBase, source, ref bitPosition, bitLimit, out a)
+                            || !TryReadExactDelta(ref _scratchStates[stateIndex++], componentBits, staleBase, source, ref bitPosition, bitLimit, out b)
+                            || !TryReadExactDelta(ref _scratchStates[stateIndex++], componentBits, staleBase, source, ref bitPosition, bitLimit, out c)) return false;
                     }
                     else
                     {
                         if (!BasisNumerel.TryDecode(ref _scratchStates[stateIndex++], grayBit, componentBits, false, _tuning, source, ref bitPosition, bitLimit, out a)) return false;
                         if (!BasisNumerel.TryDecode(ref _scratchStates[stateIndex++], grayBit, componentBits, false, _tuning, source, ref bitPosition, bitLimit, out b)) return false;
                         if (!BasisNumerel.TryDecode(ref _scratchStates[stateIndex++], grayBit, componentBits, false, _tuning, source, ref bitPosition, bitLimit, out c)) return false;
+
+                        if (_options.MaxPredictionAge > 0 && _scratchBonePredictionAge[bone] > 0)
+                        {
+                            _scratchBonePredictionAge[bone]--;
+                            if (!_scratchBoneValid[bone] && _scratchBonePredictionAge[bone] == 0)
+                                _scratchBoneValid[bone] = true;
+                        }
                     }
 
                     ulong packed = largest
@@ -396,6 +477,10 @@ namespace Basis.Network.Core.Compression
                 _boneValid = _scratchBoneValid;
                 _scratchBoneValid = oldBoneValid;
 
+                byte[] oldPredictionAge = _bonePredictionAge;
+                _bonePredictionAge = _scratchBonePredictionAge;
+                _scratchBonePredictionAge = oldPredictionAge;
+
                 _hasSequence = true;
                 _lastSequence = sequence;
                 LastArmatureBits = armatureBits;
@@ -414,8 +499,14 @@ namespace Basis.Network.Core.Compression
             int armatureBits = 0;
             for (int bone = 0; bone < bpc.Length; bone++)
             {
+                if (UsesExactDeltaPath(bpc[bone], options))
+                {
+                    armatureBits += 1 + 2 + ComponentsPerBone * bpc[bone];
+                    continue;
+                }
+
                 int numerelBits = ComponentsPerBone * BasisNumerel.MaxEncodedBits(bpc[bone], options.Numerel);
-                if (options.BoneAbsoluteEscape || options.RefreshBonesPerFrame > 0)
+                if (UsesPerBoneMode(options))
                     armatureBits += 1 + 2 + Math.Max(numerelBits, ComponentsPerBone * bpc[bone]);
                 else
                     armatureBits += 2 + numerelBits;
@@ -452,13 +543,96 @@ namespace Basis.Network.Core.Compression
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool IsScheduledRefreshBone(int bone, byte sequence, int refreshBonesPerFrame)
+        private static bool UsesExactDeltaPath(int componentBits, Options options)
+            => options.ExactDeltaMaxBits > 0 && componentBits <= options.ExactDeltaMaxBits;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool UsesPerBoneMode(Options options)
+            => options.BoneAbsoluteEscape || options.RefreshBonesPerFrame > 0;
+
+        private static bool IsScheduledRefreshBone(int bone, byte sequence, byte[] bpc, Options options)
         {
+            int refreshBonesPerFrame = options.RefreshBonesPerFrame;
             if (refreshBonesPerFrame <= 0) return false;
-            int first = sequence * refreshBonesPerFrame % BasisBoneRotationCompression.SyncBoneCount;
-            for (int i = 0; i < refreshBonesPerFrame; i++)
-                if ((first + i) % BasisBoneRotationCompression.SyncBoneCount == bone) return true;
+            if (!options.RefreshNumerelBonesOnly)
+            {
+                int first = sequence * refreshBonesPerFrame % BasisBoneRotationCompression.SyncBoneCount;
+                for (int i = 0; i < refreshBonesPerFrame; i++)
+                    if ((first + i) % BasisBoneRotationCompression.SyncBoneCount == bone) return true;
+                return false;
+            }
+
+            if (UsesExactDeltaPath(bpc[bone], options)) return false;
+            int eligible = 0;
+            int ordinal = -1;
+            for (int i = 0; i < bpc.Length; i++)
+            {
+                if (UsesExactDeltaPath(bpc[i], options)) continue;
+                if (i == bone) ordinal = eligible;
+                eligible++;
+            }
+            if (eligible == 0 || ordinal < 0) return false;
+
+            int firstEligible = sequence * refreshBonesPerFrame % eligible;
+            int count = Math.Min(refreshBonesPerFrame, eligible);
+            for (int i = 0; i < count; i++)
+                if ((firstEligible + i) % eligible == ordinal) return true;
             return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int ExactDeltaBitCount(uint estimate, uint value, int componentBits)
+            => estimate == value ? 1 : componentBits + 2;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryWriteExactDelta(
+            ref BasisNumerel.TxState state,
+            uint value,
+            int componentBits,
+            byte[] destination,
+            ref int bitPosition,
+            int bitLimit)
+        {
+            int delta = (int)value - (int)state.RemoteEstimate;
+            if (delta == 0)
+                return TryWriteRawBits(destination, ref bitPosition, bitLimit, 0, 1);
+
+            uint magnitude = (uint)Math.Abs(delta);
+            if (!TryWriteRawBits(destination, ref bitPosition, bitLimit, 1, 1)
+                || !TryWriteRawBits(destination, ref bitPosition, bitLimit, delta < 0 ? 1u : 0u, 1)
+                || !TryWriteRawBits(destination, ref bitPosition, bitLimit, magnitude, componentBits))
+                return false;
+            state.Reset(value);
+            return true;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryReadExactDelta(
+            ref BasisNumerel.RxState state,
+            int componentBits,
+            bool staleBase,
+            byte[] source,
+            ref int bitPosition,
+            int bitLimit,
+            out uint value)
+        {
+            value = state.RawEstimate;
+            if (!TryReadRawBits(source, ref bitPosition, bitLimit, 1, out uint changed)) return false;
+            if (changed == 0) return true;
+            if (!TryReadRawBits(source, ref bitPosition, bitLimit, 1, out uint negative)
+                || !TryReadRawBits(source, ref bitPosition, bitLimit, componentBits, out uint magnitude))
+                return false;
+
+            int next = (int)state.RawEstimate + (negative != 0 ? -(int)magnitude : (int)magnitude);
+            int max = (1 << componentBits) - 1;
+            if (next < 0 || next > max)
+            {
+                if (!staleBase) return false;
+                next = next < 0 ? 0 : max;
+            }
+            value = (uint)next;
+            state.Reset(value);
+            return true;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

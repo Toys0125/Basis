@@ -117,7 +117,7 @@ The following are Basis experiments and are not upstream wire-compatible:
 
 Completed validation:
 
-- 16 focused Numerel and armature tests passed;
+- 20 focused Numerel and armature tests passed;
 - native non-looping bitstream vectors passed;
 - native looping bitstream vectors passed;
 - native loss and `NumerelApplyDelta` state vectors passed;
@@ -167,7 +167,17 @@ Pure Numerel is not currently acceptable as the only active-motion armature repr
 - High/Active, no loss: 17.44-degree steady p95 for upstream reference mode;
 - High/Burst, no loss: 25.82-degree steady p95 for upstream reference mode.
 
-The per-bone absolute/refresh hybrid reduces no-loss active-motion error, but its current loss concealment policy can hold stale bones for too long after a gap. It remains an experiment and must not replace the production keyframe/delta protocol yet.
+The first-generation per-bone absolute/refresh hybrid reduces no-loss active-motion error, but its global hold-after-gap policy can keep large moving bones stale for too long. Hybrid V2 replaces that behavior with bounded per-bone prediction age, uses exact temporal deltas for low-BPC fingers/toes, and reserves nearest-cube Numerel for higher-BPC body bones.
+
+With a 12-bone rotating refresh, the synthetic High-quality sanity matrix measured:
+
+| Motion | Current keyframe + delta | Hybrid V2 | Hybrid V2 no-loss p95 | Hybrid V2 10% loss p95 |
+|---|---:|---:|---:|---:|
+| Idle | 198.8 B/frame | 153.6 B/frame | 0.097 degrees | 0.105 degrees |
+| Active | 232.0 B/frame | 190.5 B/frame | 0.384 degrees | 5.027 degrees |
+| Burst | 233.7 B/frame | 197.1 B/frame | 0.363 degrees | 9.461 degrees |
+
+These results are a synthetic sanity check only. The Windows Humanoid clip matrix must be rerun against Hybrid V2 before selecting a production protocol. Hybrid V2 remains experimental and must not replace the production keyframe/delta protocol yet.
 
 ### Cross-platform determinism
 
