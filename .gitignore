@@ -5,6 +5,9 @@
 [Bb]in/
 [Oo]bj/
 
+# Local Numerel benchmark output
+/numerel-armature-benchmark-results*.json
+
 # Nix stuff
 .direnv/
 .envrc
