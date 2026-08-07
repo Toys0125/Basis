@@ -290,6 +290,13 @@ namespace Basis.Network.Core.Compression
             public byte LastSequence => _lastSequence;
             public int LastArmatureBits { get; private set; }
 
+            public void CopyDisplayedPose(byte[] outputPayload)
+            {
+                if (outputPayload == null || outputPayload.Length < _payloadBytes)
+                    throw new ArgumentException("Output payload is too small.", nameof(outputPayload));
+                Buffer.BlockCopy(_payload, 0, outputPayload, 0, _payloadBytes);
+            }
+
             public void Reset()
             {
                 int state = 0;

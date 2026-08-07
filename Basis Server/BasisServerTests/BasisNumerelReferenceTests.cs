@@ -198,6 +198,66 @@ public class BasisNumerelReferenceTests
         Assert.Equal(expectedNativeHash, hash);
     }
 
+    [Theory]
+    [InlineData(BasisNumerel.DifferenceCompressionMode.SquareRoot04)]
+    [InlineData(BasisNumerel.DifferenceCompressionMode.NearestSquareRoot)]
+    public void SquareRootModes_ReconstructSignedSquareDeltas(BasisNumerel.DifferenceCompressionMode mode)
+    {
+        var tuning = new BasisNumerel.Tuning(1, 2, mode, false);
+        var packet = new byte[16];
+
+        foreach ((uint initial, uint value) in new[] { (1000u, 1120u), (2000u, 1880u) })
+        {
+            var tx = new BasisNumerel.TxState();
+            var rx = new BasisNumerel.RxState();
+            tx.Reset(initial);
+            rx.Reset(initial);
+
+            int write = 0;
+            Assert.True(BasisNumerel.TryEncode(
+                ref tx, value, 0, 12, false, tuning, packet, ref write, packet.Length * 8));
+
+            int read = 0;
+            Assert.True(BasisNumerel.TryDecode(
+                ref rx, 0, 12, false, tuning, packet, ref read, write, out _));
+            Assert.Equal(write, read);
+
+            int magnitude = Math.Abs(rx.LastDelta);
+            int root = (int)Math.Sqrt(magnitude);
+            Assert.Equal(magnitude, root * root);
+            Assert.Equal(initial < value ? 1 : -1, Math.Sign(rx.LastDelta));
+        }
+    }
+
+    [Theory]
+    [InlineData(BasisNumerel.DifferenceCompressionMode.SquareRoot04)]
+    [InlineData(BasisNumerel.DifferenceCompressionMode.NearestSquareRoot)]
+    public void SquareRootModes_AlternatingExtremesStayWithinAdvertisedBitBudget(BasisNumerel.DifferenceCompressionMode mode)
+    {
+        var tuning = new BasisNumerel.Tuning(1, 2, mode, false);
+        var tx = new BasisNumerel.TxState();
+        var rx = new BasisNumerel.RxState();
+        tx.Reset(2048);
+        rx.Reset(2048);
+        int maxBits = BasisNumerel.MaxEncodedBits(12, tuning);
+        var packet = new byte[16];
+
+        for (int frame = 0; frame < 512; frame++)
+        {
+            uint value = (frame & 1) == 0 ? 0u : 4095u;
+            int grayBit = BasisNumerel.GrayScramble(frame % 12, 12);
+            int write = 0;
+            Assert.True(BasisNumerel.TryEncode(
+                ref tx, value, grayBit, 12, false, tuning, packet, ref write, packet.Length * 8));
+            Assert.InRange(write, 1, maxBits);
+
+            int read = 0;
+            Assert.True(BasisNumerel.TryDecode(
+                ref rx, grayBit, 12, false, tuning, packet, ref read, write, out _));
+            Assert.Equal(write, read);
+        }
+    }
+
     [Fact]
     public void TryDecode_TruncatedCodeIsTransactional()
     {

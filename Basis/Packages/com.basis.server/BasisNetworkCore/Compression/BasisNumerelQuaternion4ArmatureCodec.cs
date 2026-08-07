@@ -43,6 +43,8 @@ namespace Basis.Network.Core.Compression
             public static Options UpstreamContinuousPlus2 => new Options(BasisNumerel.Tuning.Reference, true, 2);
             public static Options UpstreamContinuousAdaptive => new Options(BasisNumerel.Tuning.Reference, true, 0, true);
             public static Options UpstreamContinuous12Bit => new Options(BasisNumerel.Tuning.Reference, true, fixedComponentBits: 12);
+            public static Options SquareRoot04Continuous12Bit => new Options(BasisNumerel.Tuning.SquareRoot04Reference, true, fixedComponentBits: 12);
+            public static Options NearestSquareRootContinuous12Bit => new Options(BasisNumerel.Tuning.NearestSquareRootReference, true, fixedComponentBits: 12);
         }
 
         public sealed class Encoder
@@ -233,6 +235,13 @@ namespace Basis.Network.Core.Compression
             public bool HasSequence => _hasSequence;
             public byte LastSequence => _lastSequence;
             public int LastArmatureBits { get; private set; }
+
+            public void CopyDisplayedPose(byte[] outputPayload)
+            {
+                if (outputPayload == null || outputPayload.Length < _payloadBytes)
+                    throw new ArgumentException("Output payload is too small.", nameof(outputPayload));
+                Buffer.BlockCopy(_payload, 0, outputPayload, 0, _payloadBytes);
+            }
 
             public void Reset()
             {

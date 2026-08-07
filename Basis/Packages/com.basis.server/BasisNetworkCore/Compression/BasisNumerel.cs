@@ -53,6 +53,10 @@ namespace Basis.Network.Core.Compression
             FloorCubeRoot = 1,
             /// <summary>Deterministic nearest integer cube root; Basis experimental mode.</summary>
             NearestCubeRoot = 2,
+            /// <summary>Square-root analogue of upstream: (int)(sqrt(abs(v)) + 0.4), reconstructed by signed square.</summary>
+            SquareRoot04 = 3,
+            /// <summary>Nearest integer square root, reconstructed by signed square.</summary>
+            NearestSquareRoot = 4,
         }
 
         /// <summary>
@@ -77,7 +81,7 @@ namespace Basis.Network.Core.Compression
                 if (grayBits < 1 || grayBits > 8) throw new ArgumentOutOfRangeException(nameof(grayBits));
                 if (outputFilterShift < -1 || outputFilterShift > 8) throw new ArgumentOutOfRangeException(nameof(outputFilterShift));
                 if (compressionMode < DifferenceCompressionMode.UpstreamPow
-                    || compressionMode > DifferenceCompressionMode.NearestCubeRoot)
+                    || compressionMode > DifferenceCompressionMode.NearestSquareRoot)
                     throw new ArgumentOutOfRangeException(nameof(compressionMode));
 
                 GrayBits = grayBits;
@@ -109,6 +113,18 @@ namespace Basis.Network.Core.Compression
                 2,
                 -1,
                 DifferenceCompressionMode.NearestCubeRoot,
+                false);
+
+            public static Tuning SquareRoot04Reference => new Tuning(
+                1,
+                2,
+                DifferenceCompressionMode.SquareRoot04,
+                false);
+
+            public static Tuning NearestSquareRootReference => new Tuning(
+                1,
+                2,
+                DifferenceCompressionMode.NearestSquareRoot,
                 false);
         }
 
@@ -146,7 +162,7 @@ namespace Basis.Network.Core.Compression
 
             uint valueMask = (1u << numBits) - 1u;
             value &= valueMask;
-            uint estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+            uint estimate = UsesUnclampedTransmitterEstimate(tuning.CompressionMode)
                 ? tx.RemoteEstimate
                 : tx.RemoteEstimate & valueMask;
 
@@ -159,8 +175,8 @@ namespace Basis.Network.Core.Compression
             }
 
             int compressed = CompressDifference(difference, tuning.CompressionMode);
-            int reconstructedDelta = DecompressDifference(compressed);
-            estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+            int reconstructedDelta = DecompressDifference(compressed, tuning.CompressionMode);
+            estimate = UsesUnclampedTransmitterEstimate(tuning.CompressionMode)
                 ? ApplyUpstreamTransmitterDelta(estimate, reconstructedDelta, valueMask, looping)
                 : ApplyDeltaToValue(estimate, reconstructedDelta, numBits, looping);
 
@@ -250,7 +266,7 @@ namespace Basis.Network.Core.Compression
             }
 
             int compressed = (encoded & 1u) != 0 ? -(int)(encoded >> 1) : (int)(encoded >> 1);
-            next.LastDelta = DecompressDifference(compressed);
+            next.LastDelta = DecompressDifference(compressed, tuning.CompressionMode);
             ApplyLastDelta(ref next, numBits, looping);
 
             uint estimateGray = ToGrayCode(next.RawEstimate);
@@ -320,7 +336,7 @@ namespace Basis.Network.Core.Compression
 
             uint valueMask = (1u << numBits) - 1u;
             value &= valueMask;
-            uint estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+            uint estimate = UsesUnclampedTransmitterEstimate(tuning.CompressionMode)
                 ? remoteEstimate
                 : remoteEstimate & valueMask;
             int difference = (int)value - (int)estimate;
@@ -332,8 +348,8 @@ namespace Basis.Network.Core.Compression
             }
 
             int compressed = CompressDifference(difference, tuning.CompressionMode);
-            int reconstructedDelta = DecompressDifference(compressed);
-            estimate = tuning.CompressionMode == DifferenceCompressionMode.UpstreamPow
+            int reconstructedDelta = DecompressDifference(compressed, tuning.CompressionMode);
+            estimate = UsesUnclampedTransmitterEstimate(tuning.CompressionMode)
                 ? ApplyUpstreamTransmitterDelta(estimate, reconstructedDelta, valueMask, looping)
                 : ApplyDeltaToValue(estimate, reconstructedDelta, numBits, looping);
             if (tuning.CorrectEstimateFromValueGray)
@@ -396,6 +412,16 @@ namespace Basis.Network.Core.Compression
                     long upperError = Math.Abs((long)upper * upper * upper - magnitude);
                     if (upperError < lowerError) root = upper;
                     break;
+                case DifferenceCompressionMode.SquareRoot04:
+                    root = (int)(Math.Sqrt(magnitude) + 0.4d);
+                    break;
+                case DifferenceCompressionMode.NearestSquareRoot:
+                    root = (int)Math.Sqrt(magnitude);
+                    long lowerSquareError = Math.Abs((long)root * root - magnitude);
+                    int upperSquare = root + 1;
+                    long upperSquareError = Math.Abs((long)upperSquare * upperSquare - magnitude);
+                    if (upperSquareError < lowerSquareError) root = upperSquare;
+                    break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(mode));
             }
@@ -404,9 +430,21 @@ namespace Basis.Network.Core.Compression
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int DecompressDifference(int compressed)
+        private static int DecompressDifference(int compressed, DifferenceCompressionMode mode)
         {
-            long value = (long)compressed * compressed * compressed;
+            long value;
+            if (mode == DifferenceCompressionMode.SquareRoot04
+                || mode == DifferenceCompressionMode.NearestSquareRoot)
+            {
+                long magnitude = Math.Abs((long)compressed);
+                value = magnitude * magnitude;
+                if (compressed < 0) value = -value;
+            }
+            else
+            {
+                value = (long)compressed * compressed * compressed;
+            }
+
             if (value > int.MaxValue) return int.MaxValue;
             if (value < int.MinValue) return int.MinValue;
             return (int)value;
@@ -427,6 +465,12 @@ namespace Basis.Network.Core.Compression
             }
             return low;
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool UsesUnclampedTransmitterEstimate(DifferenceCompressionMode mode)
+            => mode == DifferenceCompressionMode.UpstreamPow
+                || mode == DifferenceCompressionMode.SquareRoot04
+                || mode == DifferenceCompressionMode.NearestSquareRoot;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static uint ApplyUpstreamTransmitterDelta(uint value, int delta, uint mask, bool looping)

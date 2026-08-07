@@ -174,11 +174,15 @@ internal static class Program
         new("quat4-upstream-continuous-plus2", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousPlus2),
         new("quat4-upstream-continuous-adaptive", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuousAdaptive),
         new("quat4-upstream-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuous12Bit),
+        new("quat4-sqrt-0.4-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.SquareRoot04Continuous12Bit),
+        new("quat4-sqrt-nearest-continuous-12bit", BasisNumerelQuaternion4ArmatureCodec.Options.NearestSquareRootContinuous12Bit),
     };
 
     private static readonly CodecSpec[] Tunings =
     {
         new("reference", BasisNumerelArmatureCodec.Options.NumerelOnly(BasisNumerel.Tuning.Reference)),
+        new("sqrt-0.4-reference", BasisNumerelArmatureCodec.Options.NumerelOnly(BasisNumerel.Tuning.SquareRoot04Reference)),
+        new("sqrt-nearest-reference", BasisNumerelArmatureCodec.Options.NumerelOnly(BasisNumerel.Tuning.NearestSquareRootReference)),
         new("snap-floor-1gray", BasisNumerelArmatureCodec.Options.NumerelOnly(new BasisNumerel.Tuning(1, -1, false, false))),
         new("snap-nearest-1gray", BasisNumerelArmatureCodec.Options.NumerelOnly(new BasisNumerel.Tuning(1, -1, true, false))),
         new("armature-poc-2gray", BasisNumerelArmatureCodec.Options.NumerelOnly(BasisNumerel.Tuning.ArmaturePoc)),
@@ -441,18 +445,19 @@ internal static class Program
         var rng = new Random(StableSeed(quality, motion, tuning.Name, loss, reorder));
         Packet? held = null;
         int delivered = 0;
+        int steadyAccepted = 0;
+        int lateAccepted = 0;
         long framedTotal = 0;
 
         void Deliver(Packet packet)
         {
             delivered++;
-            if (steadyDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, steadyOutput, out _)
-                && packet.FrameIndex >= 100)
-                steadyErrors.AddFrame(frames[packet.FrameIndex], steadyOutput, quality, packet.FrameIndex);
+            if (steadyDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, steadyOutput, out _))
+                steadyAccepted++;
 
             if (packet.FrameIndex >= LateJoinFrame
                 && lateDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, lateOutput, out _))
-                lateErrors.AddFrame(frames[packet.FrameIndex], lateOutput, quality, packet.FrameIndex);
+                lateAccepted++;
         }
 
         for (int frame = 0; frame < frames.Length; frame++)
@@ -463,24 +468,37 @@ internal static class Program
             sizes.Add(length);
             framedTotal += length + 4;
 
-            if (rng.NextDouble() < loss) continue;
-            byte[] packetBytes = new byte[length];
-            Buffer.BlockCopy(encodeBuffer, 0, packetBytes, 0, length);
-            var packet = new Packet(packetBytes, length, sequence, frame);
+            if (rng.NextDouble() >= loss)
+            {
+                byte[] packetBytes = new byte[length];
+                Buffer.BlockCopy(encodeBuffer, 0, packetBytes, 0, length);
+                var packet = new Packet(packetBytes, length, sequence, frame);
 
-            if (held != null)
-            {
-                Deliver(packet);
-                Deliver(held);
-                held = null;
+                if (held != null)
+                {
+                    Deliver(packet);
+                    Deliver(held);
+                    held = null;
+                }
+                else if (rng.NextDouble() < reorder)
+                {
+                    held = packet;
+                }
+                else
+                {
+                    Deliver(packet);
+                }
             }
-            else if (rng.NextDouble() < reorder)
+
+            if (frame >= 100)
             {
-                held = packet;
+                steadyDecoder.CopyDisplayedPose(steadyOutput);
+                steadyErrors.AddFrame(frames[frame], steadyOutput, quality, frame);
             }
-            else
+            if (frame >= LateJoinFrame)
             {
-                Deliver(packet);
+                lateDecoder.CopyDisplayedPose(lateOutput);
+                lateErrors.AddFrame(frames[frame], lateOutput, quality, frame);
             }
         }
         if (held != null) Deliver(held);
@@ -504,8 +522,8 @@ internal static class Program
             BytesPerSecond20Hz = framedTotal / (double)frames.Length * SendHz,
             OfferedFrames = frames.Length,
             DeliveredDatagrams = delivered,
-            SteadyAcceptedFrames = steadyErrors.AcceptedFrames,
-            LateAcceptedFrames = lateErrors.AcceptedFrames,
+            SteadyAcceptedFrames = steadyAccepted,
+            LateAcceptedFrames = lateAccepted,
             SteadyMeanAngularErrorDeg = steady.mean,
             SteadyP95AngularErrorDeg = steady.p95,
             SteadyP99AngularErrorDeg = steady.p99,
@@ -539,18 +557,19 @@ internal static class Program
         var rng = new Random(StableSeed(quality, motion, tuning.Name, loss, reorder));
         Packet? held = null;
         int delivered = 0;
+        int steadyAccepted = 0;
+        int lateAccepted = 0;
         long framedTotal = 0;
 
         void Deliver(Packet packet)
         {
             delivered++;
-            if (steadyDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, steadyOutput, out _)
-                && packet.FrameIndex >= 100)
-                steadyErrors.AddFrame(frames[packet.FrameIndex], steadyOutput, quality, packet.FrameIndex);
+            if (steadyDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, steadyOutput, out _))
+                steadyAccepted++;
 
             if (packet.FrameIndex >= LateJoinFrame
                 && lateDecoder.TryDecode(packet.Bytes, 0, packet.Length, packet.Sequence, lateOutput, out _))
-                lateErrors.AddFrame(frames[packet.FrameIndex], lateOutput, quality, packet.FrameIndex);
+                lateAccepted++;
         }
 
         for (int frame = 0; frame < frames.Length; frame++)
@@ -561,26 +580,39 @@ internal static class Program
             sizes.Add(length);
             framedTotal += length + 4; // numerel header + id + interval + sequence; no base sequence
 
-            if (rng.NextDouble() < loss) continue;
-            byte[] packetBytes = new byte[length];
-            Buffer.BlockCopy(encodeBuffer, 0, packetBytes, 0, length);
-            var packet = new Packet(packetBytes, length, sequence, frame);
+            if (rng.NextDouble() >= loss)
+            {
+                byte[] packetBytes = new byte[length];
+                Buffer.BlockCopy(encodeBuffer, 0, packetBytes, 0, length);
+                var packet = new Packet(packetBytes, length, sequence, frame);
 
-            if (held != null)
-            {
-                // Deliver the newer packet first, then the held older packet. The decoder must
-                // accept the first and reject the stale second without mutating state.
-                Deliver(packet);
-                Deliver(held);
-                held = null;
+                if (held != null)
+                {
+                    // Deliver the newer packet first, then the held older packet. The decoder must
+                    // accept the first and reject the stale second without mutating state.
+                    Deliver(packet);
+                    Deliver(held);
+                    held = null;
+                }
+                else if (rng.NextDouble() < reorder)
+                {
+                    held = packet;
+                }
+                else
+                {
+                    Deliver(packet);
+                }
             }
-            else if (rng.NextDouble() < reorder)
+
+            if (frame >= 100)
             {
-                held = packet;
+                steadyDecoder.CopyDisplayedPose(steadyOutput);
+                steadyErrors.AddFrame(frames[frame], steadyOutput, quality, frame);
             }
-            else
+            if (frame >= LateJoinFrame)
             {
-                Deliver(packet);
+                lateDecoder.CopyDisplayedPose(lateOutput);
+                lateErrors.AddFrame(frames[frame], lateOutput, quality, frame);
             }
         }
         if (held != null) Deliver(held);
@@ -604,8 +636,8 @@ internal static class Program
             BytesPerSecond20Hz = framedTotal / (double)frames.Length * SendHz,
             OfferedFrames = frames.Length,
             DeliveredDatagrams = delivered,
-            SteadyAcceptedFrames = steadyErrors.AcceptedFrames,
-            LateAcceptedFrames = lateErrors.AcceptedFrames,
+            SteadyAcceptedFrames = steadyAccepted,
+            LateAcceptedFrames = lateAccepted,
             SteadyMeanAngularErrorDeg = steady.mean,
             SteadyP95AngularErrorDeg = steady.p95,
             SteadyP99AngularErrorDeg = steady.p99,

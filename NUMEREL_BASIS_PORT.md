@@ -110,6 +110,7 @@ The following are Basis experiments and are not upstream wire-compatible:
 
 - deterministic floor cube root;
 - deterministic nearest cube root;
+- square-root delta compression with signed-square reconstruction (`sqrt+0.4` and nearest-square variants);
 - multiple Gray bits;
 - output snapping instead of quarter filtering;
 - Gray correction sourced from the original value;
@@ -125,13 +126,13 @@ The Basis experiment adds optional temporal sign continuity. Since q and -q repr
 
 Benchmark variants include the upstream-style same-BPC mapping, sign-continuous mapping, component precision offsets of -2, -1, +1, and +2 bits relative to each bone's existing Basis BPC, and an adaptive profile that uses +2 bits on coarse <=6-BPC bones and +1 bit on the rest. These are benchmark modes only and are not selected by the live armature protocol.
 
-Initial ARM64 synthetic High-quality results show why precision must be benchmarked rather than assumed: same-BPC Quaternion-4 is about 130.1 framed B/frame but has 4.875-degree idle p95, while +1 reaches about 132.3 B/frame and 0.069-degree idle p95. The adaptive profile is about 133.2 B/frame with 0.079-degree idle p95, 5.03-degree active no-loss p95, and 5.30-degree burst no-loss p95. A fixed 12-bit/component mode is also included to match the upstream author's suggested starting point; its four self-delimiting Numerel codes are concatenated directly with no per-component length or byte alignment. It measured about 136.8 B/frame and 0.148-degree idle p95, 179.1 B/frame and 2.18-degree active no-loss p95, and 185.1 B/frame and 2.71-degree burst no-loss p95. Sign continuity is most visible around smallest-three representation flips and materially reduces some catastrophic loss maxima, but Quaternion-4 loss recovery remains worse than the exact V3.1 direction. These numbers are synthetic screening results; the cleaned Windows Humanoid corpus is required before making a design decision.
+Initial ARM64 synthetic High-quality results show why precision must be benchmarked rather than assumed: same-BPC Quaternion-4 is about 130.1 framed B/frame but has 4.875-degree idle p95, while +1 reaches about 132.3 B/frame and 0.069-degree idle p95. The adaptive profile is about 133.2 B/frame with 0.079-degree idle p95, 5.03-degree active no-loss p95, and 5.30-degree burst no-loss p95. A fixed 12-bit/component mode is also included to match the upstream author's suggested starting point; its four self-delimiting Numerel codes are concatenated directly with no per-component length or byte alignment. It measured about 136.8 B/frame and 0.148-degree idle p95, 179.1 B/frame and 2.18-degree active no-loss p95, and 185.1 B/frame and 2.71-degree burst no-loss p95. With the experimental square-root Numerel mapping, the same 12-bit Quaternion-4 stream measured roughly 136.0 B/frame / 0.056-degree idle p95, 193.4 B/frame / 0.39-degree active p95, and 203.3 B/frame / 0.47-degree burst p95. Sign continuity is most visible around smallest-three representation flips and materially reduces some catastrophic loss maxima, but Quaternion-4 loss recovery remains worse than the exact V3.1 direction. These numbers are synthetic screening results; the cleaned Windows Humanoid corpus is required before making a design decision.
 
 ## Validation
 
 Completed validation:
 
-- 33 focused Numerel, Hybrid V2, and V3/V3.1 tests passed;
+- 46 focused Numerel, square-root, Quaternion-4, Hybrid V2, and V3/V3.1 tests passed;
 - native oracle checksum updated to `b0e90ea47c60370f` for revision `8676848`;
 - native non-looping bitstream vectors passed;
 - native looping bitstream vectors passed;
@@ -140,8 +141,9 @@ Completed validation:
 - reused nonzero destination-buffer test passed;
 - truncated scalar and armature packet rollback tests passed;
 - `BasisNetworkCore` built for `net10.0` and `netstandard2.1`;
-- full server suite: 1,287 passed / 3 pre-existing unrelated failures;
-- benchmark encode and decode loops allocated zero bytes.
+- full server suite: 1,300 passed / 3 pre-existing unrelated failures;
+- benchmark encode and decode loops allocated zero bytes;
+- Numerel and Quaternion-4 loss metrics now score the held/displayed pose on every offered frame, matching V3 rather than omitting dropped or rejected frames.
 
 ## Corrected benchmark result
 
@@ -161,21 +163,26 @@ For High-quality idle motion with upstream revision `8676848`:
 |---|---:|---:|---:|---:|
 | Current keyframe + delta | 0% | 198.8 | exact packed payload | immediate keyframe path |
 | Upstream Numerel reference | 0% | 130.4 | 0.105 degrees | 900 ms |
-| Upstream Numerel reference | 10% | 130.4 | 0.676 degrees | 2,850 ms |
+| Upstream Numerel reference | 10% | 130.4 | 0.790 degrees | 2,850 ms |
+| Square-root +0.4 experiment | 0% | 131.6 | 0.040 degrees | 900 ms |
+| Square-root +0.4 experiment | 10% | 131.6 | 0.951 degrees | 2,100 ms |
+| Nearest-square experiment | 10% | 131.6 | 0.432 degrees | 2,900 ms |
 | Basis nearest, one Gray bit | 0% | 130.4 | 0.105 degrees | 1,050 ms |
 
-The upstream `+0.4` change materially improves the reference mode compared with revision `ea184345`: idle no-loss p95 falls from about 0.231 degrees to 0.105 degrees in this synthetic corpus. It does not make pure Numerel suitable as the primary armature codec.
+The upstream `+0.4` change materially improves the reference mode compared with revision `ea184345`: idle no-loss p95 falls from about 0.231 degrees to 0.105 degrees in this synthetic corpus. An experimental square-root mapping improves the accuracy/bandwidth trade further: `sqrt(abs(delta))+0.4` with signed-square reconstruction measured about 131.6 B/frame and 0.040-degree idle p95, versus 130.4 B/frame and 0.105 degrees for upstream cube-root Numerel. On High/Active it measured about 149.5 B/frame / 4.84-degree p95 versus 144.9 / 12.88, and on High/Burst about 153.1 / 5.03 versus 146.8 / 13.34. At 10% synthetic loss it also improved average p95 in those scenarios, but still produced large worst-case errors, so it remains a benchmark-only experiment rather than a production recommendation.
 
-CPU on the ARM64 benchmark host for High/Idle reference mode remained allocation-free and measured roughly 10 microseconds encode / 3.3 microseconds decode per frame in this run.
+CPU on the ARM64 benchmark host remained allocation-free. High/Idle reference cube-root mode measured about 11.0 microseconds encode / 3.3 microseconds decode per frame, while the `sqrt+0.4` experiment measured about 6.7 microseconds encode / 3.5 microseconds decode.
 
 ## Important limitations
 
 ### Active-motion accuracy
 
-Pure Numerel is not currently acceptable as the only active-motion armature representation. Revision `8676848` improves convergence, but the latest synthetic High-quality run still measured:
+Pure upstream cube-root Numerel is not currently acceptable as the only active-motion armature representation. Revision `8676848` improves convergence, but the latest synthetic High-quality run still measured:
 
 - High/Active, no loss: about 12.88-degree steady p95 for upstream reference mode;
 - High/Burst, no loss: about 13.34-degree steady p95 for upstream reference mode.
+
+The square-root experiment materially improves those no-loss figures to about 4.84 degrees Active and 5.03 degrees Burst, at roughly 3.2% and 4.4% more framed bandwidth respectively. It still develops large displayed-pose errors under loss (about 12.9-degree Active and 22.3-degree Burst p95 at the benchmark's 10% loss/reorder scenario), so the improvement does not replace V3's exact local-recovery direction.
 
 The upstream repository also added a GUI experiment that represents a quaternion as four independently synchronized components and normalizes the result. This is not a `numerel.h` wire/API change. Basis continues using its existing smallest-three quaternion representation; adopting four Numerel quaternion scalars would require a separate bandwidth/accuracy study.
 

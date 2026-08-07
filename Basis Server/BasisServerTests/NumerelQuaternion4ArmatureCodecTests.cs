@@ -60,25 +60,34 @@ public class NumerelQuaternion4ArmatureCodecTests
     }
 
     [Fact]
-    public void Fixed12BitStream_EncodesAllQualitiesAndRemainsNormalized()
+    public void Fixed12BitStreams_EncodeAllQualitiesAndRemainNormalized()
     {
-        foreach (BitQuality quality in S.AllQualities)
+        var tunings = new[]
         {
-            var options = BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuous12Bit;
-            var encoder = new BasisNumerelQuaternion4ArmatureCodec.Encoder(quality, options);
-            var decoder = new BasisNumerelQuaternion4ArmatureCodec.Decoder(quality, options);
-            var rng = new Random(44120 + (int)quality);
-            byte[] packet = new byte[encoder.MaxBodySize];
-            byte[] output = new byte[encoder.PayloadSize];
+            BasisNumerelQuaternion4ArmatureCodec.Options.UpstreamContinuous12Bit,
+            BasisNumerelQuaternion4ArmatureCodec.Options.SquareRoot04Continuous12Bit,
+            BasisNumerelQuaternion4ArmatureCodec.Options.NearestSquareRootContinuous12Bit,
+        };
 
-            for (int frame = 0; frame < 16; frame++)
+        foreach (var options in tunings)
+        {
+            foreach (BitQuality quality in S.AllQualities)
             {
-                byte[] pose = S.MakeRealisticPayload(quality, rng);
-                int length = encoder.Encode(pose, (byte)frame, packet, 0);
-                Assert.True(length > 0);
-                Assert.True(decoder.TryDecode(packet, 0, length, (byte)frame, output, out int consumed));
-                Assert.Equal(length, consumed);
-                Assert.True(double.IsFinite(MaxAngularError(pose, output, quality)));
+                var encoder = new BasisNumerelQuaternion4ArmatureCodec.Encoder(quality, options);
+                var decoder = new BasisNumerelQuaternion4ArmatureCodec.Decoder(quality, options);
+                var rng = new Random(44120 + (int)quality);
+                byte[] packet = new byte[encoder.MaxBodySize];
+                byte[] output = new byte[encoder.PayloadSize];
+
+                for (int frame = 0; frame < 16; frame++)
+                {
+                    byte[] pose = S.MakeRealisticPayload(quality, rng);
+                    int length = encoder.Encode(pose, (byte)frame, packet, 0);
+                    Assert.True(length > 0);
+                    Assert.True(decoder.TryDecode(packet, 0, length, (byte)frame, output, out int consumed));
+                    Assert.Equal(length, consumed);
+                    Assert.True(double.IsFinite(MaxAngularError(pose, output, quality)));
+                }
             }
         }
     }
