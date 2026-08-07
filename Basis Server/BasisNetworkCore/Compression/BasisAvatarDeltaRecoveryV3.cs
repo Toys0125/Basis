@@ -50,8 +50,10 @@ namespace Basis.Network.Core.Compression
                 BootstrapOnReset = bootstrapOnReset;
             }
 
-            /// <summary>V3.1: low-overhead cycle12 plus up to four requested repair groups/frame.</summary>
-            public static Options Default => new Options(12, 4, true);
+            /// <summary>V3.2: cycle8 plus up to four requested repair groups/frame.</summary>
+            public static Options Default => new Options(8, 4, true);
+            /// <summary>V3.1 low-overhead cycle12 plus four requested repair groups/frame.</summary>
+            public static Options V31LowOverhead => new Options(12, 4, true);
             /// <summary>Original V3 cycle8 behavior retained for benchmark comparison.</summary>
             public static Options LegacyCycle8 => new Options(8);
             public static Options CurrentCadence => new Options(10);

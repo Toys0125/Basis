@@ -30,10 +30,10 @@ public class AvatarDeltaRecoveryV3Tests
     }
 
     [Fact]
-    public void V31DefaultSchedule_RefreshesAllGroupsAndBoundsRecoveryGap()
+    public void V32DefaultSchedule_RefreshesAllGroupsAndBoundsRecoveryGap()
     {
         var options = BasisAvatarDeltaRecoveryV3.Options.Default;
-        Assert.Equal(12, options.RefreshCycleFrames);
+        Assert.Equal(8, options.RefreshCycleFrames);
         Assert.Equal(4, options.MaxRecoveryGroupsPerFrame);
         Assert.True(options.BootstrapOnReset);
 
@@ -64,7 +64,7 @@ public class AvatarDeltaRecoveryV3Tests
                 int next = positions[(i + 1) % positions.Count];
                 maxGap = Math.Max(maxGap, (next - positions[i] + 256) & 255);
             }
-            Assert.InRange(maxGap, 1, 22);
+            Assert.InRange(maxGap, 1, 9);
         }
     }
 
@@ -98,7 +98,7 @@ public class AvatarDeltaRecoveryV3Tests
     [InlineData(BitQuality.Low)]
     [InlineData(BitQuality.Medium)]
     [InlineData(BitQuality.High)]
-    public void V31_NoLoss_EveryFrameIsExactFromBootstrap(BitQuality quality)
+    public void V32_NoLoss_EveryFrameIsExactFromBootstrap(BitQuality quality)
     {
         var options = BasisAvatarDeltaRecoveryV3.Options.Default;
         var encoder = new BasisAvatarDeltaRecoveryV3.Encoder(quality, options);
@@ -267,7 +267,7 @@ public class AvatarDeltaRecoveryV3Tests
     }
 
     [Fact]
-    public void V31_TargetedBaselineRepair_RestoresMissingGroupWithoutChangingSharedBaseline()
+    public void V32_TargetedBaselineRepair_RestoresMissingGroupWithoutChangingSharedBaseline()
     {
         const BitQuality quality = BitQuality.High;
         var options = BasisAvatarDeltaRecoveryV3.Options.Default;
@@ -324,7 +324,7 @@ public class AvatarDeltaRecoveryV3Tests
     }
 
     [Fact]
-    public void V31_LateJoin_RequestedRepairConvergesWithinTwoPackets()
+    public void V32_LateJoin_RequestedRepairConvergesWithinTwoPackets()
     {
         const BitQuality quality = BitQuality.High;
         var options = BasisAvatarDeltaRecoveryV3.Options.Default;

@@ -155,10 +155,13 @@ internal static class Program
 
     private static readonly V3Spec[] V3Tunings =
     {
-        new("delta-v3.1", BasisAvatarDeltaRecoveryV3.Options.Default, true),
+        new("delta-v3.2", BasisAvatarDeltaRecoveryV3.Options.Default, true),
+        new("delta-v3.2-cycle8-r2", new BasisAvatarDeltaRecoveryV3.Options(8, 2, true), true),
+        new("delta-v3.2-cycle10-r2", new BasisAvatarDeltaRecoveryV3.Options(10, 2, true), true),
+        new("delta-v3.2-cycle10-r4", new BasisAvatarDeltaRecoveryV3.Options(10, 4, true), true),
+        new("delta-v3.1-cycle12-r2", new BasisAvatarDeltaRecoveryV3.Options(12, 2, true), true),
+        new("delta-v3.1-cycle12-r4", BasisAvatarDeltaRecoveryV3.Options.V31LowOverhead, true),
         new("delta-v3-legacy-cycle8", BasisAvatarDeltaRecoveryV3.Options.LegacyCycle8, false),
-        new("delta-v3-cycle10", BasisAvatarDeltaRecoveryV3.Options.CurrentCadence, false),
-        new("delta-v3-cycle12", BasisAvatarDeltaRecoveryV3.Options.LowOverhead, false),
     };
 
     private static readonly Quaternion4Spec[] Quaternion4Tunings =

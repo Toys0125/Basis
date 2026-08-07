@@ -191,12 +191,12 @@ With a 12-bone rotating refresh, the synthetic High-quality sanity matrix measur
 
 These results are a synthetic sanity check only. The Windows Humanoid clip matrix subsequently showed that the existing exact Basis delta codec is substantially smaller than Hybrid V2 on sustained real animation, while V2 still develops large recovery errors under packet loss. Numerel is therefore retained as a reference/experiment rather than the preferred production armature codec.
 
-### Hybrid V3.1 exact distributed recovery
+### Hybrid V3.2 exact distributed recovery
 
-`BasisAvatarDeltaRecoveryV3` keeps the exact Basis dirty-field representation and now adds V3.1 recovery semantics:
+`BasisAvatarDeltaRecoveryV3` keeps the exact Basis dirty-field representation and layers targeted recovery over rotating baseline groups:
 
 - the 57 avatar fields remain deterministically balanced across eight baseline groups;
-- healthy steady state defaults to the lower-overhead 12-frame distributed refresh cycle;
+- V3.2 defaults to an 8-frame refresh cycle plus up to four targeted repair groups per frame; V3.1's cycle12/r4 mode remains available as the lower-overhead comparison;
 - a coordinated sequence-zero stream start can bootstrap all eight groups, guaranteeing byte-exact output from frame zero after a matching codec reset;
 - missing scheduled refreshes invalidate only the affected groups;
 - invalid groups still apply dirty absolute fields immediately; only omitted fields remain held;
@@ -209,17 +209,19 @@ These results are a synthetic sanity check only. The Windows Humanoid clip matri
 
 The implicit sequence schedule still requires coordinated sender/receiver lifecycle reset semantics. A sequence reset without a codec reset is ambiguous.
 
-Latest synthetic High-quality sanity results for V3.1:
+Latest synthetic High-quality sanity results for the V3.2 cycle8/r4 default:
 
-| Motion | V3.1 no-loss B/frame | No-loss display p95 | V3.1 10% loss B/frame | 10% display p95 | Late join stable under 1 degree |
+| Motion | V3.2 no-loss B/frame | No-loss display p95 | V3.2 10% loss B/frame | 10% display p95 | Late join stable under 1 degree |
 |---|---:|---:|---:|---:|---:|
-| Idle | 205.0 | 0.000 degrees | 207.9 | 0.000 degrees | ~100 ms |
-| Active | 238.8 | 0.000 degrees | 242.2 | ~4.95 degrees | ~50 ms |
-| Burst | 239.4 | 0.000 degrees | 242.5 | ~7.11 degrees | ~100 ms |
+| Idle | 198.0 | 0.000 degrees | 202.8 | 0.000 degrees | ~200 ms |
+| Active | 238.5 | 0.000 degrees | 243.5 | ~4.96 degrees | ~50 ms |
+| Burst | 239.3 | 0.000 degrees | 243.4 | ~8.31 degrees | immediate in this synthetic case |
+
+The cycle8/r4 default was selected because the cleaned Windows Humanoid V3.1 report showed the old cycle8 schedule was dramatically stronger against isolated/periodic loss, while targeted repair approximately halved the previous Burst5/Burst10 recovery error. A cycle8/10/12 × repair2/repair4 synthetic sweep found repair4 adds negligible healthy traffic and improves convergence/max-error behavior, making cycle8/r4 the best next real-corpus candidate.
 
 The request-enabled synthetic benchmark models an immediate reliable request opportunity on subsequent outbound frames; return-path request loss/delay is not yet modeled. Also, burst-window displayed error cannot be repaired retroactively: while packets are physically absent the viewer must still hold/interpolate some older pose. The Windows humanoid rerun should therefore add a **post-burst recovery-time/error** metric in addition to p95 over the burst itself.
 
-V3.1 is not wired into the live avatar protocol yet. The optional repair body needs explicit live framing so it cannot be confused with trailing additional-avatar data, and a production fanout policy must decide whether repair requests produce per-receiver packets or a union repair mask. Required validation remains Windows humanoid V3.1, Mono/IL2CPP, temporary server, relay/P2P, reconnect, sequence-reset, capability negotiation, and request-loss testing.
+V3.2 is not wired into the live avatar protocol yet. The optional repair body needs explicit live framing so it cannot be confused with trailing additional-avatar data, and a production fanout policy must decide whether repair requests produce per-receiver packets or a union repair mask. Required validation remains Windows humanoid V3.1, Mono/IL2CPP, temporary server, relay/P2P, reconnect, sequence-reset, capability negotiation, and request-loss testing.
 
 ### Cross-platform determinism
 
