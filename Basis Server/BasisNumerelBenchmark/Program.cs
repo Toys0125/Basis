@@ -14,7 +14,7 @@ internal enum MotionProfile
 }
 
 internal sealed record CodecSpec(string Name, BasisNumerelArmatureCodec.Options Value);
-internal sealed record Quaternion4Spec(string Name, BasisNumerelQuaternion4ArmatureCodec.Options Value);
+internal sealed record Quaternion4Spec(string Name, BasisNumerelQuaternion4ArmatureCodec.Options Value, bool DeadlinePrediction = false);
 internal sealed record V3Spec(string Name, BasisAvatarDeltaRecoveryV3.Options Value, bool RecoveryRequests);
 
 internal sealed class LegacyResult
@@ -65,6 +65,13 @@ internal sealed class NumerelResult
     public double? ScalarPercentOver6Bits { get; set; }
     public double? ScalarPercentOver8Bits { get; set; }
     public double? ScalarPercentOver12Bits { get; set; }
+    public double? AverageZeroBonesPerFrame { get; set; }
+    public double? AverageZeroRunsPerFrame { get; set; }
+    public double? ZeroBoneRleFramePercent { get; set; }
+    public double? AverageZeroBoneRleMetadataBits { get; set; }
+    public double? AverageZeroBoneRleNetSavedBits { get; set; }
+    public int? SteadyDeadlinePredictions { get; set; }
+    public int? LateDeadlinePredictions { get; set; }
 }
 
 internal sealed class CpuResult
@@ -186,6 +193,9 @@ internal static class Program
         new("quat4-power1-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power1Continuous16Bit),
         new("quat4-power1.5-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power1_5Continuous16Bit),
         new("quat4-power2-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2Continuous16Bit),
+        new("quat4-power2-deadline-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2Continuous16Bit, true),
+        new("quat4-power2-rle-gray-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2HybridRotation16Bit),
+        new("hybrid-power2-rle-deadline-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2HybridRotation16Bit, true),
         new("quat4-power2.5-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power2_5Continuous16Bit),
         new("quat4-power3-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power3Continuous16Bit),
         new("quat4-power4-continuous-16bit", BasisNumerelQuaternion4ArmatureCodec.Options.Power4Continuous16Bit),
@@ -240,7 +250,7 @@ internal static class Program
 
                 foreach (Quaternion4Spec tuning in Quaternion4Tunings)
                 {
-                    foreach ((double loss, double reorder) in new[] { (0.0, 0.0), (0.05, 0.0), (0.10, 0.02), (0.20, 0.05) })
+                    foreach ((double loss, double reorder) in new[] { (0.0, 0.0), (0.05, 0.0), (0.10, 0.02), (0.20, 0.0), (0.20, 0.05) })
                     {
                         document.Numerel.Add(RunQuaternion4(frames, quality, motion, tuning, loss, reorder));
                     }
@@ -457,12 +467,21 @@ internal static class Program
         var scalarBits = new List<int>(frames.Length * BasisBoneRotationCompression.SyncBoneCount * 4);
         var steadyErrors = new ErrorAccumulator(0);
         var lateErrors = new ErrorAccumulator(LateJoinFrame);
-        var rng = new Random(StableSeed(quality, motion, tuning.Name, loss, reorder));
+        // All Quaternion-4 variants share one delivery schedule so RLE/deadline comparisons use
+        // exactly the same dropped and reordered frames.
+        var rng = new Random(StableSeed(quality, motion, "quaternion4-shared-loss", loss, reorder));
         Packet? held = null;
         int delivered = 0;
         int steadyAccepted = 0;
         int lateAccepted = 0;
+        int steadyDeadlinePredictions = 0;
+        int lateDeadlinePredictions = 0;
         long framedTotal = 0;
+        long zeroBoneTotal = 0;
+        long zeroRunTotal = 0;
+        long rleMetadataBitsTotal = 0;
+        long rleNetSavedBitsTotal = 0;
+        int rleFrames = 0;
 
         void Deliver(Packet packet)
         {
@@ -483,6 +502,17 @@ internal static class Program
             sizes.Add(length);
             foreach (byte bits in encoder.LastScalarBits) scalarBits.Add(bits);
             framedTotal += length + 4;
+            if (tuning.Value.ZeroBoneRleRetainGray)
+            {
+                zeroBoneTotal += encoder.LastZeroBoneCount;
+                zeroRunTotal += encoder.LastZeroRunCount;
+                rleMetadataBitsTotal += encoder.LastZeroBoneRleMetadataBits;
+                if (encoder.LastUsedZeroBoneRle)
+                {
+                    rleNetSavedBitsTotal += encoder.LastZeroBoneRleNetSavedBits;
+                    rleFrames++;
+                }
+            }
 
             if (rng.NextDouble() >= loss)
             {
@@ -504,6 +534,17 @@ internal static class Program
                 {
                     Deliver(packet);
                 }
+            }
+
+            if (tuning.DeadlinePrediction)
+            {
+                // Predict exactly at this sequence's playout deadline if it was not accepted by
+                // then. A packet held for reordering is therefore predicted and becomes stale if
+                // it arrives after the deadline, matching a real playout clock.
+                if (steadyDecoder.TryAdvanceDeadline(sequence, steadyOutput))
+                    steadyDeadlinePredictions++;
+                if (frame >= LateJoinFrame && lateDecoder.TryAdvanceDeadline(sequence, lateOutput))
+                    lateDeadlinePredictions++;
             }
 
             if (frame >= 100)
@@ -557,6 +598,13 @@ internal static class Program
             ScalarPercentOver6Bits = scalarBits.Count(v => v > 6) * 100.0 / scalarBits.Count,
             ScalarPercentOver8Bits = scalarBits.Count(v => v > 8) * 100.0 / scalarBits.Count,
             ScalarPercentOver12Bits = scalarBits.Count(v => v > 12) * 100.0 / scalarBits.Count,
+            AverageZeroBonesPerFrame = tuning.Value.ZeroBoneRleRetainGray ? zeroBoneTotal / (double)frames.Length : null,
+            AverageZeroRunsPerFrame = tuning.Value.ZeroBoneRleRetainGray ? zeroRunTotal / (double)frames.Length : null,
+            ZeroBoneRleFramePercent = tuning.Value.ZeroBoneRleRetainGray ? rleFrames * 100.0 / frames.Length : null,
+            AverageZeroBoneRleMetadataBits = tuning.Value.ZeroBoneRleRetainGray ? rleMetadataBitsTotal / (double)frames.Length : null,
+            AverageZeroBoneRleNetSavedBits = tuning.Value.ZeroBoneRleRetainGray ? rleNetSavedBitsTotal / (double)frames.Length : null,
+            SteadyDeadlinePredictions = tuning.DeadlinePrediction ? steadyDeadlinePredictions : null,
+            LateDeadlinePredictions = tuning.DeadlinePrediction ? lateDeadlinePredictions : null,
         };
     }
 

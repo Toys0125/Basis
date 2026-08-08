@@ -251,6 +251,84 @@ namespace Basis.Network.Core.Compression
         }
 
         /// <summary>
+        /// Returns true when the current scalar would use Numerel's zero-difference code.
+        /// Higher-level codecs can omit that redundant one-bit Golomb symbol while retaining
+        /// the Gray correction bits and therefore the ordinary zero-scalar state transition.
+        /// </summary>
+        public static bool IsCompressedZero(
+            uint remoteEstimate,
+            uint value,
+            int numBits,
+            bool looping,
+            in Tuning tuning)
+        {
+            if (numBits < 1 || numBits > 30) return false;
+
+            uint valueMask = (1u << numBits) - 1u;
+            value &= valueMask;
+            uint estimate = UsesUnclampedTransmitterEstimate(tuning.CompressionMode)
+                ? remoteEstimate
+                : remoteEstimate & valueMask;
+
+            int difference = (int)value - (int)estimate;
+            if (looping)
+            {
+                difference &= (int)valueMask;
+                int scalarLimit = 1 << numBits;
+                if (difference > (scalarLimit >> 1)) difference -= scalarLimit;
+            }
+
+            return CompressDifference(difference, tuning.CompressionMode) == 0;
+        }
+
+        /// <summary>
+        /// Encodes only the Gray correction portion of a scalar whose Numerel compressed
+        /// difference is zero. State changes match <see cref="TryEncode"/> for that zero scalar.
+        /// </summary>
+        public static bool TryEncodeZeroGray(
+            ref TxState tx,
+            uint value,
+            int grayBit,
+            int numBits,
+            bool looping,
+            in Tuning tuning,
+            byte[] destination,
+            ref int bitPosition,
+            int bitLimit)
+        {
+            if (destination == null || numBits < 1 || numBits > 30) return false;
+            if (grayBit < 0 || grayBit >= numBits) return false;
+            if (bitPosition < 0 || bitLimit < bitPosition || bitLimit > destination.Length * 8) return false;
+            if (!IsCompressedZero(tx.RemoteEstimate, value, numBits, looping, tuning)) return false;
+            if (bitPosition + tuning.GrayBits > bitLimit) return false;
+
+            uint valueMask = (1u << numBits) - 1u;
+            value &= valueMask;
+            uint estimate = UsesUnclampedTransmitterEstimate(tuning.CompressionMode)
+                ? (looping ? tx.RemoteEstimate & valueMask : tx.RemoteEstimate)
+                : tx.RemoteEstimate & valueMask;
+            int writePosition = bitPosition;
+
+            uint estimateGray = ToGrayCode(estimate);
+            uint correctionGray = tuning.CorrectEstimateFromValueGray ? ToGrayCode(value) : estimateGray;
+            for (int i = 0; i < tuning.GrayBits; i++)
+            {
+                int correctionBit = (grayBit + i) % numBits;
+                int bit = (int)((correctionGray >> correctionBit) & 1u);
+                WriteBit(destination, ref writePosition, bit);
+                if (tuning.CorrectEstimateFromValueGray)
+                    estimateGray = (estimateGray & ~(1u << correctionBit)) | ((uint)bit << correctionBit);
+            }
+
+            if (tuning.CorrectEstimateFromValueGray)
+                estimate = FromGrayCode(estimateGray) & valueMask;
+
+            tx.RemoteEstimate = estimate;
+            bitPosition = writePosition;
+            return true;
+        }
+
+        /// <summary>
         /// Reads one scalar from an MSB-first bitstream. State and bit position are committed
         /// only after the complete code, including all Gray correction bits, validates.
         /// </summary>
@@ -293,6 +371,69 @@ namespace Basis.Network.Core.Compression
             int compressed = (encoded & 1u) != 0 ? -(int)(encoded >> 1) : (int)(encoded >> 1);
             next.LastDelta = DecompressDifference(compressed, tuning.CompressionMode);
             ApplyLastDelta(ref next, numBits, looping);
+
+            uint estimateGray = ToGrayCode(next.RawEstimate);
+            for (int i = 0; i < tuning.GrayBits; i++)
+            {
+                if (!TryReadBit(source, ref readPosition, bitLimit, out int bit)) return false;
+                int correctionBit = (grayBit + i) % numBits;
+                estimateGray = (estimateGray & ~(1u << correctionBit)) | ((uint)bit << correctionBit);
+            }
+
+            uint valueMask = (1u << numBits) - 1u;
+            uint estimate = FromGrayCode(estimateGray) & valueMask;
+
+            if (tuning.OutputFilterShift < 0)
+            {
+                next.OutputValue = estimate;
+            }
+            else
+            {
+                int outputDifference = (int)estimate - (int)next.OutputValue;
+                if (looping)
+                {
+                    outputDifference &= (int)valueMask;
+                    int scalarLimit = 1 << numBits;
+                    if (outputDifference > (scalarLimit >> 1)) outputDifference -= scalarLimit;
+                }
+
+                int adjustment = outputDifference >> tuning.OutputFilterShift;
+                next.OutputValue = adjustment == 0
+                    ? estimate
+                    : ApplyDeltaToValue(next.OutputValue, adjustment, numBits, looping);
+            }
+
+            next.RawEstimate = estimate;
+            rx = next;
+            bitPosition = readPosition;
+            output = next.OutputValue;
+            return true;
+        }
+
+        /// <summary>
+        /// Decodes the Gray correction portion of an implicitly-zero Numerel scalar. This is
+        /// semantically identical to decoding the normal zero Golomb symbol and its Gray bits,
+        /// but consumes only the Gray bits from the wire.
+        /// </summary>
+        public static bool TryDecodeZeroGray(
+            ref RxState rx,
+            int grayBit,
+            int numBits,
+            bool looping,
+            in Tuning tuning,
+            byte[] source,
+            ref int bitPosition,
+            int bitLimit,
+            out uint output)
+        {
+            output = 0;
+            if (source == null || numBits < 1 || numBits > 30) return false;
+            if (grayBit < 0 || grayBit >= numBits) return false;
+            if (bitPosition < 0 || bitPosition + tuning.GrayBits > bitLimit || bitLimit > source.Length * 8) return false;
+
+            int readPosition = bitPosition;
+            RxState next = rx;
+            next.LastDelta = 0;
 
             uint estimateGray = ToGrayCode(next.RawEstimate);
             for (int i = 0; i < tuning.GrayBits; i++)

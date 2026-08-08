@@ -310,6 +310,33 @@ public class BasisNumerelReferenceTests
     }
 
     [Fact]
+    public void ZeroGrayLooping_MatchesOrdinaryZeroScalarStateTransition()
+    {
+        var tuning = BasisNumerel.Tuning.Power2Reference;
+        var normal = new BasisNumerel.TxState { RemoteEstimate = 5000u };
+        var rle = normal;
+        var normalPacket = new byte[2];
+        var rlePacket = new byte[2];
+        int normalBits = 0;
+        int rleBits = 0;
+        const uint value = 904u; // 5000 modulo 4096
+
+        Assert.True(BasisNumerel.IsCompressedZero(normal.RemoteEstimate, value, 12, true, tuning));
+        Assert.True(BasisNumerel.TryEncode(
+            ref normal, value, 0, 12, true, tuning,
+            normalPacket, ref normalBits, normalPacket.Length * 8));
+        Assert.True(BasisNumerel.TryEncodeZeroGray(
+            ref rle, value, 0, 12, true, tuning,
+            rlePacket, ref rleBits, rlePacket.Length * 8));
+
+        Assert.Equal(2, normalBits);
+        Assert.Equal(1, rleBits);
+        Assert.Equal(normal.RemoteEstimate, rle.RemoteEstimate);
+        Assert.Equal(value, rle.RemoteEstimate);
+        Assert.Equal((normalPacket[0] >> 6) & 1, (rlePacket[0] >> 7) & 1);
+    }
+
+    [Fact]
     public void TryDecode_TruncatedCodeIsTransactional()
     {
         var tx = new BasisNumerel.TxState();
