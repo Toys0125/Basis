@@ -14,6 +14,7 @@ namespace Basis.Network.Core.Compression
         private const int StateCount = BasisBoneRotationCompression.SyncBoneCount * ComponentsPerBone;
         private const int MaxPredictedGapFrames = 32;
         private const int MaxZeroRuns = (BasisBoneRotationCompression.SyncBoneCount + 1) / 2;
+        private const byte AbsoluteGroupRefreshMagic = 0xD3;
 
         public readonly struct Options
         {
@@ -82,6 +83,7 @@ namespace Basis.Network.Core.Compression
             private readonly byte[] _zeroBones = new byte[BasisBoneRotationCompression.SyncBoneCount];
             private readonly byte[] _zeroRunStarts = new byte[MaxZeroRuns];
             private readonly byte[] _zeroRunLengths = new byte[MaxZeroRuns];
+            private readonly byte[] _refreshNegate = new byte[BasisBoneRotationCompression.SyncBoneCount];
             private readonly int _positionBytes;
             private readonly int _rotationBytes;
             private readonly int _tailOffset;
@@ -109,6 +111,7 @@ namespace Basis.Network.Core.Compression
 
             public int PayloadSize => _payloadBytes;
             public int MaxBodySize => _maxBodySize;
+            public int MaxRotationBodySize => GetMaxRotationBodySize(_quality, _options);
             public int LastArmatureBits { get; private set; }
             public byte[] LastScalarBits => _lastScalarBits;
             public bool LastUsedZeroBoneRle { get; private set; }
@@ -152,13 +155,26 @@ namespace Basis.Network.Core.Compression
                 Array.Clear(_scratchScalarBits, 0, _scratchScalarBits.Length);
                 Array.Clear(_frameComponents, 0, _frameComponents.Length);
                 Array.Clear(_zeroBones, 0, _zeroBones.Length);
+                Array.Clear(_refreshNegate, 0, _refreshNegate.Length);
             }
 
             public int Encode(byte[] payload, byte sequence, byte[] destination, int destinationStart)
+                => EncodeCore(payload, sequence, destination, destinationStart, includeAuxiliary: true);
+
+            /// <summary>
+            /// Encodes only the variable-length Quaternion-4 Numerel rotation stream. The caller
+            /// can append an independent exact auxiliary representation and recovery side data.
+            /// State evolution is identical to <see cref="Encode"/> for the rotation portion.
+            /// </summary>
+            public int EncodeRotations(byte[] payload, byte sequence, byte[] destination, int destinationStart)
+                => EncodeCore(payload, sequence, destination, destinationStart, includeAuxiliary: false);
+
+            private int EncodeCore(byte[] payload, byte sequence, byte[] destination, int destinationStart, bool includeAuxiliary)
             {
                 if (payload == null || payload.Length < _payloadBytes || destination == null || destinationStart < 0)
                     return -1;
-                if (destination.Length - destinationStart < MaxBodySize) return -1;
+                int maxRequired = includeAuxiliary ? MaxBodySize : MaxRotationBodySize;
+                if (destination.Length - destinationStart < maxRequired) return -1;
 
                 Array.Copy(_states, _scratchStates, StateCount);
                 Array.Copy(_previousQuaternion, _scratchPreviousQuaternion, StateCount);
@@ -370,13 +386,16 @@ namespace Basis.Network.Core.Compression
 
                 int armatureBits = bitPosition - destinationStart * 8;
                 int bodyOffset = (bitPosition + 7) >> 3;
-                int requiredEnd = bodyOffset + _positionBytes + _tailBytes;
-                if (requiredEnd > destinationStart + MaxBodySize || requiredEnd > destination.Length) return -1;
+                if (includeAuxiliary)
+                {
+                    int requiredEnd = bodyOffset + _positionBytes + _tailBytes;
+                    if (requiredEnd > destinationStart + MaxBodySize || requiredEnd > destination.Length) return -1;
 
-                Buffer.BlockCopy(payload, 0, destination, bodyOffset, _positionBytes);
-                bodyOffset += _positionBytes;
-                Buffer.BlockCopy(payload, _tailOffset, destination, bodyOffset, _tailBytes);
-                bodyOffset += _tailBytes;
+                    Buffer.BlockCopy(payload, 0, destination, bodyOffset, _positionBytes);
+                    bodyOffset += _positionBytes;
+                    Buffer.BlockCopy(payload, _tailOffset, destination, bodyOffset, _tailBytes);
+                    bodyOffset += _tailBytes;
+                }
 
                 BasisNumerel.TxState[] oldStates = _states;
                 _states = _scratchStates;
@@ -387,6 +406,128 @@ namespace Basis.Network.Core.Compression
                 LastArmatureBits = armatureBits;
                 Buffer.BlockCopy(_scratchScalarBits, 0, _lastScalarBits, 0, StateCount);
                 return bodyOffset - destinationStart;
+            }
+
+            /// <summary>
+            /// Returns the byte size of one absolute recovery-group record. The record carries the
+            /// exact Basis smallest-three value for every bone in the group plus one q/-q sign bit
+            /// per bone so the receiver can seed the same Quaternion-4 Numerel representation.
+            /// </summary>
+            public int GetAbsoluteGroupRefreshSize(byte[] boneGroups, byte groupId, byte groupCount)
+            {
+                if (!ValidateBoneGroups(boneGroups, groupCount) || groupId >= groupCount) return -1;
+                int bits = 24; // magic + group-count + group-id
+                bool hasBone = false;
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    if (boneGroups[bone] != groupId) continue;
+                    hasBone = true;
+                    bits += 1 + 2 + 3 * _bpc[bone];
+                }
+                return hasBone ? ((bits + 7) >> 3) : -1;
+            }
+
+            /// <summary>
+            /// Appends one exact absolute rotation-group record and rebases the shared sender
+            /// predictor for that group only after the complete record has been written. This is
+            /// the passive shared-stream recovery transition: receivers that get the record seed
+            /// exactly the same fixed16 Quaternion-4 predictor as the sender for the next frame.
+            /// </summary>
+            public int EncodeAbsoluteGroupRefresh(
+                byte[] payload,
+                byte[] boneGroups,
+                byte groupId,
+                byte groupCount,
+                byte[] destination,
+                int destinationStart)
+            {
+                if (payload == null || payload.Length < _payloadBytes || destination == null || destinationStart < 0)
+                    return -1;
+                int recordSize = GetAbsoluteGroupRefreshSize(boneGroups, groupId, groupCount);
+                if (recordSize <= 0 || destination.Length - destinationStart < recordSize) return -1;
+
+                Array.Clear(destination, destinationStart, recordSize);
+                destination[destinationStart] = AbsoluteGroupRefreshMagic;
+                destination[destinationStart + 1] = groupCount;
+                destination[destinationStart + 2] = groupId;
+
+                int bitPosition = (destinationStart + 3) * 8;
+                int sourceBit = _positionBytes * 8;
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    int sourceBits = _bpc[bone];
+                    int width = 2 + sourceBits * 3;
+                    ulong packed = BasisBoneRotationCompression.ReadBits(payload, ref sourceBit, width);
+                    if (boneGroups[bone] != groupId) continue;
+
+                    BasisBoneRotationCompression.DecodeSmallestThree(
+                        packed, sourceBits,
+                        out float qx, out float qy, out float qz, out float qw,
+                        BasisBoneRotationCompression.MAX_COMPONENT[bone]);
+                    int stateIndex = bone * ComponentsPerBone;
+                    float dot = qx * _previousQuaternion[stateIndex]
+                        + qy * _previousQuaternion[stateIndex + 1]
+                        + qz * _previousQuaternion[stateIndex + 2]
+                        + qw * _previousQuaternion[stateIndex + 3];
+                    bool negate = dot < 0f;
+                    _refreshNegate[bone] = negate ? (byte)1 : (byte)0;
+
+                    BasisBoneRotationCompression.WriteBits(destination, bitPosition, negate ? 1UL : 0UL, 1);
+                    bitPosition += 1;
+                    BasisBoneRotationCompression.WriteBits(destination, bitPosition, packed, width);
+                    bitPosition += width;
+                }
+
+                if (((bitPosition + 7) >> 3) != destinationStart + recordSize) return -1;
+
+                // Commit the predictor rebase only after the record is complete.
+                sourceBit = _positionBytes * 8;
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    int sourceBits = _bpc[bone];
+                    int width = 2 + sourceBits * 3;
+                    ulong packed = BasisBoneRotationCompression.ReadBits(payload, ref sourceBit, width);
+                    if (boneGroups[bone] != groupId) continue;
+
+                    BasisBoneRotationCompression.DecodeSmallestThree(
+                        packed, sourceBits,
+                        out float qx, out float qy, out float qz, out float qw,
+                        BasisBoneRotationCompression.MAX_COMPONENT[bone]);
+                    if (_refreshNegate[bone] != 0)
+                    {
+                        qx = -qx; qy = -qy; qz = -qz; qw = -qw;
+                    }
+                    RebaseBone(bone, qx, qy, qz, qw);
+                }
+                return recordSize;
+            }
+
+            private void RebaseBone(int bone, float qx, float qy, float qz, float qw)
+            {
+                int stateIndex = bone * ComponentsPerBone;
+                int componentBits = _componentBits[bone];
+                uint x = QuantizeComponent(qx, componentBits);
+                uint y = QuantizeComponent(qy, componentBits);
+                uint z = QuantizeComponent(qz, componentBits);
+                uint w = QuantizeComponent(qw, componentBits);
+
+                _states[stateIndex].Reset(x);
+                _states[stateIndex + 1].Reset(y);
+                _states[stateIndex + 2].Reset(z);
+                _states[stateIndex + 3].Reset(w);
+                _scratchStates[stateIndex].Reset(x);
+                _scratchStates[stateIndex + 1].Reset(y);
+                _scratchStates[stateIndex + 2].Reset(z);
+                _scratchStates[stateIndex + 3].Reset(w);
+
+                _previousQuaternion[stateIndex] = qx;
+                _previousQuaternion[stateIndex + 1] = qy;
+                _previousQuaternion[stateIndex + 2] = qz;
+                _previousQuaternion[stateIndex + 3] = qw;
+                _scratchPreviousQuaternion[stateIndex] = qx;
+                _scratchPreviousQuaternion[stateIndex + 1] = qy;
+                _scratchPreviousQuaternion[stateIndex + 2] = qz;
+                _scratchPreviousQuaternion[stateIndex + 3] = qw;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -425,6 +566,9 @@ namespace Basis.Network.Core.Compression
             private byte[] _payload;
             private byte[] _payloadScratch;
             private readonly byte[] _zeroBonesScratch = new byte[BasisBoneRotationCompression.SyncBoneCount];
+            private readonly byte[] _refreshNegate = new byte[BasisBoneRotationCompression.SyncBoneCount];
+            private readonly ulong[] _refreshPacked = new ulong[BasisBoneRotationCompression.SyncBoneCount];
+            private readonly int[] _boneBitOffsets = new int[BasisBoneRotationCompression.SyncBoneCount];
             private readonly int _positionBytes;
             private readonly int _rotationBytes;
             private readonly int _tailOffset;
@@ -440,6 +584,7 @@ namespace Basis.Network.Core.Compression
                 _options = options;
                 _bpc = BasisBoneRotationCompression.GetBpcTable(quality);
                 _componentBits = BuildComponentBits(_bpc, options);
+                BasisBoneRotationCompression.ComputeBitOffsets(_bpc, _boneBitOffsets);
                 _positionBytes = BasisAvatarBitPacking.PositionBytes(quality);
                 _rotationBytes = BasisBoneRotationCompression.RotationBytes(quality);
                 _tailOffset = _positionBytes + _rotationBytes;
@@ -463,6 +608,35 @@ namespace Basis.Network.Core.Compression
                 if (outputPayload == null || outputPayload.Length < _payloadBytes)
                     throw new ArgumentException("Output payload is too small.", nameof(outputPayload));
                 Buffer.BlockCopy(_payload, 0, outputPayload, 0, _payloadBytes);
+            }
+
+            /// <summary>
+            /// Resets all predictor/sequence state so the stream must bootstrap again, while keeping
+            /// the caller-provided pose as the held visual output. This is used only as a defensive
+            /// outer-transaction rollback if a later hybrid side-body commit unexpectedly fails.
+            /// </summary>
+            public void ResetForBootstrapKeepingDisplayedPose(byte[] displayedPayload)
+            {
+                if (displayedPayload == null || displayedPayload.Length < _payloadBytes)
+                    throw new ArgumentException("Displayed payload is too small.", nameof(displayedPayload));
+                Reset();
+                Buffer.BlockCopy(displayedPayload, 0, _payload, 0, _payloadBytes);
+                Buffer.BlockCopy(displayedPayload, 0, _payloadScratch, 0, _payloadBytes);
+            }
+
+            /// <summary>
+            /// Replaces only the held non-armature bytes in the decoder's displayed state. The
+            /// separated hybrid calls this after applying its exact auxiliary delta so a later
+            /// deadline prediction holds the latest exact position/scale/hips state.
+            /// </summary>
+            public void SyncAuxiliaryFromPayload(byte[] payload)
+            {
+                if (payload == null || payload.Length < _payloadBytes)
+                    throw new ArgumentException("Payload is too small.", nameof(payload));
+                Buffer.BlockCopy(payload, 0, _payload, 0, _positionBytes);
+                Buffer.BlockCopy(payload, 0, _payloadScratch, 0, _positionBytes);
+                Buffer.BlockCopy(payload, _tailOffset, _payload, _tailOffset, _tailBytes);
+                Buffer.BlockCopy(payload, _tailOffset, _payloadScratch, _tailOffset, _tailBytes);
             }
 
             /// <summary>
@@ -523,9 +697,21 @@ namespace Basis.Network.Core.Compression
                 _deadlinePredictionsSinceDecode = 0;
                 LastArmatureBits = 0;
                 Array.Clear(_zeroBonesScratch, 0, _zeroBonesScratch.Length);
+                Array.Clear(_refreshNegate, 0, _refreshNegate.Length);
+                Array.Clear(_refreshPacked, 0, _refreshPacked.Length);
             }
 
             public bool TryDecode(byte[] source, int sourceStart, int availableBytes, byte sequence, byte[] outputPayload, out int consumedBytes)
+                => TryDecodeCore(source, sourceStart, availableBytes, sequence, outputPayload, out consumedBytes, includeAuxiliary: true);
+
+            /// <summary>
+            /// Decodes only the variable-length Quaternion-4 Numerel rotation stream. Existing
+            /// auxiliary bytes in the decoder's displayed payload are held unchanged.
+            /// </summary>
+            public bool TryDecodeRotations(byte[] source, int sourceStart, int availableBytes, byte sequence, byte[] outputPayload, out int consumedBytes)
+                => TryDecodeCore(source, sourceStart, availableBytes, sequence, outputPayload, out consumedBytes, includeAuxiliary: false);
+
+            private bool TryDecodeCore(byte[] source, int sourceStart, int availableBytes, byte sequence, byte[] outputPayload, out int consumedBytes, bool includeAuxiliary)
             {
                 consumedBytes = 0;
                 if (source == null || outputPayload == null || outputPayload.Length < _payloadBytes) return false;
@@ -633,13 +819,16 @@ namespace Basis.Network.Core.Compression
 
                 int armatureBits = bitPosition - sourceStart * 8;
                 int bodyOffset = (bitPosition + 7) >> 3;
-                int bodyEnd = bodyOffset + _positionBytes + _tailBytes;
-                if (bodyEnd > sourceStart + availableBytes || bodyEnd > source.Length) return false;
+                if (includeAuxiliary)
+                {
+                    int bodyEnd = bodyOffset + _positionBytes + _tailBytes;
+                    if (bodyEnd > sourceStart + availableBytes || bodyEnd > source.Length) return false;
 
-                Buffer.BlockCopy(source, bodyOffset, _payloadScratch, 0, _positionBytes);
-                bodyOffset += _positionBytes;
-                Buffer.BlockCopy(source, bodyOffset, _payloadScratch, _tailOffset, _tailBytes);
-                bodyOffset += _tailBytes;
+                    Buffer.BlockCopy(source, bodyOffset, _payloadScratch, 0, _positionBytes);
+                    bodyOffset += _positionBytes;
+                    Buffer.BlockCopy(source, bodyOffset, _payloadScratch, _tailOffset, _tailBytes);
+                    bodyOffset += _tailBytes;
+                }
 
                 BasisNumerel.RxState[] oldStates = _states;
                 _states = _scratchStates;
@@ -654,6 +843,140 @@ namespace Basis.Network.Core.Compression
                 LastArmatureBits = armatureBits;
                 Buffer.BlockCopy(_payload, 0, outputPayload, 0, _payloadBytes);
                 consumedBytes = bodyOffset - sourceStart;
+                return true;
+            }
+
+            public int GetAbsoluteGroupRefreshSize(byte[] boneGroups, byte groupId, byte groupCount)
+            {
+                if (!ValidateBoneGroups(boneGroups, groupCount) || groupId >= groupCount) return -1;
+                int bits = 24;
+                bool hasBone = false;
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    if (boneGroups[bone] != groupId) continue;
+                    hasBone = true;
+                    bits += 1 + 2 + 3 * _bpc[bone];
+                }
+                return hasBone ? ((bits + 7) >> 3) : -1;
+            }
+
+            /// <summary>
+            /// Performs structural validation only. This lets the outer hybrid reject malformed
+            /// side data before committing the normal Numerel rotation decode.
+            /// </summary>
+            public bool TryValidateAbsoluteGroupRefresh(
+                byte[] source,
+                int sourceStart,
+                int availableBytes,
+                byte[] boneGroups,
+                byte expectedGroupId,
+                byte groupCount,
+                out int recordLength)
+            {
+                recordLength = 0;
+                if (source == null || sourceStart < 0 || availableBytes < 3 || sourceStart + availableBytes > source.Length)
+                    return false;
+                if (!ValidateBoneGroups(boneGroups, groupCount) || expectedGroupId >= groupCount) return false;
+                if (source[sourceStart] != AbsoluteGroupRefreshMagic
+                    || source[sourceStart + 1] != groupCount
+                    || source[sourceStart + 2] != expectedGroupId)
+                    return false;
+
+                int expected = GetAbsoluteGroupRefreshSize(boneGroups, expectedGroupId, groupCount);
+                if (expected <= 0 || expected > availableBytes) return false;
+
+                // Validate the entire bit shape, including canonical zero byte-padding, before the
+                // outer hybrid commits its normal Numerel decode. The sign bit is intrinsically
+                // one bit; the packed rotation values accept every bit pattern at this layer.
+                int bitPosition = (sourceStart + 3) * 8;
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    if (boneGroups[bone] != expectedGroupId) continue;
+                    int width = 1 + 2 + 3 * _bpc[bone];
+                    if (bitPosition + width > (sourceStart + expected) * 8) return false;
+                    bitPosition += width;
+                }
+                int paddingBits = ((sourceStart + expected) * 8) - bitPosition;
+                if (paddingBits < 0 || paddingBits > 7) return false;
+                if (paddingBits > 0
+                    && BasisBoneRotationCompression.ReadBits(source, ref bitPosition, paddingBits) != 0)
+                    return false;
+                if (bitPosition != (sourceStart + expected) * 8) return false;
+
+                recordLength = expected;
+                return true;
+            }
+
+            /// <summary>
+            /// Applies one already-validated absolute recovery group transactionally. The exact
+            /// packed Basis rotations are displayed, while the q/-q sign bits seed RawEstimate,
+            /// OutputValue, and LastDelta so the next shared Numerel packet uses the same state as
+            /// the sender after its matching passive rebase.
+            /// </summary>
+            public bool TryApplyAbsoluteGroupRefresh(
+                byte[] source,
+                int sourceStart,
+                int recordLength,
+                byte[] boneGroups,
+                byte expectedGroupId,
+                byte groupCount,
+                byte[] outputPayload)
+            {
+                if (outputPayload == null || outputPayload.Length < _payloadBytes) return false;
+                if (!TryValidateAbsoluteGroupRefresh(source, sourceStart, recordLength, boneGroups, expectedGroupId, groupCount, out int expected)
+                    || expected != recordLength)
+                    return false;
+
+                Array.Clear(_refreshNegate, 0, _refreshNegate.Length);
+                Array.Clear(_refreshPacked, 0, _refreshPacked.Length);
+                int bitPosition = (sourceStart + 3) * 8;
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    if (boneGroups[bone] != expectedGroupId) continue;
+                    int width = 2 + 3 * _bpc[bone];
+                    _refreshNegate[bone] = checked((byte)BasisBoneRotationCompression.ReadBits(source, ref bitPosition, 1));
+                    _refreshPacked[bone] = BasisBoneRotationCompression.ReadBits(source, ref bitPosition, width);
+                }
+
+                if (((bitPosition + 7) >> 3) != sourceStart + recordLength) return false;
+                int paddingBits = ((sourceStart + recordLength) * 8) - bitPosition;
+                if (paddingBits > 0 && BasisBoneRotationCompression.ReadBits(source, ref bitPosition, paddingBits) != 0)
+                    return false;
+
+                for (int bone = 0; bone < _bpc.Length; bone++)
+                {
+                    if (boneGroups[bone] != expectedGroupId) continue;
+                    ulong packed = _refreshPacked[bone];
+                    BasisBoneRotationCompression.DecodeSmallestThree(
+                        packed, _bpc[bone],
+                        out float qx, out float qy, out float qz, out float qw,
+                        BasisBoneRotationCompression.MAX_COMPONENT[bone]);
+                    if (_refreshNegate[bone] != 0)
+                    {
+                        qx = -qx; qy = -qy; qz = -qz; qw = -qw;
+                    }
+
+                    int componentBits = _componentBits[bone];
+                    int stateIndex = bone * ComponentsPerBone;
+                    uint x = QuantizeComponent(qx, componentBits);
+                    uint y = QuantizeComponent(qy, componentBits);
+                    uint z = QuantizeComponent(qz, componentBits);
+                    uint w = QuantizeComponent(qw, componentBits);
+                    _states[stateIndex].Reset(x);
+                    _states[stateIndex + 1].Reset(y);
+                    _states[stateIndex + 2].Reset(z);
+                    _states[stateIndex + 3].Reset(w);
+                    _scratchStates[stateIndex].Reset(x);
+                    _scratchStates[stateIndex + 1].Reset(y);
+                    _scratchStates[stateIndex + 2].Reset(z);
+                    _scratchStates[stateIndex + 3].Reset(w);
+
+                    int outputBit = _positionBytes * 8 + _boneBitOffsets[bone];
+                    int width = 2 + 3 * _bpc[bone];
+                    WriteBitsOverwrite(_payload, outputBit, packed, width);
+                    WriteBitsOverwrite(_payloadScratch, outputBit, packed, width);
+                    WriteBitsOverwrite(outputPayload, outputBit, packed, width);
+                }
                 return true;
             }
 
@@ -679,7 +1002,22 @@ namespace Basis.Network.Core.Compression
             }
         }
 
-        public static int GetMaxBodySize(BasisAvatarBitPacking.BitQuality quality, Options options)
+        private static bool ValidateBoneGroups(byte[] boneGroups, byte groupCount)
+        {
+            if (boneGroups == null || boneGroups.Length < BasisBoneRotationCompression.SyncBoneCount) return false;
+            if (groupCount == 0 || groupCount > BasisBoneRotationCompression.SyncBoneCount) return false;
+            ulong seen = 0;
+            for (int bone = 0; bone < BasisBoneRotationCompression.SyncBoneCount; bone++)
+            {
+                byte group = boneGroups[bone];
+                if (group >= groupCount) return false;
+                seen |= 1UL << group;
+            }
+            ulong expected = groupCount == 64 ? ulong.MaxValue : ((1UL << groupCount) - 1UL);
+            return seen == expected;
+        }
+
+        public static int GetMaxRotationBodySize(BasisAvatarBitPacking.BitQuality quality, Options options)
         {
             byte[] bpc = BasisBoneRotationCompression.GetBpcTable(quality);
             int armatureBits = 0;
@@ -692,10 +1030,15 @@ namespace Basis.Network.Core.Compression
                 armatureBits += ComponentsPerBone * Math.Max(32, BasisNumerel.MaxEncodedBits(componentBits, options.Numerel));
             }
             if (options.ZeroBoneRleRetainGray) armatureBits += 1; // raw/RLE mode bit
+            return (armatureBits + 7) >> 3;
+        }
+
+        public static int GetMaxBodySize(BasisAvatarBitPacking.BitQuality quality, Options options)
+        {
             int position = BasisAvatarBitPacking.PositionBytes(quality);
             int absoluteBytes = position + BasisBoneRotationCompression.ConvertToSize(quality)
                 - position - BasisBoneRotationCompression.RotationBytes(quality);
-            return ((armatureBits + 7) >> 3) + absoluteBytes;
+            return GetMaxRotationBodySize(quality, options) + absoluteBytes;
         }
 
         private static int[] BuildComponentBits(byte[] sourceBits, Options options)

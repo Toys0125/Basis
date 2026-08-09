@@ -132,17 +132,24 @@ A fixed-16-bit power-curve experiment now keeps the quaternion component domain 
 
 Deadline prediction is now part of the hybrid receiver path through `Decoder.TryAdvanceDeadline`. The playout scheduler calls it when the next expected armature sequence has reached its display deadline without being accepted. It immediately executes `BasisNumerel.ApplyLastDelta` once for every Quaternion-4 scalar, regenerates the 51 displayed rotations, and advances the decoder's logical sequence. Auxiliary Basis fields are held at their last received values. Advancing the sequence at the deadline is important: if the missing datagram arrives late, it is rejected as stale, and the following received sequence does not feed-forward that same missing frame a second time. At most 32 consecutive predicted frames are allowed between real decodes, using the same safety budget as deferred sequence-gap prediction.
 
-The hybrid layering is therefore:
+`BasisNumerelHybridArmatureCodec` now assembles the previously separate experiments into an actual benchmarkable passive hybrid:
 
 1. `Power2HybridRotation16Bit` normal rotations: Power-2 fixed16 Quaternion-4 + Gray-preserving zero-bone RLE;
-2. deadline-based immediate `ApplyLastDelta` when an expected normal rotation frame misses its playout deadline;
-3. separated exact Basis-delta auxiliary fields, held during a rotation-only deadline prediction;
-4. distributed absolute rotation-group refresh as background recovery; and
-5. receiver-requested absolute repair/bootstrap for bounded loss and late-join recovery.
+2. a two-byte rotation-stream length boundary, so the variable Numerel bitstream is independent of the auxiliary stream;
+3. `BasisAvatarAuxiliaryDeltaCodec`, an exact baseline-relative delta for position, scale, body rotation, hips delta/rotation, and the High end-effector block;
+4. deadline-based immediate `ApplyLastDelta` when an expected normal rotation frame misses its playout deadline, while the latest exact auxiliary state is held;
+5. eight balanced absolute rotation recovery groups with the V3.1 cycle-12 schedule (`g8/c12`) as background passive recovery; and
+6. an explicit all-group + auxiliary bootstrap transition for stream start and late join.
 
-Absolute refresh/repair side records must never be RLE-suppressed. Deadline prediction is only a short-term visual predictor; it does not replace the absolute recovery layer because repeated `LastDelta` can still diverge badly during abrupt or long-duration motion loss.
+The auxiliary delta is relative to its last bootstrap rather than the previous delta, so losing an ordinary auxiliary packet does not poison the next auxiliary packet. Passive rotation records carry each selected bone's exact Basis smallest-three value plus the q/-q sign needed to seed the same fixed16 Quaternion-4 Numerel state on both peers. They are appended independently of the normal rotation stream and therefore are never suppressed by zero-bone RLE.
 
-The synthetic benchmark now gives all Quaternion-4 variants an identical loss/reorder schedule and includes separate Power-2, Power-2+deadline, Power-2+RLE, and full Power-2+RLE+deadline rows. On High/Active at 20% loss plus 5% reorder, deadline prediction reduced mean error from about 6.04 to 5.47 degrees and p95 from about 19.78 to 19.25 degrees. On High/Burst at 10% loss plus 2% reorder, it reduced mean error from about 4.89 to 4.52 degrees and p95 from about 17.45 to 16.28 degrees. It does not remove the roughly 180-degree worst cases, confirming that passive/active absolute recovery is still required. Zero-bone RLE is orthogonal to the deadline behavior and produces identical angular results for the same delivery schedule.
+A lost normal Numerel frame is more severe than a lost V3 field-group delta: every shared Quaternion-4 predictor advanced on the sender. The hybrid decoder therefore marks **all** rotation recovery groups invalid after any detected/predicted missing normal frame. Each later absolute `g8/c12` record independently rebases one group and marks it valid again. `ValidGroupMask` is recovery-state instrumentation; it must not be interpreted as proof that the displayed pose is visually coherent until the loss corpus confirms that behavior.
+
+`Encoder.RequestBootstrap()` makes the next packet carry an auxiliary bootstrap plus all eight absolute rotation groups. This is suitable for a shared stream boundary or benchmark late join. A future receiver-specific repair response must snapshot/seed the requested receiver without mutating the shared sender predictor; that active per-receiver repair protocol is **not** implemented by this passive wrapper yet.
+
+Absolute refresh/bootstrap side records must never be RLE-suppressed. Deadline prediction is only a short-term visual predictor; it does not replace the absolute recovery layer because repeated `LastDelta` can still diverge badly during abrupt or long-duration motion loss.
+
+The pre-integration synthetic benchmark gave all Quaternion-4 variants an identical loss/reorder schedule and included separate Power-2, Power-2+deadline, Power-2+RLE, and scalar Power-2+RLE+deadline rows. On High/Active at 20% loss plus 5% reorder, deadline prediction reduced mean error from about 6.04 to 5.47 degrees and p95 from about 19.78 to 19.25 degrees. On High/Burst at 10% loss plus 2% reorder, it reduced mean error from about 4.89 to 4.52 degrees and p95 from about 17.45 to 16.28 degrees. Those rows did not include the separated auxiliary/passive-group wrapper. The integrated `BasisNumerelHybridArmatureCodec` must be rerun through the real humanoid corpus before making a protocol decision.
 
 Benchmark variants include the upstream-style same-BPC mapping, sign-continuous mapping, component precision offsets of -2, -1, +1, and +2 bits relative to each bone's existing Basis BPC, and an adaptive profile that uses +2 bits on coarse <=6-BPC bones and +1 bit on the rest. These are benchmark modes only and are not selected by the live armature protocol.
 
@@ -150,9 +157,9 @@ Initial ARM64 synthetic High-quality results show why precision must be benchmar
 
 ## Validation
 
-Completed validation:
+Completed validation on the integrated passive-hybrid branch:
 
-- 54 focused Numerel, square-root/power-curve, Quaternion-4, Hybrid V2, and V3/V3.1 tests passed;
+- 45 focused Numerel reference, Quaternion-4/RLE/deadline, separated-auxiliary, and passive-hybrid tests passed; the existing V3/V3.1 coverage remains part of the full suite;
 - native oracle checksum updated to `b0e90ea47c60370f` for revision `8676848`;
 - native non-looping bitstream vectors passed;
 - native looping bitstream vectors passed;
@@ -161,7 +168,9 @@ Completed validation:
 - reused nonzero destination-buffer test passed;
 - truncated scalar and armature packet rollback tests passed;
 - `BasisNetworkCore` built for `net10.0` and `netstandard2.1`;
-- full server suite: 1,300 passed / 3 pre-existing unrelated failures;
+- server and Unity package copies of the auxiliary, Quaternion-4, and hybrid codecs are byte-identical;
+- CodeRabbit review completed with zero remaining findings after adding defensive outer-transaction rollback and invalid-quality validation;
+- full server suite: 1,324 passed / 3 pre-existing unrelated failures (`CoreBudgetTests.GrantsNeverExceedTheMachine`, stale reconnect disconnect, and stale P2P disconnect);
 - benchmark encode and decode loops allocated zero bytes;
 - Numerel and Quaternion-4 loss metrics now score the held/displayed pose on every offered frame, matching V3 rather than omitting dropped or rejected frames.
 
