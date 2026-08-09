@@ -231,6 +231,158 @@ public class NumerelHybridArmatureCodecTests
         Assert.Equal(joinPose, output);
     }
 
+    [Fact]
+    public void SeparatedSuffix_RleRoundTripsLikePower2Control_WithExactAuxiliary()
+    {
+        const BitQuality quality = BitQuality.High;
+        var controlEncoder = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(
+            quality, BasisNumerelSeparatedSuffixArmatureCodec.Options.Power2);
+        var rleEncoder = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(
+            quality, BasisNumerelSeparatedSuffixArmatureCodec.Options.Power2RleGray);
+        var controlDecoder = new BasisNumerelSeparatedSuffixArmatureCodec.Decoder(
+            quality, BasisNumerelSeparatedSuffixArmatureCodec.Options.Power2);
+        var rleDecoder = new BasisNumerelSeparatedSuffixArmatureCodec.Decoder(
+            quality, BasisNumerelSeparatedSuffixArmatureCodec.Options.Power2RleGray);
+        byte[] controlPacket = new byte[controlEncoder.MaxBodySize];
+        byte[] rlePacket = new byte[rleEncoder.MaxBodySize];
+        byte[] controlOutput = new byte[controlEncoder.PayloadSize];
+        byte[] rleOutput = new byte[rleEncoder.PayloadSize];
+        bool sawRle = false;
+
+        for (int frame = 0; frame < 80; frame++)
+        {
+            byte[] pose = MakePose(quality, frame);
+            int controlLength = controlEncoder.Encode(pose, (byte)frame, controlPacket, 0);
+            int rleLength = rleEncoder.Encode(pose, (byte)frame, rlePacket, 0);
+            Assert.True(controlLength > 0);
+            Assert.True(rleLength > 0);
+
+            Assert.True(controlDecoder.TryDecode(
+                controlPacket, 0, controlLength, (byte)frame, controlOutput, out int controlConsumed));
+            Assert.True(rleDecoder.TryDecode(
+                rlePacket, 0, rleLength, (byte)frame, rleOutput, out int rleConsumed));
+            Assert.Equal(controlLength, controlConsumed);
+            Assert.Equal(rleLength, rleConsumed);
+            Assert.Equal(controlOutput, rleOutput);
+            AssertAuxiliaryEqual(pose, rleOutput, quality);
+            sawRle |= rleEncoder.LastUsedZeroBoneRle;
+        }
+
+        Assert.True(sawRle, "separated-suffix RLE was never selected on the deterministic pose sequence");
+    }
+
+    [Fact]
+    public void SeparatedSuffix_RleShrinksStationaryRotationStream()
+    {
+        const BitQuality quality = BitQuality.High;
+        var control = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(
+            quality, BasisNumerelSeparatedSuffixArmatureCodec.Options.Power2);
+        var rle = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(
+            quality, BasisNumerelSeparatedSuffixArmatureCodec.Options.Power2RleGray);
+        byte[] controlPacket = new byte[control.MaxBodySize];
+        byte[] rlePacket = new byte[rle.MaxBodySize];
+        byte[] pose = MakeIdentityPayload(quality);
+
+        // Seed both predictors and the exact auxiliary baseline.
+        Assert.True(control.Encode(pose, 0, controlPacket, 0) > 0);
+        Assert.True(rle.Encode(pose, 0, rlePacket, 0) > 0);
+
+        bool selected = false;
+        for (int frame = 1; frame < 32; frame++)
+        {
+            Assert.True(control.Encode(pose, (byte)frame, controlPacket, 0) > 0);
+            Assert.True(rle.Encode(pose, (byte)frame, rlePacket, 0) > 0);
+            if (!rle.LastUsedZeroBoneRle) continue;
+
+            selected = true;
+            Assert.True(rle.LastZeroBoneCount > 0);
+            Assert.True(rle.LastZeroBoneRleNetSavedBits > 0);
+            Assert.True(rle.LastRotationBytes < control.LastRotationBytes,
+                $"RLE rotation body {rle.LastRotationBytes} B was not smaller than control {control.LastRotationBytes} B");
+            Assert.Equal(control.LastAuxiliaryBytes, rle.LastAuxiliaryBytes);
+            break;
+        }
+        Assert.True(selected, "zero-bone RLE was never selected for a stationary separated-suffix stream");
+    }
+
+    [Fact]
+    public void SeparatedSuffix_LostUpdateDoesNotPoisonExactAuxiliarySuffix()
+    {
+        const BitQuality quality = BitQuality.High;
+        var encoder = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(quality);
+        var decoder = new BasisNumerelSeparatedSuffixArmatureCodec.Decoder(quality);
+        byte[] packet = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[encoder.PayloadSize];
+
+        byte[] pose0 = MakePose(quality, 0);
+        int length = encoder.Encode(pose0, 0, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, length, 0, output, out _));
+        AssertAuxiliaryEqual(pose0, output, quality);
+
+        // Sequence 1 is encoded but physically lost. Sequence 2 auxiliary fields are still
+        // baseline-relative and therefore decode exactly without receiving sequence 1.
+        Assert.True(encoder.Encode(MakePose(quality, 1), 1, packet, 0) > 0);
+        byte[] pose2 = MakePose(quality, 2);
+        length = encoder.Encode(pose2, 2, packet, 0);
+        Assert.True(decoder.TryDecode(packet, 0, length, 2, output, out int consumed));
+        Assert.Equal(length, consumed);
+        AssertAuxiliaryEqual(pose2, output, quality);
+    }
+
+    [Fact]
+    public void SeparatedSuffix_TruncatedAuxiliaryIsRejectedBeforeNumerelSequenceCommit()
+    {
+        const BitQuality quality = BitQuality.High;
+        var encoder = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(quality);
+        var decoder = new BasisNumerelSeparatedSuffixArmatureCodec.Decoder(quality);
+        byte[] packet0 = new byte[encoder.MaxBodySize];
+        byte[] packet1 = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[encoder.PayloadSize];
+
+        int len0 = encoder.Encode(MakePose(quality, 0), 0, packet0, 0);
+        int len1 = encoder.Encode(MakePose(quality, 1), 1, packet1, 0);
+        Assert.True(decoder.TryDecode(packet0, 0, len0, 0, output, out _));
+        Assert.Equal((byte)0, decoder.LastSequence);
+
+        Assert.False(decoder.TryDecode(packet1, 0, len1 - 1, 1, output, out _));
+        Assert.Equal((byte)0, decoder.LastSequence);
+
+        Assert.True(decoder.TryDecode(packet1, 0, len1, 1, output, out int consumed));
+        Assert.Equal(len1, consumed);
+        Assert.Equal((byte)1, decoder.LastSequence);
+    }
+
+    [Fact]
+    public void SeparatedSuffix_DeadlinePredictionHoldsAuxiliaryAndRejectsLatePacket()
+    {
+        const BitQuality quality = BitQuality.High;
+        var encoder = new BasisNumerelSeparatedSuffixArmatureCodec.Encoder(quality);
+        var decoder = new BasisNumerelSeparatedSuffixArmatureCodec.Decoder(quality);
+        byte[] packet0 = new byte[encoder.MaxBodySize];
+        byte[] packet1 = new byte[encoder.MaxBodySize];
+        byte[] packet2 = new byte[encoder.MaxBodySize];
+        byte[] output = new byte[encoder.PayloadSize];
+        byte[] pose0 = MakePose(quality, 0);
+        byte[] pose1 = MakePose(quality, 1);
+        byte[] pose2 = MakePose(quality, 2);
+
+        int len0 = encoder.Encode(pose0, 0, packet0, 0);
+        int len1 = encoder.Encode(pose1, 1, packet1, 0);
+        int len2 = encoder.Encode(pose2, 2, packet2, 0);
+        Assert.True(decoder.TryDecode(packet0, 0, len0, 0, output, out _));
+
+        Assert.True(decoder.TryAdvanceDeadline(1, output));
+        Assert.Equal((byte)1, decoder.LastSequence);
+        AssertAuxiliaryEqual(pose0, output, quality);
+
+        Assert.False(decoder.TryDecode(packet1, 0, len1, 1, output, out _));
+        Assert.Equal((byte)1, decoder.LastSequence);
+
+        Assert.True(decoder.TryDecode(packet2, 0, len2, 2, output, out _));
+        Assert.Equal((byte)2, decoder.LastSequence);
+        AssertAuxiliaryEqual(pose2, output, quality);
+    }
+
     private static byte[] MakePose(BitQuality quality, int frame)
     {
         byte[] payload = MakeIdentityPayload(quality);

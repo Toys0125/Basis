@@ -132,6 +132,8 @@ A fixed-16-bit power-curve experiment now keeps the quaternion component domain 
 
 Deadline prediction is now part of the hybrid receiver path through `Decoder.TryAdvanceDeadline`. The playout scheduler calls it when the next expected armature sequence has reached its display deadline without being accepted. It immediately executes `BasisNumerel.ApplyLastDelta` once for every Quaternion-4 scalar, regenerates the 51 displayed rotations, and advances the decoder's logical sequence. Auxiliary Basis fields are held at their last received values. Advancing the sequence at the deadline is important: if the missing datagram arrives late, it is rejected as stale, and the following received sequence does not feed-forward that same missing frame a second time. At most 32 consecutive predicted frames are allowed between real decodes, using the same safety budget as deferred sequence-gap prediction.
 
+`BasisNumerelSeparatedSuffixArmatureCodec` now represents the historical "Power 2 + separated suffix" candidate directly. Its wire body is a two-byte rotation-stream length, a Power-2 fixed16 Quaternion-4 Numerel rotation stream, and an independent exact `BasisAvatarAuxiliaryDeltaCodec` body. `Options.Power2` preserves the non-RLE control, while `Options.Power2RleGray` applies the same Gray-preserving zero-bone RLE used by the full hybrid without adding passive absolute-refresh traffic. The default separated-suffix constructor selects the RLE variant. Auxiliary bootstrap is independent of the stateful rotation predictor and can be explicitly reissued through `RequestAuxiliaryBootstrap()` without rebasing rotations.
+
 `BasisNumerelHybridArmatureCodec` now assembles the previously separate experiments into an actual benchmarkable passive hybrid:
 
 1. `Power2HybridRotation16Bit` normal rotations: Power-2 fixed16 Quaternion-4 + Gray-preserving zero-bone RLE;
@@ -159,7 +161,7 @@ Initial ARM64 synthetic High-quality results show why precision must be benchmar
 
 Completed validation on the integrated passive-hybrid branch:
 
-- 45 focused Numerel reference, Quaternion-4/RLE/deadline, separated-auxiliary, and passive-hybrid tests passed; the existing V3/V3.1 coverage remains part of the full suite;
+- 50 focused Numerel reference, Quaternion-4/RLE/deadline, separated-suffix, separated-auxiliary, and passive-hybrid tests passed; the existing V3/V3.1 coverage remains part of the full suite;
 - native oracle checksum updated to `b0e90ea47c60370f` for revision `8676848`;
 - native non-looping bitstream vectors passed;
 - native looping bitstream vectors passed;
@@ -170,7 +172,7 @@ Completed validation on the integrated passive-hybrid branch:
 - `BasisNetworkCore` built for `net10.0` and `netstandard2.1`;
 - server and Unity package copies of the auxiliary, Quaternion-4, and hybrid codecs are byte-identical;
 - CodeRabbit review completed with zero remaining findings after adding defensive outer-transaction rollback and invalid-quality validation;
-- full server suite: 1,324 passed / 3 pre-existing unrelated failures (`CoreBudgetTests.GrantsNeverExceedTheMachine`, stale reconnect disconnect, and stale P2P disconnect);
+- full server suite: 1,329 passed / 3 pre-existing unrelated failures (`CoreBudgetTests.GrantsNeverExceedTheMachine`, stale reconnect disconnect, and stale P2P disconnect);
 - benchmark encode and decode loops allocated zero bytes;
 - Numerel and Quaternion-4 loss metrics now score the held/displayed pose on every offered frame, matching V3 rather than omitting dropped or rejected frames.
 

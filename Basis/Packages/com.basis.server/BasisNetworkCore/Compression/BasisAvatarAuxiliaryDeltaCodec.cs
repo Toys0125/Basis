@@ -224,32 +224,37 @@ namespace Basis.Network.Core.Compression
             {
                 consumedBytes = 0;
                 if (outputPayload == null || outputPayload.Length < _geometry.PayloadSize) return false;
-                if (!TryGetBodyLength(source, sourceStart, availableBytes, _quality, out int bodyLength, out bool bootstrap))
+                if (!CanDecode(source, sourceStart, availableBytes, out int bodyLength, out bool bootstrap))
                     return false;
-                if (bodyLength != availableBytes) return false;
-                if (!bootstrap && !_hasBaseline) return false;
 
+                DecodeValidated(source, sourceStart, outputPayload, bootstrap);
+                consumedBytes = bodyLength;
+                return true;
+            }
+
+            /// <summary>
+            /// Applies a body that has already passed <see cref="CanDecode"/>. This internal path
+            /// has no parse-time failure after a stateful outer codec has committed another stream.
+            /// </summary>
+            internal void DecodeValidated(byte[] source, int sourceStart, byte[] outputPayload, bool bootstrap)
+            {
                 int o = sourceStart + 1;
                 if (bootstrap)
                 {
                     ReadAllAuxiliary(source, ref o, outputPayload, _geometry);
                     CopyAuxiliary(outputPayload, _baseline, _geometry);
                     _hasBaseline = true;
-                }
-                else
-                {
-                    CopyAuxiliary(_baseline, outputPayload, _geometry);
-                    byte mask = source[sourceStart];
-                    if ((mask & PositionBit) != 0) Read(source, ref o, outputPayload, 0, _geometry.PositionBytes);
-                    if ((mask & ScaleBit) != 0) Read(source, ref o, outputPayload, _geometry.ScaleOffset, BasisBoneRotationCompression.WriteScale);
-                    if ((mask & BodyRotationBit) != 0) Read(source, ref o, outputPayload, _geometry.BodyRotationOffset, BasisBoneRotationCompression.WriteRotation);
-                    if ((mask & HipsDeltaBit) != 0) Read(source, ref o, outputPayload, _geometry.HipsDeltaOffset, BasisBoneRotationCompression.WriteHipsDelta);
-                    if ((mask & HipsRotationBit) != 0) Read(source, ref o, outputPayload, _geometry.HipsRotationOffset, BasisBoneRotationCompression.WriteHipsRotation);
-                    if ((mask & EndEffectorBit) != 0) Read(source, ref o, outputPayload, _geometry.EndEffectorOffset, _geometry.EndEffectorBytes);
+                    return;
                 }
 
-                consumedBytes = bodyLength;
-                return true;
+                CopyAuxiliary(_baseline, outputPayload, _geometry);
+                byte mask = source[sourceStart];
+                if ((mask & PositionBit) != 0) Read(source, ref o, outputPayload, 0, _geometry.PositionBytes);
+                if ((mask & ScaleBit) != 0) Read(source, ref o, outputPayload, _geometry.ScaleOffset, BasisBoneRotationCompression.WriteScale);
+                if ((mask & BodyRotationBit) != 0) Read(source, ref o, outputPayload, _geometry.BodyRotationOffset, BasisBoneRotationCompression.WriteRotation);
+                if ((mask & HipsDeltaBit) != 0) Read(source, ref o, outputPayload, _geometry.HipsDeltaOffset, BasisBoneRotationCompression.WriteHipsDelta);
+                if ((mask & HipsRotationBit) != 0) Read(source, ref o, outputPayload, _geometry.HipsRotationOffset, BasisBoneRotationCompression.WriteHipsRotation);
+                if ((mask & EndEffectorBit) != 0) Read(source, ref o, outputPayload, _geometry.EndEffectorOffset, _geometry.EndEffectorBytes);
             }
         }
 
