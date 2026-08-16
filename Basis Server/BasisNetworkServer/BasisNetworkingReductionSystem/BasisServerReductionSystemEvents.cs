@@ -8,10 +8,12 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using ZstdSharp;
 using static SerializableBasis;
 using static Basis.Network.Core.Compression.BasisAvatarBitPacking;
 
@@ -2230,7 +2232,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 int rawLen = BuildRawForRange(stateI, pending, cursor, chunkEnd);
                 if (rawLen < AvatarBundleMinBytes) break;
 
-                if (TryDeflateAndEmit(stateI, peer, cursor, chunkEnd, rawLen, budget, ref bundleCount, ref bundleBytes, out int compressedLen))
+                if (TryDeflateAndEmit(stateI, peer, pending, cursor, chunkEnd, rawLen, budget, ref bundleCount, ref bundleBytes, out int compressedLen))
                 {
                     UpdateRatioEMA(ref stateI.LastBundleRatio, compressedLen, rawLen, weightOnObserved: 0.3f);
                     cursor = chunkEnd;
@@ -2255,7 +2257,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 if (retryRawLen < AvatarBundleMinBytes) break;
 
                 if (BSRProfiler.Enabled) BSRProfiler.Local.BundleRetries++;
-                if (!TryDeflateAndEmit(stateI, peer, cursor, retryEnd, retryRawLen, budget, ref bundleCount, ref bundleBytes, out int retryCompressed))
+                if (!TryDeflateAndEmit(stateI, peer, pending, cursor, retryEnd, retryRawLen, budget, ref bundleCount, ref bundleBytes, out int retryCompressed))
                 {
                     // Two failures in a row — give up on bundling for this receiver this tick;
                     // caller replays cursor..count uncompressed.
@@ -2451,13 +2453,28 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         /// with no allocations and no per-call setup — at high call rates this is ~10× cheaper
         /// than DeflateStream, which allocates an internal window + hashtable on every Write.
         /// </summary>
-        private static bool TryDeflateAndEmit(PlayerState stateI, NetPeer peer, int chunkStart, int chunkEnd, int rawLen, int budget, ref long bundleCount, ref long bundleBytes, out int compressedLen)
+        private static bool TryDeflateAndEmit(PlayerState stateI, NetPeer peer, PendingAvatarSend[] pending, int chunkStart, int chunkEnd, int rawLen, int budget, ref long bundleCount, ref long bundleBytes, out int compressedLen)
         {
             compressedLen = 0;
             byte[] raw = stateI.BundleRawScratch;
+            bool deltaOnly = true;
+            for (int i = chunkStart; i < chunkEnd; i++)
+            {
+                if (pending[i].Channel != BasisNetworkCommons.DeltaAvatarChannel)
+                {
+                    deltaOnly = false;
+                    break;
+                }
+            }
+            if (rawLen <= 0 || rawLen > 0x7fff) return false;
+
+            if (!deltaOnly) HybridZstdWire.ObserveTrainingSample(raw.AsSpan(0, rawLen));
+            bool tryZstd = !deltaOnly && HybridZstdWire.Ready;
+
             byte[] compressed = stateI.BundleCompressedScratch;
-            // LZ4 worst case is rawLen + (rawLen / 255) + 16 (returned by MaximumOutputSize).
-            int compCapacityNeeded = BundleHeaderSize + LZ4Codec.MaximumOutputSize(rawLen);
+            int compCapacityNeeded = BundleHeaderSize + (tryZstd
+                ? Math.Max(LZ4Codec.MaximumOutputSize(rawLen), Compressor.GetCompressBound(rawLen))
+                : LZ4Codec.MaximumOutputSize(rawLen));
             if (compressed == null || compressed.Length < compCapacityNeeded)
             {
                 if (compressed != null) ArrayPool<byte>.Shared.Return(compressed);
@@ -2467,26 +2484,28 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 
             bool profiling = BSRProfiler.Enabled;
             long deflateStart = profiling ? Stopwatch.GetTimestamp() : 0;
-
-            // Encode directly into the wire packet's payload region. Returns -1 if the
-            // destination span isn't large enough — shouldn't happen given the sizing above,
-            // but if it does we treat it as an overshoot and let the caller retry smaller.
-            compressedLen = LZ4Codec.Encode(
+            bool usedZstd = tryZstd && HybridZstdWire.TryCompress(
                 raw.AsSpan(0, rawLen),
                 compressed.AsSpan(BundleHeaderSize, compressed.Length - BundleHeaderSize),
-                LZ4Level.L00_FAST);
+                out compressedLen);
+
+            if (!usedZstd)
+            {
+                compressedLen = LZ4Codec.Encode(
+                    raw.AsSpan(0, rawLen),
+                    compressed.AsSpan(BundleHeaderSize, compressed.Length - BundleHeaderSize),
+                    LZ4Level.L00_FAST);
+            }
 
             if (profiling) BSRProfiler.Local.BundleDeflateTicks += Stopwatch.GetTimestamp() - deflateStart;
-
-            if (compressedLen <= 0 || compressedLen > budget)
-            {
-                return false;
-            }
+            if (compressedLen <= 0 || compressedLen > budget) return false;
 
             int wireLen = BundleHeaderSize + compressedLen;
             int chunkCount = chunkEnd - chunkStart;
             compressed[0] = (byte)Math.Min(chunkCount, 255);
-            BinaryPrimitives.WriteUInt16LittleEndian(compressed.AsSpan(1, 2), (ushort)Math.Min(rawLen, ushort.MaxValue));
+            ushort encodedRawLen = (ushort)rawLen;
+            if (usedZstd) encodedRawLen |= 0x8000;
+            BinaryPrimitives.WriteUInt16LittleEndian(compressed.AsSpan(1, 2), encodedRawLen);
 
             peer.SendUnreliableRawMerge(compressed, 0, wireLen, BasisNetworkCommons.CompressedAvatarBundleChannel);
             bundleCount++;
@@ -3405,6 +3424,105 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         }
 
         #endregion
+    }
+
+    internal static class HybridZstdWire
+    {
+        private const int TrainingSamples = 256;
+        private const int MaxTrainingBytes = 2 * 1024 * 1024;
+        private const int DictionaryCapacity = 16 * 1024;
+        private static readonly object Sync = new();
+        private static readonly List<byte[]> Samples = new(TrainingSamples);
+        private static int _trainingBytes;
+        private static int _trainingStarted;
+        private static int _disabled;
+        private static byte[] _dictionary;
+        private static int _generation;
+        [ThreadStatic] private static Compressor _compressor;
+        [ThreadStatic] private static int _compressorGeneration;
+
+        public static bool Ready => Volatile.Read(ref _dictionary) != null && Volatile.Read(ref _disabled) == 0;
+
+        public static void ObserveTrainingSample(ReadOnlySpan<byte> raw)
+        {
+            if (raw.IsEmpty || Ready || Volatile.Read(ref _disabled) != 0 || Volatile.Read(ref _trainingStarted) != 0) return;
+            lock (Sync)
+            {
+                if (Ready || _trainingStarted != 0 || Samples.Count >= TrainingSamples) return;
+                if (_trainingBytes + raw.Length > MaxTrainingBytes)
+                {
+                    Volatile.Write(ref _disabled, 1);
+                    BNL.LogWarning("[HybridZstd] dictionary training disabled: sample corpus exceeded 2 MiB before reaching target count.");
+                    return;
+                }
+                byte[] copy = raw.ToArray();
+                Samples.Add(copy);
+                _trainingBytes += copy.Length;
+                if (Samples.Count < TrainingSamples) return;
+                _trainingStarted = 1;
+                _ = Task.Run(TrainDictionary);
+            }
+        }
+
+        private static void TrainDictionary()
+        {
+            try
+            {
+                byte[][] corpus;
+                lock (Sync) corpus = Samples.ToArray();
+                byte[] dictionary = DictBuilder.TrainFromBufferFastCover(corpus, -2, DictionaryCapacity).ToArray();
+                string path = Environment.GetEnvironmentVariable("BASIS_ZSTD_TEST_DICT_PATH");
+                if (string.IsNullOrWhiteSpace(path)) throw new InvalidOperationException("BASIS_ZSTD_TEST_DICT_PATH is not set.");
+                path = Path.GetFullPath(path);
+                File.WriteAllBytes(path, dictionary);
+                Volatile.Write(ref _dictionary, dictionary);
+                Interlocked.Increment(ref _generation);
+                BNL.Log($"[HybridZstd] dictionary ready: {dictionary.Length} bytes from {corpus.Length} key/full bundle samples; wire Zstd level -2 enabled.");
+            }
+            catch (Exception ex)
+            {
+                Volatile.Write(ref _disabled, 1);
+                BNL.LogWarning($"[HybridZstd] dictionary training failed; continuing LZ4 only: {ex.Message}");
+            }
+            finally
+            {
+                lock (Sync)
+                {
+                    Samples.Clear();
+                    _trainingBytes = 0;
+                }
+            }
+        }
+
+        public static bool TryCompress(ReadOnlySpan<byte> raw, Span<byte> output, out int bytes)
+        {
+            bytes = 0;
+            byte[] dictionary = Volatile.Read(ref _dictionary);
+            if (dictionary == null || Volatile.Read(ref _disabled) != 0) return false;
+            try
+            {
+                int generation = Volatile.Read(ref _generation);
+                if (_compressor == null || _compressorGeneration != generation)
+                {
+                    _compressor?.Dispose();
+                    _compressor = new Compressor(-2);
+                    _compressor.LoadDictionary(dictionary);
+                    _compressorGeneration = generation;
+                }
+                bytes = _compressor.Wrap(raw, output);
+                return bytes > 0;
+            }
+            catch (Exception ex)
+            {
+                if (Interlocked.Exchange(ref _disabled, 1) == 0)
+                    BNL.LogWarning($"[HybridZstd] compression failed; continuing LZ4 only: {ex.Message}");
+                _compressor?.Dispose();
+                _compressor = null;
+                _compressorGeneration = 0;
+                bytes = 0;
+                return false;
+            }
+        }
     }
 
     /// <summary>
