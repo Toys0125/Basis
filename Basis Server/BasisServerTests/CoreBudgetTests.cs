@@ -2,6 +2,7 @@ using System;
 using System.Reflection;
 using System.Threading;
 using Basis.Network.Core;
+using BasisNetworkServer.BasisNetworkingReductionSystem;
 using Xunit;
 
 namespace BasisServerTests;
@@ -279,6 +280,46 @@ public class CoreBudgetTests
     /// where reliable delivery, peer timeouts and NTP live, and the throw lands before the loop's
     /// sleep — so the failure was not one dropped pass but a spin producing nothing but errors.
     /// </summary>
+    [Fact]
+    public void AutoTuneCounterWorksWithoutDiagnosticProfiling()
+    {
+        BSRProfiler.ResetForTests();
+        try
+        {
+            BSRProfiler.AutoTuneTrackingEnabled = true;
+            Assert.False(BSRProfiler.Enabled);
+
+            BSRProfiler.Local.AutoTuneSends += 12345;
+            Assert.Equal(12345, BSRProfiler.DrainAutoTuneSends());
+            Assert.Equal(0, BSRProfiler.DrainAutoTuneSends());
+        }
+        finally
+        {
+            BSRProfiler.ResetForTests();
+        }
+    }
+
+    [Fact]
+    public void ManualBsrWorkersDisableAutoTuneAndClampToMachine()
+    {
+        try
+        {
+            BasisServerReductionSystemEvents.SetMaxDegreeOfParallelism(int.MaxValue);
+            Assert.False(BasisServerReductionSystemEvents.WorkerAutoTuneEnabled);
+            Assert.False(BSRProfiler.AutoTuneTrackingEnabled);
+            Assert.Equal(Environment.ProcessorCount, BasisServerReductionSystemEvents.CurrentWorkers);
+
+            BasisServerReductionSystemEvents.SetMaxDegreeOfParallelism(0);
+            Assert.True(BasisServerReductionSystemEvents.WorkerAutoTuneEnabled);
+            Assert.True(BSRProfiler.AutoTuneTrackingEnabled);
+        }
+        finally
+        {
+            // Leave the process in the normal production default for any later tests.
+            BasisServerReductionSystemEvents.SetMaxDegreeOfParallelism(0);
+        }
+    }
+
     [Fact]
     public void PeerUpdateSizingSurvivesAGrantBelowItsFloor()
     {

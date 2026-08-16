@@ -219,6 +219,12 @@ namespace Basis.Network.Server
               .Append(",\"shedTier\":").Append(Int(BasisServerReductionSystemEvents.LoadShedTier))
               .Append(",\"shedTierName\":\"").Append(BasisServerReductionSystemEvents.LoadShedTierLabel).Append('"')
               .Append(",\"sliceCount\":").Append(Int(BasisServerReductionSystemEvents.SliceCount))
+              .Append(",\"workerMode\":\"").Append(BasisServerReductionSystemEvents.WorkerAutoTuneEnabled ? "auto" : "manual").Append('"')
+              .Append(",\"workers\":").Append(Int(BasisServerReductionSystemEvents.CurrentWorkers))
+              .Append(",\"bestWorkers\":").Append(Int(BasisServerReductionSystemEvents.AutoTuneBestWorkers))
+              .Append(",\"bestSendsPerSecond\":").Append(Num(BasisServerReductionSystemEvents.AutoTuneBestSendsPerSecond, "F1"))
+              .Append(",\"bestBytesPerSend\":").Append(Num(BasisServerReductionSystemEvents.AutoTuneBestBytesPerSend, "F2"))
+              .Append(",\"tuneState\":\"").Append(BasisServerReductionSystemEvents.AutoTuneState).Append('"')
               .Append('}');
 
             BSRProfilerSnapshot s = BSRProfiler.Latest;

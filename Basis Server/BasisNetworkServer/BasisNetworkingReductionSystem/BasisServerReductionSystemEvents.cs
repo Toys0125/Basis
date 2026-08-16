@@ -201,60 +201,94 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         private const int InitialPlayerArrayCapacity = 256;
 
         /// <summary>
-        /// Default worker cap for the tick's parallel phases.
-        ///
-        /// This used to be <see cref="Environment.ProcessorCount"/>, which measured badly: the tick
-        /// runs ~275x/s, so each phase pays dispatch and wake cost per worker per tick, and each
-        /// extra thread adds GC poll-point traffic. Measured at 500 players on a 32-thread box,
-        /// same offered load throughout: 32 workers = 11.0 cores, 16 = 8.6, 8 = 6.6, 4 = 6.4 —
-        /// two thirds of the CPU at 32 workers was spent getting threads to the work rather than
-        /// doing it, and throughput was equal or better at the low end.
-        ///
-        /// Scales with the population — one worker per <see cref="PlayersPerWorker"/> players — but
-        /// capped hard at <see cref="MaxAutoWorkers"/>, which matters more than the scaling does.
-        ///
-        /// This phase is throughput-bound, not latency-bound: it is already rate-limited by the
-        /// tick budget via slicing, so extra workers do not let it deliver sooner, they just cost
-        /// more to schedule. The transport's per-peer pass is the opposite — it sets reliable
-        /// latency and genuinely needs workers as the population grows. Scaling both by the same
-        /// rule let the two pools oversubscribe the box, and measured worse on every axis:
-        /// at 4000 players, both scaled = 23.6 cores / 634 MB/s / 153 ms peak pass, this phase
-        /// pinned to 8 = 18.0 cores / 644 MB/s / 108 ms. At 2000, 11.0 cores against 7.8.
-        ///
-        /// So: let the latency-bound pool grow, keep this one small.
+        /// Population-based starting point for the worker auto-tuner. It is deliberately only a
+        /// starting point: measurements on different machines found very different optima, and the
+        /// optimum moves again when bundle compression is enabled. A fixed players/worker rule can
+        /// therefore leave most of a large host idle or oversubscribe a smaller one.
         /// </summary>
         private const int PlayersPerWorker = 128;
 
-        /// <summary>
-        /// Ceiling for the auto-sized worker count, from the machine-wide split in
-        /// <see cref="BasisCpuBudget"/>. This pool and the transport's per-peer pool overlap, so
-        /// the shares are decided in one place rather than each sizing itself against the whole box.
-        /// </summary>
-        private static int MaxAutoWorkers => BasisCpuBudget.ReductionSendCap;
+        // BSRMaxDegreeOfParallelism == 0 uses a measured global search. The worker-throughput curve
+        // is not reliably unimodal: on the 24-core validation host 14 workers could benchmark worse
+        // than both 8 and 20, so a hill-climber can stop at a false local maximum. Auto mode therefore
+        // sweeps coarse candidates across the whole usable core range, then measures every untested
+        // worker count around the best coarse point. Each candidate waits for the BSR load controller
+        // (period/tier/slice) to stop moving before the measurement window starts, otherwise a good
+        // candidate inherits degradation caused by the previous bad one and is scored unfairly.
+        private const int AutoTuneSettleMinMs = 2000;
+        private const int AutoTuneSettleStableMs = 1500;
+        private const int AutoTuneSettleMaxMs = 12000;
+        private const int AutoTuneMeasureMs = 5000;
+        private const int AutoTuneHoldMs = 60000;
+        private const int AutoTuneFullRescanHoldCycles = 5;
+        private const int AutoTunePopulationResetPercent = 10;
+        private const int AutoTunePopulationResetAbsolute = 64;
+        private const double AutoTuneTieFraction = 0.015; // <=1.5% is measurement noise: use cadence tie-breakers
+        private static readonly long AutoTuneSettleMinTicks = Stopwatch.Frequency * AutoTuneSettleMinMs / 1000;
+        private static readonly long AutoTuneSettleStableTicks = Stopwatch.Frequency * AutoTuneSettleStableMs / 1000;
+        private static readonly long AutoTuneSettleMaxTicks = Stopwatch.Frequency * AutoTuneSettleMaxMs / 1000;
+        private static readonly long AutoTuneMeasureTicks = Stopwatch.Frequency * AutoTuneMeasureMs / 1000;
+        private static readonly long AutoTuneHoldTicks = Stopwatch.Frequency * AutoTuneHoldMs / 1000;
 
         private static int _configuredDegree;
+        private static int _autoTuneWorkers;
+        private static int _autoTuneBestWorkers;
+        private static double _autoTuneBestSendsPerSecond;
+        private static double _autoTuneBestAverageSlice = double.MaxValue;
+        private static double _autoTuneBestAverageShed = double.MaxValue;
+        private static double _autoTuneBestBytesPerSend = double.MaxValue;
+        private static int _autoTunePopulationAnchor;
+        private static int _autoTuneCoarseStep;
+        private static int[] _autoTuneCandidates = Array.Empty<int>();
+        private static int _autoTuneCandidateIndex;
+        private static bool[] _autoTuneMeasuredWorkers = Array.Empty<bool>();
+        private static bool _autoTuneRefining;
+        private static int _autoTuneHoldCycles;
+        private static long _autoTuneSettleUntilTick;
+        private static long _autoTuneSettleStableSinceTick;
+        private static long _autoTuneSettleHardDeadlineTick;
+        private static int _autoTuneLastSettleSlice;
+        private static int _autoTuneLastSettleShed;
+        private static long _autoTuneLastSettleInterval;
+        private static long _autoTuneMeasureStartTick;
+        private static long _autoTuneHoldUntilTick;
+        private static long _autoTuneDroppedStart;
+        private static long _autoTuneBytesSentStart;
+        private static long _autoTuneSampleTicks;
+        private static long _autoTuneSliceSum;
+        private static long _autoTuneShedSum;
+        private static int _autoTuneMaxSlice;
+        private static int _autoTuneMaxShed;
+        private static bool _autoTuneMeasuring;
+        private static bool _autoTuneHolding;
+
+        public static bool WorkerAutoTuneEnabled => Volatile.Read(ref _configuredDegree) <= 0;
+        public static int CurrentWorkers => parallelOptions.MaxDegreeOfParallelism;
+        public static int AutoTuneWorkers => Volatile.Read(ref _autoTuneWorkers);
+        public static int AutoTuneBestWorkers => Volatile.Read(ref _autoTuneBestWorkers);
+        public static double AutoTuneBestSendsPerSecond => Volatile.Read(ref _autoTuneBestSendsPerSecond);
+        public static double AutoTuneBestBytesPerSend => Volatile.Read(ref _autoTuneBestBytesPerSend);
+        public static string AutoTuneState => !WorkerAutoTuneEnabled ? "manual" : _autoTuneHolding ? "holding" : _autoTuneMeasuring ? "measuring" : "settling";
+
+        private static int InitialAutoDegree(int playerCount)
+        {
+            int cores = Math.Max(1, Environment.ProcessorCount);
+            int floor = Math.Clamp(BasisCpuBudget.MinWorkersPerPool, 1, cores);
+            int populationDegree = Math.Max(1, playerCount / PlayersPerWorker);
+            return Math.Clamp(populationDegree, floor, cores);
+        }
 
         private static int DegreeFor(int playerCount)
         {
-            int cores = Environment.ProcessorCount;
-            if (_configuredDegree > 0)
+            int cores = Math.Max(1, Environment.ProcessorCount);
+            int configured = Volatile.Read(ref _configuredDegree);
+            if (configured > 0)
             {
-                return Math.Max(1, Math.Min(_configuredDegree, cores));
+                return Math.Clamp(configured, 1, cores);
             }
 
-            int ceiling = Math.Min(MaxAutoWorkers, cores);
-            if (ceiling < 1)
-            {
-                ceiling = 1;
-            }
-
-            int floor = Math.Min(BasisCpuBudget.MinWorkersPerPool, ceiling);
-            if (floor < 1)
-            {
-                floor = 1;
-            }
-
-            return Math.Clamp(playerCount / PlayersPerWorker, floor, ceiling);
+            int tuned = Volatile.Read(ref _autoTuneWorkers);
+            return tuned > 0 ? Math.Clamp(tuned, 1, cores) : InitialAutoDegree(playerCount);
         }
 
         private static readonly ParallelOptions parallelOptions = new()
@@ -263,8 +297,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         };
 
         /// <summary>
-        /// Retunes the worker cap for the current population. Called once per tick from the send
-        /// phase; assigning only on change keeps it free when the count is stable.
+        /// Applies the current manual/automatic worker target. The auto target changes only at
+        /// probe boundaries, so this assignment is normally a no-op for thousands of ticks.
         /// </summary>
         private static void TuneParallelism(int playerCount)
         {
@@ -275,29 +309,302 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             }
         }
 
-        // A dedicated worker pool was tried here in place of Parallel.For and did not pay for
-        // itself: with the worker cap above already removing the oversubscription, what remained
-        // of Parallel's overhead was smaller than the cost of waking a fixed set of threads on
-        // every tick. Capping the degree is the win; replacing the scheduler is not.
+        private static bool AutoTunePopulationChangedMaterially(int playerCount)
+        {
+            int anchor = Volatile.Read(ref _autoTunePopulationAnchor);
+            if (anchor <= 0) return true;
+            int threshold = Math.Max(AutoTunePopulationResetAbsolute,
+                (anchor * AutoTunePopulationResetPercent + 99) / 100);
+            return Math.Abs(playerCount - anchor) >= threshold;
+        }
+
+        private static void ResetAutoTune(int playerCount, long nowTick)
+        {
+            int cores = Math.Max(1, Environment.ProcessorCount);
+            _autoTunePopulationAnchor = playerCount;
+            _autoTuneBestWorkers = 0;
+            _autoTuneBestSendsPerSecond = 0;
+            _autoTuneBestAverageSlice = double.MaxValue;
+            _autoTuneBestAverageShed = double.MaxValue;
+            _autoTuneBestBytesPerSend = double.MaxValue;
+            _autoTuneCoarseStep = Math.Max(1, cores / 6);
+            _autoTuneMeasuredWorkers = new bool[cores + 1];
+            _autoTuneRefining = false;
+            _autoTuneHoldCycles = 0;
+            _autoTuneHolding = false;
+
+            var candidates = new List<int>();
+            void AddCandidate(int value)
+            {
+                value = Math.Clamp(value, 1, cores);
+                if (!candidates.Contains(value)) candidates.Add(value);
+            }
+
+            AddCandidate(InitialAutoDegree(playerCount));
+            for (int worker = _autoTuneCoarseStep; worker <= cores; worker += _autoTuneCoarseStep)
+                AddCandidate(worker);
+            AddCandidate(cores);
+            candidates.Sort();
+            _autoTuneCandidates = candidates.ToArray();
+            _autoTuneCandidateIndex = 0;
+            BeginAutoTuneProbe(_autoTuneCandidates[0], nowTick);
+        }
+
+        private static void BeginAutoTuneProbe(int workers, long nowTick)
+        {
+            int resolved = Math.Clamp(workers, 1, Math.Max(1, Environment.ProcessorCount));
+            _autoTuneWorkers = resolved;
+            parallelOptions.MaxDegreeOfParallelism = resolved;
+            _autoTuneMeasuring = false;
+            _autoTuneSettleUntilTick = nowTick + AutoTuneSettleMinTicks;
+            _autoTuneSettleHardDeadlineTick = nowTick + AutoTuneSettleMaxTicks;
+            _autoTuneSettleStableSinceTick = 0;
+            _autoTuneLastSettleSlice = _sliceCount;
+            _autoTuneLastSettleShed = _loadShedTier;
+            _autoTuneLastSettleInterval = intervalMs;
+            _autoTuneMeasureStartTick = 0;
+            _autoTuneSampleTicks = 0;
+            _autoTuneSliceSum = 0;
+            _autoTuneShedSum = 0;
+            _autoTuneMaxSlice = 0;
+            _autoTuneMaxShed = 0;
+            _autoTuneDroppedStart = NetworkServer.Server?.UnreliableDropped ?? 0;
+            _autoTuneBytesSentStart = NetworkServer.Server?.Statistics.BytesSent ?? 0;
+            BSRProfiler.DrainAutoTuneSends();
+        }
+
+        private static bool IsAutoTuneSampleBetter(double sendsPerSecond, double bytesPerSend,
+            double averageSlice, double averageShed, int workers, long dropped)
+        {
+            if (dropped > 0) return false;
+            if (_autoTuneBestSendsPerSecond <= 0) return true;
+
+            double upper = _autoTuneBestSendsPerSecond * (1.0 + AutoTuneTieFraction);
+            double lower = _autoTuneBestSendsPerSecond * (1.0 - AutoTuneTieFraction);
+            if (sendsPerSecond > upper) return true;
+            if (sendsPerSecond < lower) return false;
+
+            // Throughput is statistically tied. Prefer the candidate that spends fewer actual
+            // LiteNetLib socket bytes per delivered BSR pair update, then the one that visits
+            // receivers more often / sheds fewer tiers, then fewer workers. This keeps the primary
+            // objective "most updates/sec" while honoring the bandwidth-efficiency requirement.
+            if (bytesPerSend + 0.25 < _autoTuneBestBytesPerSend) return true;
+            if (bytesPerSend > _autoTuneBestBytesPerSend + 0.25) return false;
+            if (averageSlice + 0.10 < _autoTuneBestAverageSlice) return true;
+            if (averageSlice > _autoTuneBestAverageSlice + 0.10) return false;
+            if (averageShed + 0.10 < _autoTuneBestAverageShed) return true;
+            if (averageShed > _autoTuneBestAverageShed + 0.10) return false;
+            return workers < _autoTuneBestWorkers;
+        }
+
+        private static void HoldAutoTune(long nowTick)
+        {
+            int best = _autoTuneBestWorkers > 0 ? _autoTuneBestWorkers : Math.Max(1, _autoTuneWorkers);
+            _autoTuneWorkers = best;
+            parallelOptions.MaxDegreeOfParallelism = best;
+            _autoTuneMeasuring = false;
+            _autoTuneHolding = true;
+            _autoTuneHoldUntilTick = nowTick + AutoTuneHoldTicks;
+            BSRProfiler.DrainAutoTuneSends();
+            BNL.Log($"[BSR AutoTune] selected {best} workers at {_autoTuneBestSendsPerSecond / 1_000_000.0:F3}M sends/s; revalidate in {AutoTuneHoldMs / 1000}s.");
+        }
+
+        private static void ScheduleNextAutoTuneProbe(long nowTick)
+        {
+            int cores = Math.Max(1, Environment.ProcessorCount);
+
+            if (_autoTuneCandidateIndex + 1 < _autoTuneCandidates.Length)
+            {
+                _autoTuneCandidateIndex++;
+                BeginAutoTuneProbe(_autoTuneCandidates[_autoTuneCandidateIndex], nowTick);
+                return;
+            }
+
+            if (!_autoTuneRefining)
+            {
+                _autoTuneRefining = true;
+                var refine = new List<int>();
+                int radius = Math.Max(1, _autoTuneCoarseStep - 1);
+                for (int worker = Math.Max(1, _autoTuneBestWorkers - radius);
+                     worker <= Math.Min(cores, _autoTuneBestWorkers + radius);
+                     worker++)
+                {
+                    if (!_autoTuneMeasuredWorkers[worker]) refine.Add(worker);
+                }
+
+                if (refine.Count > 0)
+                {
+                    _autoTuneCandidates = refine.ToArray();
+                    _autoTuneCandidateIndex = 0;
+                    BeginAutoTuneProbe(_autoTuneCandidates[0], nowTick);
+                    return;
+                }
+            }
+
+            HoldAutoTune(nowTick);
+        }
 
         /// <summary>
-        /// Applies the configured worker cap. Values &lt;= 0 select the measured default above;
-        /// anything higher than the core count is clamped, since oversubscribing only adds
-        /// context switches.
+        /// Production auto-tuner. Called from the single BSR tick thread. Measurement uses a
+        /// separate thread-local send counter so it remains active with diagnostic profiling off.
+        /// </summary>
+        private static void UpdateAutoTuneController(int playerCount, long nowTick)
+        {
+            if (!WorkerAutoTuneEnabled || playerCount <= 0) return;
+
+            if (AutoTunePopulationChangedMaterially(playerCount))
+            {
+                ResetAutoTune(playerCount, nowTick);
+                return;
+            }
+
+            if (_autoTuneHolding)
+            {
+                if (nowTick < _autoTuneHoldUntilTick) return;
+
+                _autoTuneHolding = false;
+                _autoTuneHoldCycles++;
+
+                // Most revalidations are cheap: compare the selected width against its immediate
+                // neighbours. Periodically do a full global sweep so a changed codec, socket count,
+                // or background workload can move the optimum across a non-monotonic valley.
+                if (_autoTuneHoldCycles >= AutoTuneFullRescanHoldCycles)
+                {
+                    ResetAutoTune(playerCount, nowTick);
+                    return;
+                }
+
+                int cores = Math.Max(1, Environment.ProcessorCount);
+                var local = new List<int>();
+                for (int worker = Math.Max(1, _autoTuneBestWorkers - 1);
+                     worker <= Math.Min(cores, _autoTuneBestWorkers + 1);
+                     worker++)
+                    local.Add(worker);
+
+                _autoTuneCandidates = local.ToArray();
+                _autoTuneCandidateIndex = 0;
+                _autoTuneMeasuredWorkers = new bool[cores + 1];
+                _autoTuneRefining = true;
+                _autoTuneBestSendsPerSecond = 0;
+                _autoTuneBestAverageSlice = double.MaxValue;
+                _autoTuneBestAverageShed = double.MaxValue;
+                _autoTuneBestBytesPerSend = double.MaxValue;
+                BeginAutoTuneProbe(_autoTuneCandidates[0], nowTick);
+                return;
+            }
+
+            if (!_autoTuneMeasuring)
+            {
+                if (nowTick < _autoTuneSettleUntilTick) return;
+
+                bool controlChanged = _autoTuneLastSettleSlice != _sliceCount
+                    || _autoTuneLastSettleShed != _loadShedTier
+                    || _autoTuneLastSettleInterval != intervalMs;
+                if (controlChanged)
+                {
+                    _autoTuneLastSettleSlice = _sliceCount;
+                    _autoTuneLastSettleShed = _loadShedTier;
+                    _autoTuneLastSettleInterval = intervalMs;
+                    _autoTuneSettleStableSinceTick = nowTick;
+                    if (nowTick < _autoTuneSettleHardDeadlineTick) return;
+                }
+                else if (_autoTuneSettleStableSinceTick == 0)
+                {
+                    _autoTuneSettleStableSinceTick = nowTick;
+                    if (nowTick < _autoTuneSettleHardDeadlineTick) return;
+                }
+                else if (nowTick - _autoTuneSettleStableSinceTick < AutoTuneSettleStableTicks
+                         && nowTick < _autoTuneSettleHardDeadlineTick)
+                {
+                    return;
+                }
+
+                BSRProfiler.DrainAutoTuneSends();
+                _autoTuneMeasureStartTick = nowTick;
+                _autoTuneDroppedStart = NetworkServer.Server?.UnreliableDropped ?? 0;
+                _autoTuneBytesSentStart = NetworkServer.Server?.Statistics.BytesSent ?? 0;
+                _autoTuneSampleTicks = 0;
+                _autoTuneSliceSum = 0;
+                _autoTuneShedSum = 0;
+                _autoTuneMaxSlice = 0;
+                _autoTuneMaxShed = 0;
+                _autoTuneMeasuring = true;
+                return;
+            }
+
+            _autoTuneSampleTicks++;
+            _autoTuneSliceSum += _sliceCount;
+            _autoTuneShedSum += _loadShedTier;
+            if (_sliceCount > _autoTuneMaxSlice) _autoTuneMaxSlice = _sliceCount;
+            if (_loadShedTier > _autoTuneMaxShed) _autoTuneMaxShed = _loadShedTier;
+
+            if (nowTick - _autoTuneMeasureStartTick < AutoTuneMeasureTicks) return;
+
+            long sends = BSRProfiler.DrainAutoTuneSends();
+            double seconds = (nowTick - _autoTuneMeasureStartTick) / (double)Stopwatch.Frequency;
+            double sendsPerSecond = seconds > 0 ? sends / seconds : 0;
+            long droppedNow = NetworkServer.Server?.UnreliableDropped ?? _autoTuneDroppedStart;
+            long dropped = Math.Max(0, droppedNow - _autoTuneDroppedStart);
+            long bytesSentNow = NetworkServer.Server?.Statistics.BytesSent ?? _autoTuneBytesSentStart;
+            long bytesSent = Math.Max(0, bytesSentNow - _autoTuneBytesSentStart);
+            double bytesPerSend = sends > 0 ? bytesSent / (double)sends : double.MaxValue;
+            double averageSlice = _autoTuneSampleTicks > 0 ? _autoTuneSliceSum / (double)_autoTuneSampleTicks : _sliceCount;
+            double averageShed = _autoTuneSampleTicks > 0 ? _autoTuneShedSum / (double)_autoTuneSampleTicks : _loadShedTier;
+            int measuredWorkers = _autoTuneWorkers;
+
+            bool improved = IsAutoTuneSampleBetter(sendsPerSecond, bytesPerSend, averageSlice, averageShed, measuredWorkers, dropped);
+            if (measuredWorkers >= 0 && measuredWorkers < _autoTuneMeasuredWorkers.Length)
+                _autoTuneMeasuredWorkers[measuredWorkers] = true;
+            if (improved)
+            {
+                _autoTuneBestWorkers = measuredWorkers;
+                _autoTuneBestSendsPerSecond = sendsPerSecond;
+                _autoTuneBestAverageSlice = averageSlice;
+                _autoTuneBestAverageShed = averageShed;
+                _autoTuneBestBytesPerSend = bytesPerSend;
+            }
+
+            BNL.Log($"[BSR AutoTune] {measuredWorkers} workers: {sendsPerSecond / 1_000_000.0:F3}M sends/s, {bytesPerSend:F1} B/send, " +
+                    $"slice avg {averageSlice:F2} max {_autoTuneMaxSlice}, tier avg {averageShed:F2} max {_autoTuneMaxShed}, " +
+                    $"drops {dropped}; best {_autoTuneBestWorkers} @ {_autoTuneBestSendsPerSecond / 1_000_000.0:F3}M/s.");
+
+            _autoTuneMeasuring = false;
+            ScheduleNextAutoTuneProbe(nowTick);
+        }
+
+        // A dedicated worker pool was tried here in place of Parallel.For and did not pay for
+        // itself. The auto-tuner therefore changes only MaxDegreeOfParallelism and leaves the
+        // scheduler/thread-pool implementation alone.
+
+        /// <summary>
+        /// Applies the configured worker policy. Values &gt; 0 pin the worker count. Values &lt;= 0
+        /// enable the measured send-throughput auto-tuner.
         /// </summary>
         public static void SetMaxDegreeOfParallelism(int configured)
         {
             _configuredDegree = configured;
             if (configured > 0)
             {
-                int resolved = Math.Min(configured, Environment.ProcessorCount);
+                BSRProfiler.AutoTuneTrackingEnabled = false;
+                BSRProfiler.DrainAutoTuneSends();
+                int resolved = Math.Clamp(configured, 1, Math.Max(1, Environment.ProcessorCount));
+                _autoTuneWorkers = 0;
                 parallelOptions.MaxDegreeOfParallelism = resolved;
                 BNL.Log($"[BSR] Parallel worker cap pinned to {resolved} (of {Environment.ProcessorCount} cores).");
             }
             else
             {
+                BSRProfiler.AutoTuneTrackingEnabled = true;
+                _autoTunePopulationAnchor = 0;
+                _autoTuneWorkers = 0;
+                _autoTuneBestWorkers = 0;
+                _autoTuneBestSendsPerSecond = 0;
+                _autoTuneHolding = false;
+                _autoTuneMeasuring = false;
+                BSRProfiler.DrainAutoTuneSends();
                 BNL.Log($"[CPU] {BasisCpuBudget.Describe()}");
-                BNL.Log($"[BSR] Send workers scale with population: 1 per {PlayersPerWorker} players, {BasisCpuBudget.MinWorkersPerPool} to {MaxAutoWorkers}.");
+                BNL.Log($"[BSR] Worker auto-tune enabled: maximize measured BSR sends/sec across 1-{Environment.ProcessorCount} workers; " +
+                        $"start near 1/{PlayersPerWorker} players, {AutoTuneMeasureMs / 1000}s samples, periodic revalidation.");
             }
         }
 
@@ -585,7 +892,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 int peerWorkers = lnl?.PeerUpdateWorkers ?? 0;
                 int pop = NetworkServer.Server?.ConnectedPeersCount ?? 0;
                 BNL.Log(
-                    $"[CPU/POP] {pop} peers | send {parallelOptions.MaxDegreeOfParallelism}/{BasisCpuBudget.ReductionSendCap} wkr, " +
+                    $"[CPU/POP] {pop} peers | send {parallelOptions.MaxDegreeOfParallelism} wkr " +
+                    $"({(WorkerAutoTuneEnabled ? $"auto best {AutoTuneBestWorkers}" : "manual")}, allocator grant {BasisCpuBudget.ReductionSendCap}), " +
                     $"peer-upd {peerWorkers}/{BasisCpuBudget.PeerUpdateCap} wkr " +
                     $"(pass {lnl?.PeerUpdatePassMs ?? 0:F1}/{LiteNetLib.NetManager.PeerPassTargetMs:F0} ms), " +
                     $"machine {BasisCpuBudget.Utilization * 100:F0}% of {BasisCpuBudget.TotalCores} cores | " +
@@ -1279,6 +1587,11 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 : _tickDutyEma * 0.9 + (elapsedMs / Math.Max(1.0, intervalMs)) * 0.1;
             RebalanceCpuBudget(startTick);
 
+            // Worker auto-tuning is independent of the load controller window. It measures actual
+            // pair updates/sec over longer settle/sample windows and changes worker count only at
+            // those boundaries; the load controller below remains responsible for period/tier/slice.
+            UpdateAutoTuneController(NetworkServer.Server?.ConnectedPeersCount ?? _activePlayerCount, startTick);
+
             if (_tickWindowCount >= TickControlWindow)
             {
                 _tickOverrunRatio = _tickOverrunCount / (double)_tickWindowCount;
@@ -1950,10 +2263,14 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     FlushPendingForReceiver(stateI, peer, bundlingEnabled);
                 }
 
-                // Per-thread block, folded in once per window — no atomic at all on this path.
-                if (localSends > 0 && BSRProfiler.Enabled)
+                // Per-thread blocks, folded only at profiler/auto-tune window boundaries — no
+                // per-send atomics on this path. Auto-tune accounting stays active even when
+                // diagnostic profiling is disabled.
+                if (localSends > 0 && (BSRProfiler.Enabled || BSRProfiler.AutoTuneTrackingEnabled))
                 {
-                    BSRProfiler.Local.Sends += localSends;
+                    BSRThreadCounters counters = BSRProfiler.Local;
+                    if (BSRProfiler.Enabled) counters.Sends += localSends;
+                    if (BSRProfiler.AutoTuneTrackingEnabled) counters.AutoTuneSends += localSends;
                 }
             });
         }

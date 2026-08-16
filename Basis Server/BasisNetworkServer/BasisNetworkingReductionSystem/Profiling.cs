@@ -51,6 +51,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 #pragma warning restore CS0169
 
         public long Sends;
+        // Separate production counter for the BSR worker auto-tuner. It is intentionally not
+        // shared with Sends: profiling closes/drains its own 5-second windows, while the tuner
+        // has independent settle/measure windows and must work even when profiling is disabled.
+        public long AutoTuneSends;
         public long PreSerializations;
         public long PreSerializationsSkipped;
         public long BundlesEmitted;
@@ -76,6 +80,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
     public static class BSRProfiler
     {
         public static volatile bool Enabled;
+        // Enabled automatically when BSRMaxDegreeOfParallelism <= 0. This only turns on a
+        // thread-local integer add in the already-batched per-receiver accounting path; no
+        // per-send atomics and no phase timing are enabled by it.
+        public static volatile bool AutoTuneTrackingEnabled;
 
         [ThreadStatic] private static BSRThreadCounters _threadCounters;
 
@@ -141,6 +149,29 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             }
         }
 
+        /// <summary>
+        /// Drains only the auto-tuner's send counters. Called from the single BSR tick thread at
+        /// probe boundaries, so the only synchronization is this infrequent registry lock plus one
+        /// exchange per live worker thread. Profiling counters are untouched.
+        /// </summary>
+        public static long DrainAutoTuneSends()
+        {
+            long total = 0;
+            lock (_countersLock)
+            {
+                for (int i = _allCounters.Count - 1; i >= 0; i--)
+                {
+                    if (!_allCounters[i].TryGetTarget(out var c))
+                    {
+                        _allCounters.RemoveAt(i);
+                        continue;
+                    }
+                    total += Interlocked.Exchange(ref c.AutoTuneSends, 0);
+                }
+            }
+            return total;
+        }
+
         /// <summary>Whether a closed window is written to the log. Collection is driven by <see cref="Enabled"/> alone.</summary>
         public static volatile bool WriteToLog;
 
@@ -202,6 +233,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         internal static void ResetForTests()
         {
             Enabled = false;
+            AutoTuneTrackingEnabled = false;
             WriteToLog = false;
             _latest = null;
             lock (_countersLock)
@@ -214,6 +246,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         continue;
                     }
                     c.Sends = 0;
+                    c.AutoTuneSends = 0;
                     c.PreSerializations = 0;
                     c.PreSerializationsSkipped = 0;
                     c.BundlesEmitted = 0;
