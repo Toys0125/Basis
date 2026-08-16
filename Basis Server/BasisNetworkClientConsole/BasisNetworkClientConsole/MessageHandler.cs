@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.IO;
+using ZstdSharp;
 using Basis.Network.Core;
 using Basis.Network.Core.Compression;
 using K4os.Compression.LZ4;
@@ -17,6 +19,11 @@ namespace Basis.Network
         public static bool ObserveOnly;
 
         private static bool Sniffing => MovementSender.EmitFaceData || ObserveOnly;
+        private static readonly bool HybridDecodeTest = Environment.GetEnvironmentVariable("BASIS_ZSTD_HYBRID_DECODE_TEST") == "1";
+        private static readonly object ZstdDictionaryLock = new();
+        private static byte[] ZstdDictionary;
+        private static int ZstdDictionaryFailed;
+        [ThreadStatic] private static Decompressor ZstdDecompressor;
         public static long PoseOnlyKeyframes;       // even avatar channels (no additional section)
         public static long FaceKeyframesSmall;      // odd byte-id channels (7/9/11/13)
         public static long FaceKeyframesLarge;      // odd ushort-id channels (42/44/46/48)
@@ -114,7 +121,7 @@ namespace Basis.Network
                     }
                     break;
                 case BasisNetworkCommons.CompressedAvatarBundleChannel:
-                    if (Sniffing)
+                    if (Sniffing || HybridDecodeTest)
                     {
                         SniffBundle(clientIndex, reader);
                     }
@@ -168,6 +175,43 @@ namespace Basis.Network
             }
         }
 
+        private static int DecodeZstd(ReadOnlySpan<byte> compressed, Span<byte> output)
+        {
+            if (Volatile.Read(ref ZstdDictionaryFailed) != 0) return int.MinValue;
+            try
+            {
+                if (ZstdDecompressor == null)
+                {
+                    if (ZstdDictionary == null)
+                    {
+                        lock (ZstdDictionaryLock)
+                        {
+                            if (ZstdDictionary == null)
+                            {
+                                string path = Environment.GetEnvironmentVariable("BASIS_ZSTD_TEST_DICT_PATH");
+                                if (string.IsNullOrWhiteSpace(path)) throw new InvalidOperationException("BASIS_ZSTD_TEST_DICT_PATH is not set.");
+                                path = Path.GetFullPath(path);
+                                if (!File.Exists(path)) throw new FileNotFoundException("Hybrid Zstd dictionary not found.", path);
+                                ZstdDictionary = File.ReadAllBytes(path);
+                            }
+                        }
+                    }
+                    ZstdDecompressor = new Decompressor();
+                    ZstdDecompressor.LoadDictionary(ZstdDictionary);
+                }
+                return ZstdDecompressor.Unwrap(compressed, output);
+            }
+            catch (Exception ex)
+            {
+                if (Interlocked.Exchange(ref ZstdDictionaryFailed, 1) == 0)
+                {
+                    Interlocked.Increment(ref ParseFailures);
+                    BNL.LogError($"[HybridZstd] decode disabled after failure: {ex.Message}");
+                }
+                return int.MinValue;
+            }
+        }
+
         /// <summary>
         /// Decodes one channel-52 bundle exactly like the Unity client
         /// (BasisNetworkHandleCompressedBundle): [count:1][rawLen:2-LE][LZ4(group*)], flattened
@@ -181,12 +225,17 @@ namespace Basis.Network
                 if (reader.AvailableBytes < 3) return;
                 byte[] raw = reader.RawData;
                 int pos = reader.Position;
-                ushort rawLen = (ushort)(raw[pos + 1] | (raw[pos + 2] << 8));
+                ushort encodedRawLen = (ushort)(raw[pos + 1] | (raw[pos + 2] << 8));
+                bool zstd = (encodedRawLen & 0x8000) != 0;
+                ushort rawLen = (ushort)(encodedRawLen & 0x7fff);
                 int compressedLen = reader.AvailableBytes - 3;
                 if (rawLen == 0 || compressedLen <= 0) return;
 
                 byte[] grouped = new byte[rawLen];
-                int decoded = LZ4Codec.Decode(raw.AsSpan(pos + 3, compressedLen), grouped.AsSpan(0, rawLen));
+                int decoded = zstd
+                    ? DecodeZstd(raw.AsSpan(pos + 3, compressedLen), grouped.AsSpan(0, rawLen))
+                    : LZ4Codec.Decode(raw.AsSpan(pos + 3, compressedLen), grouped.AsSpan(0, rawLen));
+                if (decoded == int.MinValue) return;
                 if (decoded != rawLen)
                 {
                     Interlocked.Increment(ref ParseFailures);

@@ -23,6 +23,20 @@ namespace Basis
         {
             ErrorHandlers.AttachGlobalHandlers();
             ConfigManager.LoadOrCreateConfigXml("Config.xml");
+            string testPortText = Environment.GetEnvironmentVariable("BASIS_TEST_PORT");
+            if (!string.IsNullOrWhiteSpace(testPortText))
+            {
+                if (!int.TryParse(testPortText, out int testPort) || testPort is < 1 or > ushort.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(testPortText), testPortText, "BASIS_TEST_PORT must be in 1..65535.");
+                ConfigManager.Port = testPort;
+            }
+            string testClientsText = Environment.GetEnvironmentVariable("BASIS_TEST_CLIENTS");
+            if (!string.IsNullOrWhiteSpace(testClientsText))
+            {
+                if (!int.TryParse(testClientsText, out int testClients) || testClients < 1)
+                    throw new ArgumentOutOfRangeException(nameof(testClientsText), testClientsText, "BASIS_TEST_CLIENTS must be at least 1.");
+                ConfigManager.ClientCount = testClients;
+            }
             NetDebug.Logger = new BasisClientLogger();
 
             // Face-data test mode: BASIS_EMIT_FACE=1 attaches a synthetic AdditionalAvatarData to
