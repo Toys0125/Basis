@@ -23,6 +23,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         private static float[] _posYSnapshot = new float[InitialPlayerArrayCapacity];
         private static float[] _posZSnapshot = new float[InitialPlayerArrayCapacity];
 
+        // Roster-order peer ids for the CPU inner loop. A compact int stream avoids walking the
+        // larger (int, PlayerState) tuple array for every receiver/sender pair just to read jId.
+        private static int[] _densePlayerIds = new int[InitialPlayerArrayCapacity];
+
         // Roster-order copies of the same positions. The snapshots above are indexed by peer id and
         // are therefore full of holes; a device transfer would pay for every one of them, so the
         // offload path keeps its own dense copy rather than sending a mostly-empty array.
@@ -162,6 +166,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 if (activeCopy[i].id > maxId) maxId = activeCopy[i].id;
             }
             int snapshotLen = maxId + 1;
+            if (_densePlayerIds.Length < playerCount)
+            {
+                _densePlayerIds = new int[Math.Max(playerCount, _densePlayerIds.Length * 2)];
+            }
             if (_posXSnapshot.Length < snapshotLen)
             {
                 int newLen = Math.Max(snapshotLen, _posXSnapshot.Length * 2);
@@ -172,6 +180,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             for (int i = 0; i < playerCount; i++)
             {
                 int id = activeCopy[i].id;
+                _densePlayerIds[i] = id;
                 var state = activeCopy[i].state;
                 _posXSnapshot[id] = state.Position.x;
                 _posYSnapshot[id] = state.Position.y;
@@ -183,7 +192,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         {
             Parallel.For(sliceStart, sliceEnd, parallelOptions, i =>
             {
-                var (id, state) = activeCopy[i];
+                int id = _densePlayerIds[i];
+                PlayerState state = activeCopy[i].state;
                 var tracking = state.PeerTracking;
                 if (tracking == null) return;
 
@@ -193,7 +203,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 
                 for (int index = 0; index < playerCount; index++)
                 {
-                    int jId = activeCopy[index].id;
+                    int jId = _densePlayerIds[index];
                     if (id == jId) continue;
 
                     // Grow tracking array if needed (same logic as send loop)
