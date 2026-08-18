@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using UnityEngine;
 
 namespace Basis.Scripts.Networking.Sync.Testing
 {
@@ -22,6 +23,7 @@ namespace Basis.Scripts.Networking.Sync.Testing
             public bool PositionFirst;
         }
 
+        [Serializable]
         public sealed class MatrixOptions
         {
             public bool QuantizeVariants = true;
@@ -41,8 +43,8 @@ namespace Basis.Scripts.Networking.Sync.Testing
             public int Seeds = 1;
             public int BaseSeed = 0x5A1D;
 
-            public List<SyncMotion> Motions;     // null => all
-            public HashSet<string> ProfileNames; // null => all
+            public List<SyncMotion> Motions;  // null => all
+            public List<string> ProfileNames;  // null => all
 
             public float Dt = 1f / 72f;
             public float DurationSeconds = 6f;
@@ -61,7 +63,7 @@ namespace Basis.Scripts.Networking.Sync.Testing
                     DurationSeconds = 4f,
                     SettleSeconds = 1.5f,
                     Motions = new List<SyncMotion> { SyncMotion.Sine, SyncMotion.Step, SyncMotion.Teleport, SyncMotion.RandomWalk },
-                    ProfileNames = new HashSet<string> { "perfect", "loss-heavy", "reorder", "bad-wifi", "corrupt", "chaos" },
+                    ProfileNames = new List<string> { "perfect", "loss-heavy", "reorder", "bad-wifi", "corrupt", "chaos" },
                 };
             }
 
@@ -421,6 +423,96 @@ namespace Basis.Scripts.Networking.Sync.Testing
             sb.AppendLine(BasisSyncSimResult.CsvHeader);
             for (int i = 0; i < results.Count; i++) sb.AppendLine(results[i].ToCsvRow());
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Command-line entry point for CI: runs the full matrix and writes CSV to the given path.
+        /// Usage: Unity -batchmode -executeMethod Basis.Scripts.Networking.Sync.Testing.BasisSyncSimMatrix.RunAndExportCSV -matrixOptions '{"Seeds":3}' -outputPath /path/to/output.csv
+        ///        Unity -batchmode -executeMethod Basis.Scripts.Networking.Sync.Testing.BasisSyncSimMatrix.RunAndExportCSV -matrixOptionsPath /path/to/options.json -outputPath /path/to/output.csv
+        /// </summary>
+        public static void RunAndExportCSV()
+        {
+            string matrixOptionsJson = null;
+            string matrixOptionsPath = null;
+            string outputPath = null;
+
+            var args = System.Environment.GetCommandLineArgs();
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "-matrixOptions" && i + 1 < args.Length)
+                    matrixOptionsJson = args[i + 1];
+                else if (args[i] == "-matrixOptionsPath" && i + 1 < args.Length)
+                    matrixOptionsPath = args[i + 1];
+                else if (args[i] == "-outputPath" && i + 1 < args.Length)
+                    outputPath = args[i + 1];
+            }
+
+            if (!string.IsNullOrEmpty(matrixOptionsPath))
+            {
+                try
+                {
+                    matrixOptionsJson = System.IO.File.ReadAllText(matrixOptionsPath);
+                }
+                catch (System.Exception e)
+                {
+                    UnityEngine.Debug.LogError($"Failed to read -matrixOptionsPath '{matrixOptionsPath}': {e.Message}");
+                    UnityEditor.EditorApplication.Exit(1);
+                    return;
+                }
+            }
+
+            MatrixOptions options = MatrixOptions.Full();
+            if (!string.IsNullOrEmpty(matrixOptionsJson))
+            {
+                try
+                {
+                    JsonUtility.FromJsonOverwrite(matrixOptionsJson, options);
+                }
+                catch (System.Exception e)
+                {
+                    UnityEngine.Debug.LogError($"Failed to parse -matrixOptions JSON: {e.Message}");
+                    UnityEditor.EditorApplication.Exit(1);
+                    return;
+                }
+            }
+
+            if (string.IsNullOrEmpty(outputPath))
+            {
+                UnityEngine.Debug.LogError("-outputPath is required");
+                UnityEditor.EditorApplication.Exit(1);
+                return;
+            }
+
+            UnityEngine.Debug.Log($"Running sync sim matrix: {BasisSyncSimMatrix.CountScenarios(options)} scenarios");
+
+            var results = RunAll(options, (done, total, r) =>
+            {
+                if (r != null)
+                    UnityEngine.Debug.Log($"[{done}/{total}] {r.ScenarioName} => {(r.Warn ? "WARN" : (r.Pass ? "PASS" : "FAIL"))} {r.FailReason}");
+            }, null);
+
+            string csv = ToCsv(results);
+            string outputDirectory = System.IO.Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(outputDirectory))
+                System.IO.Directory.CreateDirectory(outputDirectory);
+            System.IO.File.WriteAllText(outputPath, csv);
+
+            int failed = 0;
+            for (int i = 0; i < results.Count; i++)
+            {
+                if (!results[i].Pass)
+                    failed++;
+            }
+
+            UnityEngine.Debug.Log($"CSV written to {outputPath} ({results.Count} rows, {failed} failures)");
+            if (failed > 0)
+            {
+                UnityEngine.Debug.LogError($"Sync sim matrix completed with {failed} failing rows. See CSV for details.");
+                UnityEditor.EditorApplication.Exit(1);
+                return;
+            }
+
+            UnityEditor.EditorApplication.Exit(0);
         }
 
         static int Hash(string s)
