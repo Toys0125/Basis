@@ -23,7 +23,6 @@ public class BasisOpenMenuForcefully : MonoBehaviour
     }
     public void OpenMenu()
     {
-        BasisMainMenu.Open();
         if (OpenServerMenu)
         {
             BasisMainMenu.OpenWithProvider(BasisLocalization.Get(ProviderTitleKey));

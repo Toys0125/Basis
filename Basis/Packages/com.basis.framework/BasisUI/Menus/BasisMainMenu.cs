@@ -433,7 +433,13 @@ namespace Basis.BasisUI
         }
         public static void OpenWithProvider(string ProviderTitle)
         {
-            Open();
+            // A blocking dialogue is a true modal. Keep the existing menu instance so opening a
+            // provider programmatically cannot tear it down.
+            if (!Instance || !Instance.Dialogue || !Instance.Dialogue.BlocksOtherActions)
+            {
+                Open();
+            }
+
             int count = BasisMainMenu.Providers.Count;
             for (int Index = 0; Index < count; Index++)
             {
@@ -487,7 +493,7 @@ namespace Basis.BasisUI
 
         public static BasisMenuPanel CreateActiveMenu(BasisMenuPanel.PanelData data, string style, BasisMenuActionProvider<BasisMainMenu> provider = null)
         {
-            if (Instance.Dialogue)
+            if (Instance.Dialogue && !Instance.Dialogue.BlocksOtherActions)
             {
                 Instance.Dialogue.ReleaseInstance();
             }
