@@ -225,9 +225,13 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 int index = 0;
                 int vectorWidth = Vector<float>.Count;
                 Span<float> distanceSq = stackalloc float[vectorWidth];
+                Span<int> rawIntervals = stackalloc int[vectorWidth];
                 Vector<float> iXVector = new Vector<float>(iX);
                 Vector<float> iYVector = new Vector<float>(iY);
                 Vector<float> iZVector = new Vector<float>(iZ);
+                Vector<float> baseIntervalVector = new Vector<float>(baseIntervalMs);
+                Vector<float> baseMultiplierVector = new Vector<float>(baseMultiplier);
+                Vector<float> increaseRateVector = new Vector<float>(increaseRate);
 
                 if (Vector.IsHardwareAccelerated)
                 {
@@ -239,6 +243,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         Vector<float> dz = iZVector - new Vector<float>(_denseZ, index);
                         Vector<float> distances = dx * dx + dy * dy + dz * dz;
                         distances.CopyTo(distanceSq);
+                        Vector.ConvertToInt32(baseIntervalVector * (baseMultiplierVector + distances * increaseRateVector))
+                            .CopyTo(rawIntervals);
 
                         for (int lane = 0; lane < vectorWidth; lane++)
                         {
@@ -260,8 +266,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             }
 
                             float distSq = distanceSq[lane];
-                            int rawInterval = (int)(baseIntervalMs * (baseMultiplier + (distSq * increaseRate)));
-                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawInterval, baseIntervalMs);
+                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawIntervals[lane], baseIntervalMs);
                             int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
                             byte qualityIndex = distSq <= highDistanceSq ? (byte)3
                                 : distSq <= mediumDistanceSq ? (byte)2
