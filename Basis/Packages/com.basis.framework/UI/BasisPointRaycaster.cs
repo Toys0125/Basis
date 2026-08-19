@@ -30,6 +30,7 @@ namespace Basis.Scripts.UI
         // getters the hit loops would otherwise read repeatedly (the backcast check was O(n^2)).
         private Collider[] _resolvedColliders;
         private int[] _resolvedLayers;
+        private int[] _resolvedCanvasSortingOrders;
         public BasisInput BasisInput;
 
         [Header("Debug")]
@@ -136,6 +137,7 @@ namespace Basis.Scripts.UI
             BasisLocalPlayer.OnPlayersHeightChangedNextFrame += OnPlayersHeightChangedNextFrame;
             _resolvedColliders = new Collider[BasisPlayerInteract.k_MaxPhysicHitCount];
             _resolvedLayers = new int[BasisPlayerInteract.k_MaxPhysicHitCount];
+            _resolvedCanvasSortingOrders = new int[BasisPlayerInteract.k_MaxPhysicHitCount];
 
             // Create the ray with the adjusted starting position and direction
             UpdateRay();
@@ -194,6 +196,10 @@ namespace Basis.Scripts.UI
                 Collider c = PhysicHits[i].collider;
                 _resolvedColliders[i] = c;
                 _resolvedLayers[i] = c != null ? c.gameObject.layer : -1;
+                _resolvedCanvasSortingOrders[i] =
+                    c != null && c.TryGetComponent(out Canvas canvas)
+                        ? canvas.sortingOrder
+                        : int.MinValue;
             }
 
             // Branch per mode
@@ -233,6 +239,7 @@ namespace Basis.Scripts.UI
             int bestIndex = -1;
             bool foundOverlay = false;
             float bestDistance = float.PositiveInfinity;
+            const float samePlaneTolerance = 0.0001f;
 
             for (int i = 0; i < PhysicHitCount; i++)
             {
@@ -244,21 +251,17 @@ namespace Basis.Scripts.UI
 
                 if (isOverlay)
                 {
-                    if (!foundOverlay || distance < bestDistance)
+                    if (!foundOverlay || IsBetterSameLayerHit(i, bestIndex, distance, bestDistance, samePlaneTolerance))
                     {
                         foundOverlay = true;
                         bestIndex = i;
                         bestDistance = distance;
                     }
                 }
-                else if (!foundOverlay)
+                else if (!foundOverlay && IsBetterSameLayerHit(i, bestIndex, distance, bestDistance, samePlaneTolerance))
                 {
-                    // Only consider non-overlay hits if we haven't found any overlay yet
-                    if (distance < bestDistance)
-                    {
-                        bestIndex = i;
-                        bestDistance = distance;
-                    }
+                    bestIndex = i;
+                    bestDistance = distance;
                 }
             }
 
@@ -272,6 +275,8 @@ namespace Basis.Scripts.UI
                     (PhysicHits[0], PhysicHits[bestIndex]) = (PhysicHits[bestIndex], PhysicHits[0]);
                     (_resolvedColliders[0], _resolvedColliders[bestIndex]) = (_resolvedColliders[bestIndex], _resolvedColliders[0]);
                     (_resolvedLayers[0], _resolvedLayers[bestIndex]) = (_resolvedLayers[bestIndex], _resolvedLayers[0]);
+                    (_resolvedCanvasSortingOrders[0], _resolvedCanvasSortingOrders[bestIndex]) =
+                        (_resolvedCanvasSortingOrders[bestIndex], _resolvedCanvasSortingOrders[0]);
                 }
             }
             else
@@ -279,6 +284,32 @@ namespace Basis.Scripts.UI
                 // No valid collider hits found
                 ClosestRayCastHit = new RaycastHit();
             }
+        }
+
+        private bool IsBetterSameLayerHit(
+            int candidateIndex,
+            int currentBestIndex,
+            float candidateDistance,
+            float currentBestDistance,
+            float samePlaneTolerance)
+        {
+            if (currentBestIndex < 0)
+            {
+                return true;
+            }
+
+            if (candidateDistance < currentBestDistance - samePlaneTolerance)
+            {
+                return true;
+            }
+
+            if (Mathf.Abs(candidateDistance - currentBestDistance) <= samePlaneTolerance)
+            {
+                return _resolvedCanvasSortingOrders[candidateIndex]
+                    > _resolvedCanvasSortingOrders[currentBestIndex];
+            }
+
+            return false;
         }
 
         private void DoBackcastFixup()
