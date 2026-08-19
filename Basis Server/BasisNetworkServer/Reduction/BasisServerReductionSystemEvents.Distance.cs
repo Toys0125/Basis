@@ -262,7 +262,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 if (AdvSimd.IsSupported)
                 {
                     const int vectorWidth = 4;
-                    Span<float> distanceSq = stackalloc float[vectorWidth * 2];
+                    Span<int> qualityIndices = stackalloc int[vectorWidth * 2];
                     Span<int> encodedIntervals = stackalloc int[vectorWidth * 2];
                     Span<int> actualIntervalsMs = stackalloc int[vectorWidth * 2];
                     Vector128<float> iXVector = Vector128.Create(iX);
@@ -271,6 +271,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     Vector128<float> baseIntervalVector = Vector128.Create((float)baseIntervalMs);
                     Vector128<float> baseMultiplierVector = Vector128.Create(baseMultiplier);
                     Vector128<float> increaseRateVector = Vector128.Create(increaseRate);
+                    Vector128<float> highDistanceVector = Vector128.Create(highDistanceSq);
+                    Vector128<float> mediumDistanceVector = Vector128.Create(mediumDistanceSq);
+                    Vector128<float> lowDistanceVector = Vector128.Create(lowDistanceSq);
+                    Vector128<int> oneVector = Vector128.Create(1);
                     ref float denseX = ref _denseX[0];
                     ref float denseY = ref _denseY[0];
                     ref float denseZ = ref _denseZ[0];
@@ -281,20 +285,20 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         Vector128<float> dx0 = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)index));
                         Vector128<float> dy0 = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)index));
                         Vector128<float> dz0 = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)index));
-                        Vector128<float> distances0 = AdvSimd.FusedMultiplyAdd(AdvSimd.Multiply(dy0, dy0), dx0, dx0);
-                        distances0 = AdvSimd.FusedMultiplyAdd(distances0, dz0, dz0);
+                        Vector128<float> distances0 = AdvSimd.Add(
+                            AdvSimd.Add(AdvSimd.Multiply(dx0, dx0), AdvSimd.Multiply(dy0, dy0)),
+                            AdvSimd.Multiply(dz0, dz0));
 
                         int secondIndex = index + vectorWidth;
                         Vector128<float> dx1 = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)secondIndex));
                         Vector128<float> dy1 = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)secondIndex));
                         Vector128<float> dz1 = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)secondIndex));
-                        Vector128<float> distances1 = AdvSimd.FusedMultiplyAdd(AdvSimd.Multiply(dy1, dy1), dx1, dx1);
-                        distances1 = AdvSimd.FusedMultiplyAdd(distances1, dz1, dz1);
+                        Vector128<float> distances1 = AdvSimd.Add(
+                            AdvSimd.Add(AdvSimd.Multiply(dx1, dx1), AdvSimd.Multiply(dy1, dy1)),
+                            AdvSimd.Multiply(dz1, dz1));
 
-                        distances0.CopyTo(distanceSq);
-                        distances1.CopyTo(distanceSq.Slice(vectorWidth));
-                        Vector128<float> intervalFactor0 = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances0, increaseRateVector);
-                        Vector128<float> intervalFactor1 = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances1, increaseRateVector);
+                        Vector128<float> intervalFactor0 = AdvSimd.Add(baseMultiplierVector, AdvSimd.Multiply(distances0, increaseRateVector));
+                        Vector128<float> intervalFactor1 = AdvSimd.Add(baseMultiplierVector, AdvSimd.Multiply(distances1, increaseRateVector));
                         Vector128<int> rawIntervals0 = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor0));
                         Vector128<int> rawIntervals1 = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor1));
                         EncodeAvatarIntervalsAdvSimd(rawIntervals0, baseIntervalMs, out Vector128<int> encoded0, out Vector128<int> actualMs0);
@@ -303,6 +307,15 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         encoded1.CopyTo(encodedIntervals.Slice(vectorWidth));
                         actualMs0.CopyTo(actualIntervalsMs);
                         actualMs1.CopyTo(actualIntervalsMs.Slice(vectorWidth));
+
+                        Vector128<int> quality0 = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances0, lowDistanceVector).AsInt32(), oneVector);
+                        quality0 = AdvSimd.Add(quality0, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances0, mediumDistanceVector).AsInt32(), oneVector));
+                        quality0 = AdvSimd.Add(quality0, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances0, highDistanceVector).AsInt32(), oneVector));
+                        Vector128<int> quality1 = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances1, lowDistanceVector).AsInt32(), oneVector);
+                        quality1 = AdvSimd.Add(quality1, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances1, mediumDistanceVector).AsInt32(), oneVector));
+                        quality1 = AdvSimd.Add(quality1, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances1, highDistanceVector).AsInt32(), oneVector));
+                        quality0.CopyTo(qualityIndices);
+                        quality1.CopyTo(qualityIndices.Slice(vectorWidth));
 
                         for (int lane = 0; lane < vectorWidth * 2; lane++)
                         {
@@ -323,13 +336,9 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                                 }
                             }
 
-                            float distSq = distanceSq[lane];
                             byte intervalByte = (byte)encodedIntervals[lane];
                             int actualInterval = actualIntervalsMs[lane];
-                            byte qualityIndex = distSq <= highDistanceSq ? (byte)3
-                                : distSq <= mediumDistanceSq ? (byte)2
-                                : distSq <= lowDistanceSq ? (byte)1
-                                : (byte)0;
+                            byte qualityIndex = (byte)qualityIndices[lane];
                             tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
                             tracking[jId].CachedQualityIndex = qualityIndex;
                             tracking[jId].CachedIntervalByte = intervalByte;
@@ -342,14 +351,18 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         Vector128<float> dx = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)index));
                         Vector128<float> dy = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)index));
                         Vector128<float> dz = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)index));
-                        Vector128<float> distances = AdvSimd.FusedMultiplyAdd(AdvSimd.Multiply(dy, dy), dx, dx);
-                        distances = AdvSimd.FusedMultiplyAdd(distances, dz, dz);
-                        distances.CopyTo(distanceSq);
-                        Vector128<float> intervalFactor = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances, increaseRateVector);
+                        Vector128<float> distances = AdvSimd.Add(
+                            AdvSimd.Add(AdvSimd.Multiply(dx, dx), AdvSimd.Multiply(dy, dy)),
+                            AdvSimd.Multiply(dz, dz));
+                        Vector128<float> intervalFactor = AdvSimd.Add(baseMultiplierVector, AdvSimd.Multiply(distances, increaseRateVector));
                         Vector128<int> rawIntervals = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor));
                         EncodeAvatarIntervalsAdvSimd(rawIntervals, baseIntervalMs, out Vector128<int> encoded, out Vector128<int> actualMs);
                         encoded.CopyTo(encodedIntervals);
                         actualMs.CopyTo(actualIntervalsMs);
+                        Vector128<int> quality = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, lowDistanceVector).AsInt32(), oneVector);
+                        quality = AdvSimd.Add(quality, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, mediumDistanceVector).AsInt32(), oneVector));
+                        quality = AdvSimd.Add(quality, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, highDistanceVector).AsInt32(), oneVector));
+                        quality.CopyTo(qualityIndices);
 
                         for (int lane = 0; lane < vectorWidth; lane++)
                         {
@@ -370,13 +383,9 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                                 }
                             }
 
-                            float distSq = distanceSq[lane];
                             byte intervalByte = (byte)encodedIntervals[lane];
                             int actualInterval = actualIntervalsMs[lane];
-                            byte qualityIndex = distSq <= highDistanceSq ? (byte)3
-                                : distSq <= mediumDistanceSq ? (byte)2
-                                : distSq <= lowDistanceSq ? (byte)1
-                                : (byte)0;
+                            byte qualityIndex = (byte)qualityIndices[lane];
                             tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
                             tracking[jId].CachedQualityIndex = qualityIndex;
                             tracking[jId].CachedIntervalByte = intervalByte;
