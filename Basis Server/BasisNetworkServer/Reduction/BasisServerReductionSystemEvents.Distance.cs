@@ -312,6 +312,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     Vector256<float> mediumDistanceVector = Vector256.Create(mediumDistanceSq);
                     Vector256<float> lowDistanceVector = Vector256.Create(lowDistanceSq);
                     Vector256<int> oneVector = Vector256.Create(1);
+                    Vector256<int> twoVector = Vector256.Create(2);
+                    Vector256<int> threeVector = Vector256.Create(3);
                     ref float denseX = ref _denseX[0];
                     ref float denseY = ref _denseY[0];
                     ref float denseZ = ref _denseZ[0];
@@ -336,8 +338,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 
                         Vector256<float> intervalFactor0 = Avx.Add(baseMultiplierVector, Avx.Multiply(distances0, increaseRateVector));
                         Vector256<float> intervalFactor1 = Avx.Add(baseMultiplierVector, Avx.Multiply(distances1, increaseRateVector));
-                        Vector256<int> rawIntervals0 = Avx.ConvertToVector256Int32WithTruncation(Avx.Multiply(baseIntervalVector, intervalFactor0));
-                        Vector256<int> rawIntervals1 = Avx.ConvertToVector256Int32WithTruncation(Avx.Multiply(baseIntervalVector, intervalFactor1));
+                        Vector256<int> rawIntervals0 = Vector256.ConvertToInt32(Avx.Multiply(baseIntervalVector, intervalFactor0));
+                        Vector256<int> rawIntervals1 = Vector256.ConvertToInt32(Avx.Multiply(baseIntervalVector, intervalFactor1));
                         EncodeAvatarIntervalsAvx2(rawIntervals0, baseIntervalMs, out Vector256<int> encoded0, out Vector256<int> actualMs0);
                         EncodeAvatarIntervalsAvx2(rawIntervals1, baseIntervalMs, out Vector256<int> encoded1, out Vector256<int> actualMs1);
                         encoded0.CopyTo(encodedIntervals);
@@ -345,18 +347,18 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         actualMs0.CopyTo(actualIntervalsMs);
                         actualMs1.CopyTo(actualIntervalsMs.Slice(vectorWidth));
 
-                        Vector256<int> quality0 = Avx2.And(
-                            Avx.Compare(distances0, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector);
-                        quality0 = Avx2.Add(quality0, Avx2.And(
-                            Avx.Compare(distances0, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector));
-                        quality0 = Avx2.Add(quality0, Avx2.And(
-                            Avx.Compare(distances0, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector));
-                        Vector256<int> quality1 = Avx2.And(
-                            Avx.Compare(distances1, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector);
-                        quality1 = Avx2.Add(quality1, Avx2.And(
-                            Avx.Compare(distances1, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector));
-                        quality1 = Avx2.Add(quality1, Avx2.And(
-                            Avx.Compare(distances1, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector));
+                        Vector256<int> lowMask0 = Avx.Compare(distances0, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> mediumMask0 = Avx.Compare(distances0, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> highMask0 = Avx.Compare(distances0, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> quality0 = Avx2.And(lowMask0, oneVector);
+                        quality0 = Avx2.Or(Avx2.And(mediumMask0, twoVector), Avx2.AndNot(mediumMask0, quality0));
+                        quality0 = Avx2.Or(Avx2.And(highMask0, threeVector), Avx2.AndNot(highMask0, quality0));
+                        Vector256<int> lowMask1 = Avx.Compare(distances1, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> mediumMask1 = Avx.Compare(distances1, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> highMask1 = Avx.Compare(distances1, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> quality1 = Avx2.And(lowMask1, oneVector);
+                        quality1 = Avx2.Or(Avx2.And(mediumMask1, twoVector), Avx2.AndNot(mediumMask1, quality1));
+                        quality1 = Avx2.Or(Avx2.And(highMask1, threeVector), Avx2.AndNot(highMask1, quality1));
                         quality0.CopyTo(qualityIndices);
                         quality1.CopyTo(qualityIndices.Slice(vectorWidth));
 
@@ -398,16 +400,16 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             Avx.Add(Avx.Multiply(dx, dx), Avx.Multiply(dy, dy)),
                             Avx.Multiply(dz, dz));
                         Vector256<float> intervalFactor = Avx.Add(baseMultiplierVector, Avx.Multiply(distances, increaseRateVector));
-                        Vector256<int> rawIntervals = Avx.ConvertToVector256Int32WithTruncation(Avx.Multiply(baseIntervalVector, intervalFactor));
+                        Vector256<int> rawIntervals = Vector256.ConvertToInt32(Avx.Multiply(baseIntervalVector, intervalFactor));
                         EncodeAvatarIntervalsAvx2(rawIntervals, baseIntervalMs, out Vector256<int> encoded, out Vector256<int> actualMs);
                         encoded.CopyTo(encodedIntervals);
                         actualMs.CopyTo(actualIntervalsMs);
-                        Vector256<int> quality = Avx2.And(
-                            Avx.Compare(distances, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector);
-                        quality = Avx2.Add(quality, Avx2.And(
-                            Avx.Compare(distances, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector));
-                        quality = Avx2.Add(quality, Avx2.And(
-                            Avx.Compare(distances, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32(), oneVector));
+                        Vector256<int> lowMask = Avx.Compare(distances, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> mediumMask = Avx.Compare(distances, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> highMask = Avx.Compare(distances, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> quality = Avx2.And(lowMask, oneVector);
+                        quality = Avx2.Or(Avx2.And(mediumMask, twoVector), Avx2.AndNot(mediumMask, quality));
+                        quality = Avx2.Or(Avx2.And(highMask, threeVector), Avx2.AndNot(highMask, quality));
                         quality.CopyTo(qualityIndices);
 
                         for (int lane = 0; lane < vectorWidth; lane++)
@@ -455,6 +457,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     Vector128<float> mediumDistanceVector = Vector128.Create(mediumDistanceSq);
                     Vector128<float> lowDistanceVector = Vector128.Create(lowDistanceSq);
                     Vector128<int> oneVector = Vector128.Create(1);
+                    Vector128<int> twoVector = Vector128.Create(2);
+                    Vector128<int> threeVector = Vector128.Create(3);
                     ref float denseX = ref _denseX[0];
                     ref float denseY = ref _denseY[0];
                     ref float denseZ = ref _denseZ[0];
@@ -489,11 +493,11 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         actualMs1.CopyTo(actualIntervalsMs.Slice(vectorWidth));
 
                         Vector128<int> quality0 = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances0, lowDistanceVector).AsInt32(), oneVector);
-                        quality0 = AdvSimd.Add(quality0, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances0, mediumDistanceVector).AsInt32(), oneVector));
-                        quality0 = AdvSimd.Add(quality0, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances0, highDistanceVector).AsInt32(), oneVector));
+                        quality0 = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances0, mediumDistanceVector).AsInt32(), twoVector, quality0);
+                        quality0 = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances0, highDistanceVector).AsInt32(), threeVector, quality0);
                         Vector128<int> quality1 = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances1, lowDistanceVector).AsInt32(), oneVector);
-                        quality1 = AdvSimd.Add(quality1, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances1, mediumDistanceVector).AsInt32(), oneVector));
-                        quality1 = AdvSimd.Add(quality1, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances1, highDistanceVector).AsInt32(), oneVector));
+                        quality1 = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances1, mediumDistanceVector).AsInt32(), twoVector, quality1);
+                        quality1 = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances1, highDistanceVector).AsInt32(), threeVector, quality1);
                         quality0.CopyTo(qualityIndices);
                         quality1.CopyTo(qualityIndices.Slice(vectorWidth));
 
@@ -540,8 +544,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         encoded.CopyTo(encodedIntervals);
                         actualMs.CopyTo(actualIntervalsMs);
                         Vector128<int> quality = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, lowDistanceVector).AsInt32(), oneVector);
-                        quality = AdvSimd.Add(quality, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, mediumDistanceVector).AsInt32(), oneVector));
-                        quality = AdvSimd.Add(quality, AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, highDistanceVector).AsInt32(), oneVector));
+                        quality = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances, mediumDistanceVector).AsInt32(), twoVector, quality);
+                        quality = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances, highDistanceVector).AsInt32(), threeVector, quality);
                         quality.CopyTo(qualityIndices);
 
                         for (int lane = 0; lane < vectorWidth; lane++)
@@ -573,6 +577,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         index += vectorWidth;
                     }
                 }
+                // Explicit ISA unavailable: keep the portable SIMD path before the scalar tail so
+                // x86 without AVX2 can still use the best Vector<T> implementation the JIT provides.
                 else if (Vector.IsHardwareAccelerated)
                 {
                     int vectorWidth = Vector<float>.Count;
