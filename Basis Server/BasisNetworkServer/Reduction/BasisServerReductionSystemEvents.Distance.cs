@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Threading.Tasks;
@@ -203,6 +204,38 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void EncodeAvatarIntervalsAdvSimd(Vector128<int> rawIntervals, int baseIntervalMs,
+            out Vector128<int> encodedIntervals, out Vector128<int> actualIntervalsMs)
+        {
+            const int extendedStart = BasisNetworkCommons.AvatarIntervalExtendedStart;
+            const int extendedStep = BasisNetworkCommons.AvatarIntervalExtendedStepMs;
+            const int maxSteps = byte.MaxValue - extendedStart;
+            const int halfStep = extendedStep >> 1;
+            const int numeratorOffset = extendedStart - halfStep;
+            const int maxRelevantRelativeMs = numeratorOffset + ((maxSteps + 1) * extendedStep) - 1;
+            // Exact unsigned /12 for the clamped 0..671 numerator range.
+            const int divideBy12Magic = 0xAAAB;
+            const byte divideBy12Shift = 19;
+
+            Vector128<int> zero = Vector128<int>.Zero;
+            Vector128<int> relative = AdvSimd.Subtract(rawIntervals, Vector128.Create(baseIntervalMs));
+            relative = AdvSimd.Min(AdvSimd.Max(relative, zero), Vector128.Create(maxRelevantRelativeMs));
+
+            Vector128<int> numerator = AdvSimd.Max(AdvSimd.Subtract(relative, Vector128.Create(numeratorOffset)), zero);
+            Vector128<int> steps = AdvSimd.ShiftRightArithmetic(
+                AdvSimd.Multiply(numerator, Vector128.Create(divideBy12Magic)), divideBy12Shift);
+            Vector128<int> extendedMask = AdvSimd.CompareGreaterThan(relative, Vector128.Create(extendedStart - 1));
+            Vector128<int> extendedEncoded = AdvSimd.Add(Vector128.Create(extendedStart), steps);
+            encodedIntervals = AdvSimd.BitwiseSelect(extendedMask, extendedEncoded, relative);
+
+            Vector128<int> directMs = AdvSimd.Add(Vector128.Create(baseIntervalMs), relative);
+            Vector128<int> extendedMs = AdvSimd.Add(
+                Vector128.Create(baseIntervalMs + extendedStart),
+                AdvSimd.Multiply(steps, Vector128.Create(extendedStep)));
+            actualIntervalsMs = AdvSimd.BitwiseSelect(extendedMask, extendedMs, directMs);
+        }
+
         private static void RunDistanceSlice((int id, PlayerState state)[] activeCopy, int playerCount, int sliceStart, int sliceEnd)
         {
             int baseIntervalMs = BSRSMillisecondDefaultInterval;
@@ -230,7 +263,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 {
                     const int vectorWidth = 4;
                     Span<float> distanceSq = stackalloc float[vectorWidth * 2];
-                    Span<int> rawIntervals = stackalloc int[vectorWidth * 2];
+                    Span<int> encodedIntervals = stackalloc int[vectorWidth * 2];
+                    Span<int> actualIntervalsMs = stackalloc int[vectorWidth * 2];
                     Vector128<float> iXVector = Vector128.Create(iX);
                     Vector128<float> iYVector = Vector128.Create(iY);
                     Vector128<float> iZVector = Vector128.Create(iZ);
@@ -261,8 +295,14 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         distances1.CopyTo(distanceSq.Slice(vectorWidth));
                         Vector128<float> intervalFactor0 = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances0, increaseRateVector);
                         Vector128<float> intervalFactor1 = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances1, increaseRateVector);
-                        AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor0)).CopyTo(rawIntervals);
-                        AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor1)).CopyTo(rawIntervals.Slice(vectorWidth));
+                        Vector128<int> rawIntervals0 = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor0));
+                        Vector128<int> rawIntervals1 = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor1));
+                        EncodeAvatarIntervalsAdvSimd(rawIntervals0, baseIntervalMs, out Vector128<int> encoded0, out Vector128<int> actualMs0);
+                        EncodeAvatarIntervalsAdvSimd(rawIntervals1, baseIntervalMs, out Vector128<int> encoded1, out Vector128<int> actualMs1);
+                        encoded0.CopyTo(encodedIntervals);
+                        encoded1.CopyTo(encodedIntervals.Slice(vectorWidth));
+                        actualMs0.CopyTo(actualIntervalsMs);
+                        actualMs1.CopyTo(actualIntervalsMs.Slice(vectorWidth));
 
                         for (int lane = 0; lane < vectorWidth * 2; lane++)
                         {
@@ -284,8 +324,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             }
 
                             float distSq = distanceSq[lane];
-                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawIntervals[lane], baseIntervalMs);
-                            int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
+                            byte intervalByte = (byte)encodedIntervals[lane];
+                            int actualInterval = actualIntervalsMs[lane];
                             byte qualityIndex = distSq <= highDistanceSq ? (byte)3
                                 : distSq <= mediumDistanceSq ? (byte)2
                                 : distSq <= lowDistanceSq ? (byte)1
@@ -306,7 +346,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         distances = AdvSimd.FusedMultiplyAdd(distances, dz, dz);
                         distances.CopyTo(distanceSq);
                         Vector128<float> intervalFactor = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances, increaseRateVector);
-                        AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor)).CopyTo(rawIntervals);
+                        Vector128<int> rawIntervals = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor));
+                        EncodeAvatarIntervalsAdvSimd(rawIntervals, baseIntervalMs, out Vector128<int> encoded, out Vector128<int> actualMs);
+                        encoded.CopyTo(encodedIntervals);
+                        actualMs.CopyTo(actualIntervalsMs);
 
                         for (int lane = 0; lane < vectorWidth; lane++)
                         {
@@ -328,8 +371,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             }
 
                             float distSq = distanceSq[lane];
-                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawIntervals[lane], baseIntervalMs);
-                            int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
+                            byte intervalByte = (byte)encodedIntervals[lane];
+                            int actualInterval = actualIntervalsMs[lane];
                             byte qualityIndex = distSq <= highDistanceSq ? (byte)3
                                 : distSq <= mediumDistanceSq ? (byte)2
                                 : distSq <= lowDistanceSq ? (byte)1
