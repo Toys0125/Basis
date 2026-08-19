@@ -1,5 +1,7 @@
 using System;
 using System.Numerics;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.Arm;
 using System.Threading.Tasks;
 using static Basis.Network.Core.Compression.BasisAvatarBitPacking;
 
@@ -223,18 +225,134 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 float iZ = _denseZ[i];
 
                 int index = 0;
-                int vectorWidth = Vector<float>.Count;
-                Span<float> distanceSq = stackalloc float[vectorWidth];
-                Span<int> rawIntervals = stackalloc int[vectorWidth];
-                Vector<float> iXVector = new Vector<float>(iX);
-                Vector<float> iYVector = new Vector<float>(iY);
-                Vector<float> iZVector = new Vector<float>(iZ);
-                Vector<float> baseIntervalVector = new Vector<float>(baseIntervalMs);
-                Vector<float> baseMultiplierVector = new Vector<float>(baseMultiplier);
-                Vector<float> increaseRateVector = new Vector<float>(increaseRate);
 
-                if (Vector.IsHardwareAccelerated)
+                if (AdvSimd.IsSupported)
                 {
+                    const int vectorWidth = 4;
+                    Span<float> distanceSq = stackalloc float[vectorWidth * 2];
+                    Span<int> rawIntervals = stackalloc int[vectorWidth * 2];
+                    Vector128<float> iXVector = Vector128.Create(iX);
+                    Vector128<float> iYVector = Vector128.Create(iY);
+                    Vector128<float> iZVector = Vector128.Create(iZ);
+                    Vector128<float> baseIntervalVector = Vector128.Create((float)baseIntervalMs);
+                    Vector128<float> baseMultiplierVector = Vector128.Create(baseMultiplier);
+                    Vector128<float> increaseRateVector = Vector128.Create(increaseRate);
+                    ref float denseX = ref _denseX[0];
+                    ref float denseY = ref _denseY[0];
+                    ref float denseZ = ref _denseZ[0];
+
+                    int unrolledEnd = playerCount - (vectorWidth * 2) + 1;
+                    for (; index < unrolledEnd; index += vectorWidth * 2)
+                    {
+                        Vector128<float> dx0 = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)index));
+                        Vector128<float> dy0 = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)index));
+                        Vector128<float> dz0 = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)index));
+                        Vector128<float> distances0 = AdvSimd.FusedMultiplyAdd(AdvSimd.Multiply(dy0, dy0), dx0, dx0);
+                        distances0 = AdvSimd.FusedMultiplyAdd(distances0, dz0, dz0);
+
+                        int secondIndex = index + vectorWidth;
+                        Vector128<float> dx1 = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)secondIndex));
+                        Vector128<float> dy1 = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)secondIndex));
+                        Vector128<float> dz1 = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)secondIndex));
+                        Vector128<float> distances1 = AdvSimd.FusedMultiplyAdd(AdvSimd.Multiply(dy1, dy1), dx1, dx1);
+                        distances1 = AdvSimd.FusedMultiplyAdd(distances1, dz1, dz1);
+
+                        distances0.CopyTo(distanceSq);
+                        distances1.CopyTo(distanceSq.Slice(vectorWidth));
+                        Vector128<float> intervalFactor0 = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances0, increaseRateVector);
+                        Vector128<float> intervalFactor1 = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances1, increaseRateVector);
+                        AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor0)).CopyTo(rawIntervals);
+                        AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor1)).CopyTo(rawIntervals.Slice(vectorWidth));
+
+                        for (int lane = 0; lane < vectorWidth * 2; lane++)
+                        {
+                            int denseIndex = index + lane;
+                            int jId = _densePlayerIds[denseIndex];
+                            if (id == jId) continue;
+
+                            if (jId >= tracking.Length)
+                            {
+                                lock (state)
+                                {
+                                    if (jId >= state.PeerTracking.Length)
+                                    {
+                                        int newLen = Math.Max(state.PeerTracking.Length * 2, jId + 1);
+                                        Array.Resize(ref state.PeerTracking, newLen);
+                                    }
+                                    tracking = state.PeerTracking;
+                                }
+                            }
+
+                            float distSq = distanceSq[lane];
+                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawIntervals[lane], baseIntervalMs);
+                            int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
+                            byte qualityIndex = distSq <= highDistanceSq ? (byte)3
+                                : distSq <= mediumDistanceSq ? (byte)2
+                                : distSq <= lowDistanceSq ? (byte)1
+                                : (byte)0;
+                            tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
+                            tracking[jId].CachedQualityIndex = qualityIndex;
+                            tracking[jId].CachedIntervalByte = intervalByte;
+                        }
+                    }
+
+                    int vectorEnd = playerCount - vectorWidth + 1;
+                    if (index < vectorEnd)
+                    {
+                        Vector128<float> dx = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)index));
+                        Vector128<float> dy = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)index));
+                        Vector128<float> dz = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)index));
+                        Vector128<float> distances = AdvSimd.FusedMultiplyAdd(AdvSimd.Multiply(dy, dy), dx, dx);
+                        distances = AdvSimd.FusedMultiplyAdd(distances, dz, dz);
+                        distances.CopyTo(distanceSq);
+                        Vector128<float> intervalFactor = AdvSimd.FusedMultiplyAdd(baseMultiplierVector, distances, increaseRateVector);
+                        AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor)).CopyTo(rawIntervals);
+
+                        for (int lane = 0; lane < vectorWidth; lane++)
+                        {
+                            int denseIndex = index + lane;
+                            int jId = _densePlayerIds[denseIndex];
+                            if (id == jId) continue;
+
+                            if (jId >= tracking.Length)
+                            {
+                                lock (state)
+                                {
+                                    if (jId >= state.PeerTracking.Length)
+                                    {
+                                        int newLen = Math.Max(state.PeerTracking.Length * 2, jId + 1);
+                                        Array.Resize(ref state.PeerTracking, newLen);
+                                    }
+                                    tracking = state.PeerTracking;
+                                }
+                            }
+
+                            float distSq = distanceSq[lane];
+                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawIntervals[lane], baseIntervalMs);
+                            int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
+                            byte qualityIndex = distSq <= highDistanceSq ? (byte)3
+                                : distSq <= mediumDistanceSq ? (byte)2
+                                : distSq <= lowDistanceSq ? (byte)1
+                                : (byte)0;
+                            tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
+                            tracking[jId].CachedQualityIndex = qualityIndex;
+                            tracking[jId].CachedIntervalByte = intervalByte;
+                        }
+                        index += vectorWidth;
+                    }
+                }
+                else if (Vector.IsHardwareAccelerated)
+                {
+                    int vectorWidth = Vector<float>.Count;
+                    Span<float> distanceSq = stackalloc float[vectorWidth];
+                    Span<int> rawIntervals = stackalloc int[vectorWidth];
+                    Vector<float> iXVector = new Vector<float>(iX);
+                    Vector<float> iYVector = new Vector<float>(iY);
+                    Vector<float> iZVector = new Vector<float>(iZ);
+                    Vector<float> baseIntervalVector = new Vector<float>(baseIntervalMs);
+                    Vector<float> baseMultiplierVector = new Vector<float>(baseMultiplier);
+                    Vector<float> increaseRateVector = new Vector<float>(increaseRate);
+
                     int vectorEnd = playerCount - vectorWidth + 1;
                     for (; index < vectorEnd; index += vectorWidth)
                     {
