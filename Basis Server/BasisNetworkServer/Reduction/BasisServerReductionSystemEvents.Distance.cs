@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Threading.Tasks;
 using static Basis.Network.Core.Compression.BasisAvatarBitPacking;
 
@@ -213,12 +214,57 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 float iY = _denseY[i];
                 float iZ = _denseZ[i];
 
-                for (int index = 0; index < playerCount; index++)
+                int index = 0;
+                int vectorWidth = Vector<float>.Count;
+                Span<float> distanceSq = stackalloc float[vectorWidth];
+                Vector<float> iXVector = new Vector<float>(iX);
+                Vector<float> iYVector = new Vector<float>(iY);
+                Vector<float> iZVector = new Vector<float>(iZ);
+
+                if (Vector.IsHardwareAccelerated)
+                {
+                    int vectorEnd = playerCount - vectorWidth + 1;
+                    for (; index < vectorEnd; index += vectorWidth)
+                    {
+                        Vector<float> dx = iXVector - new Vector<float>(_denseX, index);
+                        Vector<float> dy = iYVector - new Vector<float>(_denseY, index);
+                        Vector<float> dz = iZVector - new Vector<float>(_denseZ, index);
+                        Vector<float> distances = dx * dx + dy * dy + dz * dz;
+                        distances.CopyTo(distanceSq);
+
+                        for (int lane = 0; lane < vectorWidth; lane++)
+                        {
+                            int denseIndex = index + lane;
+                            int jId = _densePlayerIds[denseIndex];
+                            if (id == jId) continue;
+
+                            if (jId >= tracking.Length)
+                            {
+                                lock (state)
+                                {
+                                    if (jId >= state.PeerTracking.Length)
+                                    {
+                                        int newLen = Math.Max(state.PeerTracking.Length * 2, jId + 1);
+                                        Array.Resize(ref state.PeerTracking, newLen);
+                                    }
+                                    tracking = state.PeerTracking;
+                                }
+                            }
+
+                            float distSq = distanceSq[lane];
+                            CalculateIntervalFromDistanceSq(distSq, out byte intervalByte, out int actualInterval);
+                            tracking[jId].CachedIntervalTicks = (int)(actualInterval * MsToTick);
+                            tracking[jId].CachedQualityIndex = (byte)GetQualityIndex(distSq);
+                            tracking[jId].CachedIntervalByte = intervalByte;
+                        }
+                    }
+                }
+
+                for (; index < playerCount; index++)
                 {
                     int jId = _densePlayerIds[index];
                     if (id == jId) continue;
 
-                    // Grow tracking array if needed (same logic as send loop)
                     if (jId >= tracking.Length)
                     {
                         lock (state)
@@ -236,9 +282,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     float dy = iY - _denseY[index];
                     float dz = iZ - _denseZ[index];
                     float distSq = dx * dx + dy * dy + dz * dz;
-
                     CalculateIntervalFromDistanceSq(distSq, out byte intervalByte, out int actualInterval);
-
                     tracking[jId].CachedIntervalTicks = (int)(actualInterval * MsToTick);
                     tracking[jId].CachedQualityIndex = (byte)GetQualityIndex(distSq);
                     tracking[jId].CachedIntervalByte = intervalByte;
