@@ -146,7 +146,6 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             {
                 SnapshotPositions(activeCopy, playerCount);
                 EnsureDistanceSolver();
-                if (_distanceSolver != null) SnapshotDensePositions(activeCopy, playerCount);
             }
 
             if (!TryRunDistanceSliceOnDevice(activeCopy, playerCount, sliceStart, sliceEnd))
@@ -170,6 +169,13 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             {
                 _densePlayerIds = new int[Math.Max(playerCount, _densePlayerIds.Length * 2)];
             }
+            if (_denseX.Length < playerCount)
+            {
+                int denseLength = Math.Max(playerCount, _denseX.Length * 2);
+                _denseX = new float[denseLength];
+                _denseY = new float[denseLength];
+                _denseZ = new float[denseLength];
+            }
             if (_posXSnapshot.Length < snapshotLen)
             {
                 int newLen = Math.Max(snapshotLen, _posXSnapshot.Length * 2);
@@ -182,9 +188,15 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 int id = activeCopy[i].id;
                 _densePlayerIds[i] = id;
                 var state = activeCopy[i].state;
-                _posXSnapshot[id] = state.Position.x;
-                _posYSnapshot[id] = state.Position.y;
-                _posZSnapshot[id] = state.Position.z;
+                float x = state.Position.x;
+                float y = state.Position.y;
+                float z = state.Position.z;
+                _posXSnapshot[id] = x;
+                _posYSnapshot[id] = y;
+                _posZSnapshot[id] = z;
+                _denseX[i] = x;
+                _denseY[i] = y;
+                _denseZ[i] = z;
             }
         }
 
@@ -197,9 +209,9 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 var tracking = state.PeerTracking;
                 if (tracking == null) return;
 
-                float iX = _posXSnapshot[id];
-                float iY = _posYSnapshot[id];
-                float iZ = _posZSnapshot[id];
+                float iX = _denseX[i];
+                float iY = _denseY[i];
+                float iZ = _denseZ[i];
 
                 for (int index = 0; index < playerCount; index++)
                 {
@@ -220,9 +232,9 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         }
                     }
 
-                    float dx = iX - _posXSnapshot[jId];
-                    float dy = iY - _posYSnapshot[jId];
-                    float dz = iZ - _posZSnapshot[jId];
+                    float dx = iX - _denseX[index];
+                    float dy = iY - _denseY[index];
+                    float dz = iZ - _denseZ[index];
                     float distSq = dx * dx + dy * dy + dz * dz;
 
                     CalculateIntervalFromDistanceSq(distSq, out byte intervalByte, out int actualInterval);
