@@ -3,8 +3,12 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 #if NET10_0_OR_GREATER
 using System.Runtime.Intrinsics;
+#if !BASIS_TARGET_X86
 using System.Runtime.Intrinsics.Arm;
+#endif
+#if !BASIS_TARGET_ARM
 using System.Runtime.Intrinsics.X86;
+#endif
 #endif
 using System.Threading.Tasks;
 using static Basis.Network.Core.Compression.BasisAvatarBitPacking;
@@ -218,6 +222,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         private const int AvatarIntervalDivideMagic = 0xAAAB;
         private const byte AvatarIntervalDivideShift = 19;
 
+#if !BASIS_TARGET_ARM
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void EncodeAvatarIntervalsAvx2(Vector256<int> rawIntervals, int baseIntervalMs,
             out Vector256<int> encodedIntervals, out Vector256<int> actualIntervalsMs)
@@ -243,7 +248,9 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 Avx2.And(extendedMask, extendedMs),
                 Avx2.AndNot(extendedMask, directMs));
         }
+#endif
 
+#if !BASIS_TARGET_X86
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void EncodeAvatarIntervalsAdvSimd(Vector128<int> rawIntervals, int baseIntervalMs,
             out Vector128<int> encodedIntervals, out Vector128<int> actualIntervalsMs)
@@ -265,6 +272,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 AdvSimd.Multiply(steps, Vector128.Create(AvatarIntervalExtendedStep)));
             actualIntervalsMs = AdvSimd.BitwiseSelect(extendedMask, extendedMs, directMs);
         }
+#endif
 #endif
 
         private static void RunDistanceSlice((int id, PlayerState state)[] activeCopy, int playerCount, int sliceStart, int sliceEnd)
@@ -290,7 +298,7 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 
                 int index = 0;
 
-#if NET10_0_OR_GREATER
+#if NET10_0_OR_GREATER && !BASIS_TARGET_ARM
                 if (Avx2.IsSupported)
                 {
                     const int vectorWidth = 8;
@@ -361,7 +369,10 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                         }
                     }
                 }
-                else if (AdvSimd.IsSupported)
+                else
+#endif
+#if NET10_0_OR_GREATER && !BASIS_TARGET_X86
+                if (AdvSimd.IsSupported)
                 {
                     const int vectorWidth = 4;
                     Span<int> qualityIndices = stackalloc int[vectorWidth * 2];
@@ -447,8 +458,8 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                 }
                 else
 #endif
-                // On net10 the else above belongs to this portable fallback; keep them together.
-                // Explicit ISA unavailable: use the best Vector<T> implementation before scalar.
+                // RID-specific builds compile only their matching explicit ISA. Portable builds
+                // keep both runtime checks, then fall through to Vector<T> and finally scalar.
                 if (Vector.IsHardwareAccelerated)
                 {
                     int vectorWidth = Vector<float>.Count;
