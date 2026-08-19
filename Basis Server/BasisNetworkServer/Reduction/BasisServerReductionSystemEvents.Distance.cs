@@ -203,6 +203,14 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 
         private static void RunDistanceSlice((int id, PlayerState state)[] activeCopy, int playerCount, int sliceStart, int sliceEnd)
         {
+            int baseIntervalMs = BSRSMillisecondDefaultInterval;
+            float baseMultiplier = BSRBaseMultiplier;
+            float increaseRate = BSRSIncreaseRate;
+            float highDistanceSq = HighDistanceSq;
+            float mediumDistanceSq = MediumDistanceSq;
+            float lowDistanceSq = LowDistanceSq;
+            double msToTick = MsToTick;
+
             Parallel.For(sliceStart, sliceEnd, parallelOptions, i =>
             {
                 int id = _densePlayerIds[i];
@@ -252,9 +260,15 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             }
 
                             float distSq = distanceSq[lane];
-                            CalculateIntervalFromDistanceSq(distSq, out byte intervalByte, out int actualInterval);
-                            tracking[jId].CachedIntervalTicks = (int)(actualInterval * MsToTick);
-                            tracking[jId].CachedQualityIndex = (byte)GetQualityIndex(distSq);
+                            int rawInterval = (int)(baseIntervalMs * (baseMultiplier + (distSq * increaseRate)));
+                            byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawInterval, baseIntervalMs);
+                            int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
+                            byte qualityIndex = distSq <= highDistanceSq ? (byte)3
+                                : distSq <= mediumDistanceSq ? (byte)2
+                                : distSq <= lowDistanceSq ? (byte)1
+                                : (byte)0;
+                            tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
+                            tracking[jId].CachedQualityIndex = qualityIndex;
                             tracking[jId].CachedIntervalByte = intervalByte;
                         }
                     }
@@ -282,9 +296,15 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     float dy = iY - _denseY[index];
                     float dz = iZ - _denseZ[index];
                     float distSq = dx * dx + dy * dy + dz * dz;
-                    CalculateIntervalFromDistanceSq(distSq, out byte intervalByte, out int actualInterval);
-                    tracking[jId].CachedIntervalTicks = (int)(actualInterval * MsToTick);
-                    tracking[jId].CachedQualityIndex = (byte)GetQualityIndex(distSq);
+                    int rawInterval = (int)(baseIntervalMs * (baseMultiplier + (distSq * increaseRate)));
+                    byte intervalByte = BasisNetworkCommons.EncodeAvatarIntervalByte(rawInterval, baseIntervalMs);
+                    int actualInterval = BasisNetworkCommons.DecodeAvatarIntervalMs(intervalByte, baseIntervalMs);
+                    byte qualityIndex = distSq <= highDistanceSq ? (byte)3
+                        : distSq <= mediumDistanceSq ? (byte)2
+                        : distSq <= lowDistanceSq ? (byte)1
+                        : (byte)0;
+                    tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
+                    tracking[jId].CachedQualityIndex = qualityIndex;
                     tracking[jId].CachedIntervalByte = intervalByte;
                 }
             });
