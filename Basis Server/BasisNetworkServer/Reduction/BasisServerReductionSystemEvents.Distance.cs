@@ -1,9 +1,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+#if NET10_0_OR_GREATER
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
+#endif
 using System.Threading.Tasks;
 using static Basis.Network.Core.Compression.BasisAvatarBitPacking;
 
@@ -205,37 +207,38 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
             }
         }
 
+#if NET10_0_OR_GREATER
+        private const int AvatarIntervalExtendedStart = BasisNetworkCommons.AvatarIntervalExtendedStart;
+        private const int AvatarIntervalExtendedStep = BasisNetworkCommons.AvatarIntervalExtendedStepMs;
+        private const int AvatarIntervalMaxSteps = byte.MaxValue - AvatarIntervalExtendedStart;
+        private const int AvatarIntervalNumeratorOffset = AvatarIntervalExtendedStart - (AvatarIntervalExtendedStep >> 1);
+        private const int AvatarIntervalMaxRelevantRelativeMs =
+            AvatarIntervalNumeratorOffset + ((AvatarIntervalMaxSteps + 1) * AvatarIntervalExtendedStep) - 1;
+        // Exact unsigned /12 for the clamped 0..671 numerator range.
+        private const int AvatarIntervalDivideMagic = 0xAAAB;
+        private const byte AvatarIntervalDivideShift = 19;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void EncodeAvatarIntervalsAvx2(Vector256<int> rawIntervals, int baseIntervalMs,
             out Vector256<int> encodedIntervals, out Vector256<int> actualIntervalsMs)
         {
-            const int extendedStart = BasisNetworkCommons.AvatarIntervalExtendedStart;
-            const int extendedStep = BasisNetworkCommons.AvatarIntervalExtendedStepMs;
-            const int maxSteps = byte.MaxValue - extendedStart;
-            const int halfStep = extendedStep >> 1;
-            const int numeratorOffset = extendedStart - halfStep;
-            const int maxRelevantRelativeMs = numeratorOffset + ((maxSteps + 1) * extendedStep) - 1;
-            // Exact unsigned /12 for the clamped 0..671 numerator range.
-            const int divideBy12Magic = 0xAAAB;
-            const byte divideBy12Shift = 19;
-
             Vector256<int> zero = Vector256<int>.Zero;
             Vector256<int> relative = Avx2.Subtract(rawIntervals, Vector256.Create(baseIntervalMs));
-            relative = Avx2.Min(Avx2.Max(relative, zero), Vector256.Create(maxRelevantRelativeMs));
+            relative = Avx2.Min(Avx2.Max(relative, zero), Vector256.Create(AvatarIntervalMaxRelevantRelativeMs));
 
-            Vector256<int> numerator = Avx2.Max(Avx2.Subtract(relative, Vector256.Create(numeratorOffset)), zero);
+            Vector256<int> numerator = Avx2.Max(Avx2.Subtract(relative, Vector256.Create(AvatarIntervalNumeratorOffset)), zero);
             Vector256<int> steps = Avx2.ShiftRightArithmetic(
-                Avx2.MultiplyLow(numerator, Vector256.Create(divideBy12Magic)), divideBy12Shift);
-            Vector256<int> extendedMask = Avx2.CompareGreaterThan(relative, Vector256.Create(extendedStart - 1));
-            Vector256<int> extendedEncoded = Avx2.Add(Vector256.Create(extendedStart), steps);
+                Avx2.MultiplyLow(numerator, Vector256.Create(AvatarIntervalDivideMagic)), AvatarIntervalDivideShift);
+            Vector256<int> extendedMask = Avx2.CompareGreaterThan(relative, Vector256.Create(AvatarIntervalExtendedStart - 1));
+            Vector256<int> extendedEncoded = Avx2.Add(Vector256.Create(AvatarIntervalExtendedStart), steps);
             encodedIntervals = Avx2.Or(
                 Avx2.And(extendedMask, extendedEncoded),
                 Avx2.AndNot(extendedMask, relative));
 
             Vector256<int> directMs = Avx2.Add(Vector256.Create(baseIntervalMs), relative);
             Vector256<int> extendedMs = Avx2.Add(
-                Vector256.Create(baseIntervalMs + extendedStart),
-                Avx2.MultiplyLow(steps, Vector256.Create(extendedStep)));
+                Vector256.Create(baseIntervalMs + AvatarIntervalExtendedStart),
+                Avx2.MultiplyLow(steps, Vector256.Create(AvatarIntervalExtendedStep)));
             actualIntervalsMs = Avx2.Or(
                 Avx2.And(extendedMask, extendedMs),
                 Avx2.AndNot(extendedMask, directMs));
@@ -245,33 +248,24 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
         private static void EncodeAvatarIntervalsAdvSimd(Vector128<int> rawIntervals, int baseIntervalMs,
             out Vector128<int> encodedIntervals, out Vector128<int> actualIntervalsMs)
         {
-            const int extendedStart = BasisNetworkCommons.AvatarIntervalExtendedStart;
-            const int extendedStep = BasisNetworkCommons.AvatarIntervalExtendedStepMs;
-            const int maxSteps = byte.MaxValue - extendedStart;
-            const int halfStep = extendedStep >> 1;
-            const int numeratorOffset = extendedStart - halfStep;
-            const int maxRelevantRelativeMs = numeratorOffset + ((maxSteps + 1) * extendedStep) - 1;
-            // Exact unsigned /12 for the clamped 0..671 numerator range.
-            const int divideBy12Magic = 0xAAAB;
-            const byte divideBy12Shift = 19;
-
             Vector128<int> zero = Vector128<int>.Zero;
             Vector128<int> relative = AdvSimd.Subtract(rawIntervals, Vector128.Create(baseIntervalMs));
-            relative = AdvSimd.Min(AdvSimd.Max(relative, zero), Vector128.Create(maxRelevantRelativeMs));
+            relative = AdvSimd.Min(AdvSimd.Max(relative, zero), Vector128.Create(AvatarIntervalMaxRelevantRelativeMs));
 
-            Vector128<int> numerator = AdvSimd.Max(AdvSimd.Subtract(relative, Vector128.Create(numeratorOffset)), zero);
+            Vector128<int> numerator = AdvSimd.Max(AdvSimd.Subtract(relative, Vector128.Create(AvatarIntervalNumeratorOffset)), zero);
             Vector128<int> steps = AdvSimd.ShiftRightArithmetic(
-                AdvSimd.Multiply(numerator, Vector128.Create(divideBy12Magic)), divideBy12Shift);
-            Vector128<int> extendedMask = AdvSimd.CompareGreaterThan(relative, Vector128.Create(extendedStart - 1));
-            Vector128<int> extendedEncoded = AdvSimd.Add(Vector128.Create(extendedStart), steps);
+                AdvSimd.Multiply(numerator, Vector128.Create(AvatarIntervalDivideMagic)), AvatarIntervalDivideShift);
+            Vector128<int> extendedMask = AdvSimd.CompareGreaterThan(relative, Vector128.Create(AvatarIntervalExtendedStart - 1));
+            Vector128<int> extendedEncoded = AdvSimd.Add(Vector128.Create(AvatarIntervalExtendedStart), steps);
             encodedIntervals = AdvSimd.BitwiseSelect(extendedMask, extendedEncoded, relative);
 
             Vector128<int> directMs = AdvSimd.Add(Vector128.Create(baseIntervalMs), relative);
             Vector128<int> extendedMs = AdvSimd.Add(
-                Vector128.Create(baseIntervalMs + extendedStart),
-                AdvSimd.Multiply(steps, Vector128.Create(extendedStep)));
+                Vector128.Create(baseIntervalMs + AvatarIntervalExtendedStart),
+                AdvSimd.Multiply(steps, Vector128.Create(AvatarIntervalExtendedStep)));
             actualIntervalsMs = AdvSimd.BitwiseSelect(extendedMask, extendedMs, directMs);
         }
+#endif
 
         private static void RunDistanceSlice((int id, PlayerState state)[] activeCopy, int playerCount, int sliceStart, int sliceEnd)
         {
@@ -296,12 +290,13 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
 
                 int index = 0;
 
+#if NET10_0_OR_GREATER
                 if (Avx2.IsSupported)
                 {
                     const int vectorWidth = 8;
-                    Span<int> qualityIndices = stackalloc int[vectorWidth * 2];
-                    Span<int> encodedIntervals = stackalloc int[vectorWidth * 2];
-                    Span<int> actualIntervalsMs = stackalloc int[vectorWidth * 2];
+                    Span<int> qualityIndices = stackalloc int[vectorWidth];
+                    Span<int> encodedIntervals = stackalloc int[vectorWidth];
+                    Span<int> actualIntervalsMs = stackalloc int[vectorWidth];
                     Vector256<float> iXVector = Vector256.Create(iX);
                     Vector256<float> iYVector = Vector256.Create(iY);
                     Vector256<float> iZVector = Vector256.Create(iZ);
@@ -318,95 +313,21 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     ref float denseY = ref _denseY[0];
                     ref float denseZ = ref _denseZ[0];
 
-                    int unrolledEnd = playerCount - (vectorWidth * 2) + 1;
-                    for (; index < unrolledEnd; index += vectorWidth * 2)
-                    {
-                        Vector256<float> dx0 = Avx.Subtract(iXVector, Vector256.LoadUnsafe(ref denseX, (nuint)index));
-                        Vector256<float> dy0 = Avx.Subtract(iYVector, Vector256.LoadUnsafe(ref denseY, (nuint)index));
-                        Vector256<float> dz0 = Avx.Subtract(iZVector, Vector256.LoadUnsafe(ref denseZ, (nuint)index));
-                        Vector256<float> distances0 = Avx.Add(
-                            Avx.Add(Avx.Multiply(dx0, dx0), Avx.Multiply(dy0, dy0)),
-                            Avx.Multiply(dz0, dz0));
-
-                        int secondIndex = index + vectorWidth;
-                        Vector256<float> dx1 = Avx.Subtract(iXVector, Vector256.LoadUnsafe(ref denseX, (nuint)secondIndex));
-                        Vector256<float> dy1 = Avx.Subtract(iYVector, Vector256.LoadUnsafe(ref denseY, (nuint)secondIndex));
-                        Vector256<float> dz1 = Avx.Subtract(iZVector, Vector256.LoadUnsafe(ref denseZ, (nuint)secondIndex));
-                        Vector256<float> distances1 = Avx.Add(
-                            Avx.Add(Avx.Multiply(dx1, dx1), Avx.Multiply(dy1, dy1)),
-                            Avx.Multiply(dz1, dz1));
-
-                        Vector256<float> intervalFactor0 = Avx.Add(baseMultiplierVector, Avx.Multiply(distances0, increaseRateVector));
-                        Vector256<float> intervalFactor1 = Avx.Add(baseMultiplierVector, Avx.Multiply(distances1, increaseRateVector));
-                        Vector256<int> rawIntervals0 = Vector256.ConvertToInt32(Avx.Multiply(baseIntervalVector, intervalFactor0));
-                        Vector256<int> rawIntervals1 = Vector256.ConvertToInt32(Avx.Multiply(baseIntervalVector, intervalFactor1));
-                        EncodeAvatarIntervalsAvx2(rawIntervals0, baseIntervalMs, out Vector256<int> encoded0, out Vector256<int> actualMs0);
-                        EncodeAvatarIntervalsAvx2(rawIntervals1, baseIntervalMs, out Vector256<int> encoded1, out Vector256<int> actualMs1);
-                        encoded0.CopyTo(encodedIntervals);
-                        encoded1.CopyTo(encodedIntervals.Slice(vectorWidth));
-                        actualMs0.CopyTo(actualIntervalsMs);
-                        actualMs1.CopyTo(actualIntervalsMs.Slice(vectorWidth));
-
-                        Vector256<int> lowMask0 = Avx.Compare(distances0, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> mediumMask0 = Avx.Compare(distances0, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> highMask0 = Avx.Compare(distances0, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> quality0 = Avx2.And(lowMask0, oneVector);
-                        quality0 = Avx2.Or(Avx2.And(mediumMask0, twoVector), Avx2.AndNot(mediumMask0, quality0));
-                        quality0 = Avx2.Or(Avx2.And(highMask0, threeVector), Avx2.AndNot(highMask0, quality0));
-                        Vector256<int> lowMask1 = Avx.Compare(distances1, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> mediumMask1 = Avx.Compare(distances1, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> highMask1 = Avx.Compare(distances1, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> quality1 = Avx2.And(lowMask1, oneVector);
-                        quality1 = Avx2.Or(Avx2.And(mediumMask1, twoVector), Avx2.AndNot(mediumMask1, quality1));
-                        quality1 = Avx2.Or(Avx2.And(highMask1, threeVector), Avx2.AndNot(highMask1, quality1));
-                        quality0.CopyTo(qualityIndices);
-                        quality1.CopyTo(qualityIndices.Slice(vectorWidth));
-
-                        for (int lane = 0; lane < vectorWidth * 2; lane++)
-                        {
-                            int denseIndex = index + lane;
-                            int jId = _densePlayerIds[denseIndex];
-                            if (id == jId) continue;
-
-                            if (jId >= tracking.Length)
-                            {
-                                lock (state)
-                                {
-                                    if (jId >= state.PeerTracking.Length)
-                                    {
-                                        int newLen = Math.Max(state.PeerTracking.Length * 2, jId + 1);
-                                        Array.Resize(ref state.PeerTracking, newLen);
-                                    }
-                                    tracking = state.PeerTracking;
-                                }
-                            }
-
-                            byte intervalByte = (byte)encodedIntervals[lane];
-                            int intervalTicks = (int)(actualIntervalsMs[lane] * msToTick);
-                            byte qualityIndex = (byte)qualityIndices[lane];
-                            tracking[jId].CachedIntervalTicks = intervalTicks;
-                            tracking[jId].CachedQualityIndex = qualityIndex;
-                            tracking[jId].CachedIntervalByte = intervalByte;
-                        }
-                    }
-
                     int vectorEnd = playerCount - vectorWidth + 1;
-                    if (index < vectorEnd)
+                    for (; index < vectorEnd; index += vectorWidth)
                     {
-                        Vector256<float> dx = Avx.Subtract(iXVector, Vector256.LoadUnsafe(ref denseX, (nuint)index));
-                        Vector256<float> dy = Avx.Subtract(iYVector, Vector256.LoadUnsafe(ref denseY, (nuint)index));
-                        Vector256<float> dz = Avx.Subtract(iZVector, Vector256.LoadUnsafe(ref denseZ, (nuint)index));
-                        Vector256<float> distances = Avx.Add(
-                            Avx.Add(Avx.Multiply(dx, dx), Avx.Multiply(dy, dy)),
-                            Avx.Multiply(dz, dz));
-                        Vector256<float> intervalFactor = Avx.Add(baseMultiplierVector, Avx.Multiply(distances, increaseRateVector));
-                        Vector256<int> rawIntervals = Vector256.ConvertToInt32(Avx.Multiply(baseIntervalVector, intervalFactor));
+                        Vector256<float> dx = iXVector - Vector256.LoadUnsafe(ref denseX, (nuint)index);
+                        Vector256<float> dy = iYVector - Vector256.LoadUnsafe(ref denseY, (nuint)index);
+                        Vector256<float> dz = iZVector - Vector256.LoadUnsafe(ref denseZ, (nuint)index);
+                        Vector256<float> distances = dx * dx + dy * dy + dz * dz;
+                        Vector256<float> intervalFactor = baseMultiplierVector + distances * increaseRateVector;
+                        Vector256<int> rawIntervals = Vector256.ConvertToInt32(baseIntervalVector * intervalFactor);
                         EncodeAvatarIntervalsAvx2(rawIntervals, baseIntervalMs, out Vector256<int> encoded, out Vector256<int> actualMs);
                         encoded.CopyTo(encodedIntervals);
                         actualMs.CopyTo(actualIntervalsMs);
-                        Vector256<int> lowMask = Avx.Compare(distances, lowDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> mediumMask = Avx.Compare(distances, mediumDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
-                        Vector256<int> highMask = Avx.Compare(distances, highDistanceVector, FloatComparisonMode.OrderedLessThanOrEqualNonSignaling).AsInt32();
+                        Vector256<int> lowMask = Vector256.LessThanOrEqual(distances, lowDistanceVector).AsInt32();
+                        Vector256<int> mediumMask = Vector256.LessThanOrEqual(distances, mediumDistanceVector).AsInt32();
+                        Vector256<int> highMask = Vector256.LessThanOrEqual(distances, highDistanceVector).AsInt32();
                         Vector256<int> quality = Avx2.And(lowMask, oneVector);
                         quality = Avx2.Or(Avx2.And(mediumMask, twoVector), Avx2.AndNot(mediumMask, quality));
                         quality = Avx2.Or(Avx2.And(highMask, threeVector), Avx2.AndNot(highMask, quality));
@@ -438,7 +359,6 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             tracking[jId].CachedQualityIndex = qualityIndex;
                             tracking[jId].CachedIntervalByte = intervalByte;
                         }
-                        index += vectorWidth;
                     }
                 }
                 else if (AdvSimd.IsSupported)
@@ -466,25 +386,21 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                     int unrolledEnd = playerCount - (vectorWidth * 2) + 1;
                     for (; index < unrolledEnd; index += vectorWidth * 2)
                     {
-                        Vector128<float> dx0 = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)index));
-                        Vector128<float> dy0 = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)index));
-                        Vector128<float> dz0 = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)index));
-                        Vector128<float> distances0 = AdvSimd.Add(
-                            AdvSimd.Add(AdvSimd.Multiply(dx0, dx0), AdvSimd.Multiply(dy0, dy0)),
-                            AdvSimd.Multiply(dz0, dz0));
+                        Vector128<float> dx0 = iXVector - Vector128.LoadUnsafe(ref denseX, (nuint)index);
+                        Vector128<float> dy0 = iYVector - Vector128.LoadUnsafe(ref denseY, (nuint)index);
+                        Vector128<float> dz0 = iZVector - Vector128.LoadUnsafe(ref denseZ, (nuint)index);
+                        Vector128<float> distances0 = dx0 * dx0 + dy0 * dy0 + dz0 * dz0;
 
                         int secondIndex = index + vectorWidth;
-                        Vector128<float> dx1 = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)secondIndex));
-                        Vector128<float> dy1 = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)secondIndex));
-                        Vector128<float> dz1 = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)secondIndex));
-                        Vector128<float> distances1 = AdvSimd.Add(
-                            AdvSimd.Add(AdvSimd.Multiply(dx1, dx1), AdvSimd.Multiply(dy1, dy1)),
-                            AdvSimd.Multiply(dz1, dz1));
+                        Vector128<float> dx1 = iXVector - Vector128.LoadUnsafe(ref denseX, (nuint)secondIndex);
+                        Vector128<float> dy1 = iYVector - Vector128.LoadUnsafe(ref denseY, (nuint)secondIndex);
+                        Vector128<float> dz1 = iZVector - Vector128.LoadUnsafe(ref denseZ, (nuint)secondIndex);
+                        Vector128<float> distances1 = dx1 * dx1 + dy1 * dy1 + dz1 * dz1;
 
-                        Vector128<float> intervalFactor0 = AdvSimd.Add(baseMultiplierVector, AdvSimd.Multiply(distances0, increaseRateVector));
-                        Vector128<float> intervalFactor1 = AdvSimd.Add(baseMultiplierVector, AdvSimd.Multiply(distances1, increaseRateVector));
-                        Vector128<int> rawIntervals0 = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor0));
-                        Vector128<int> rawIntervals1 = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor1));
+                        Vector128<float> intervalFactor0 = baseMultiplierVector + distances0 * increaseRateVector;
+                        Vector128<float> intervalFactor1 = baseMultiplierVector + distances1 * increaseRateVector;
+                        Vector128<int> rawIntervals0 = AdvSimd.ConvertToInt32RoundToZero(baseIntervalVector * intervalFactor0);
+                        Vector128<int> rawIntervals1 = AdvSimd.ConvertToInt32RoundToZero(baseIntervalVector * intervalFactor1);
                         EncodeAvatarIntervalsAdvSimd(rawIntervals0, baseIntervalMs, out Vector128<int> encoded0, out Vector128<int> actualMs0);
                         EncodeAvatarIntervalsAdvSimd(rawIntervals1, baseIntervalMs, out Vector128<int> encoded1, out Vector128<int> actualMs1);
                         encoded0.CopyTo(encodedIntervals);
@@ -528,62 +444,21 @@ namespace BasisNetworkServer.BasisNetworkingReductionSystem
                             tracking[jId].CachedIntervalByte = intervalByte;
                         }
                     }
-
-                    int vectorEnd = playerCount - vectorWidth + 1;
-                    if (index < vectorEnd)
-                    {
-                        Vector128<float> dx = AdvSimd.Subtract(iXVector, Vector128.LoadUnsafe(ref denseX, (nuint)index));
-                        Vector128<float> dy = AdvSimd.Subtract(iYVector, Vector128.LoadUnsafe(ref denseY, (nuint)index));
-                        Vector128<float> dz = AdvSimd.Subtract(iZVector, Vector128.LoadUnsafe(ref denseZ, (nuint)index));
-                        Vector128<float> distances = AdvSimd.Add(
-                            AdvSimd.Add(AdvSimd.Multiply(dx, dx), AdvSimd.Multiply(dy, dy)),
-                            AdvSimd.Multiply(dz, dz));
-                        Vector128<float> intervalFactor = AdvSimd.Add(baseMultiplierVector, AdvSimd.Multiply(distances, increaseRateVector));
-                        Vector128<int> rawIntervals = AdvSimd.ConvertToInt32RoundToZero(AdvSimd.Multiply(baseIntervalVector, intervalFactor));
-                        EncodeAvatarIntervalsAdvSimd(rawIntervals, baseIntervalMs, out Vector128<int> encoded, out Vector128<int> actualMs);
-                        encoded.CopyTo(encodedIntervals);
-                        actualMs.CopyTo(actualIntervalsMs);
-                        Vector128<int> quality = AdvSimd.And(AdvSimd.CompareLessThanOrEqual(distances, lowDistanceVector).AsInt32(), oneVector);
-                        quality = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances, mediumDistanceVector).AsInt32(), twoVector, quality);
-                        quality = AdvSimd.BitwiseSelect(AdvSimd.CompareLessThanOrEqual(distances, highDistanceVector).AsInt32(), threeVector, quality);
-                        quality.CopyTo(qualityIndices);
-
-                        for (int lane = 0; lane < vectorWidth; lane++)
-                        {
-                            int denseIndex = index + lane;
-                            int jId = _densePlayerIds[denseIndex];
-                            if (id == jId) continue;
-
-                            if (jId >= tracking.Length)
-                            {
-                                lock (state)
-                                {
-                                    if (jId >= state.PeerTracking.Length)
-                                    {
-                                        int newLen = Math.Max(state.PeerTracking.Length * 2, jId + 1);
-                                        Array.Resize(ref state.PeerTracking, newLen);
-                                    }
-                                    tracking = state.PeerTracking;
-                                }
-                            }
-
-                            byte intervalByte = (byte)encodedIntervals[lane];
-                            int actualInterval = actualIntervalsMs[lane];
-                            byte qualityIndex = (byte)qualityIndices[lane];
-                            tracking[jId].CachedIntervalTicks = (int)(actualInterval * msToTick);
-                            tracking[jId].CachedQualityIndex = qualityIndex;
-                            tracking[jId].CachedIntervalByte = intervalByte;
-                        }
-                        index += vectorWidth;
-                    }
                 }
-                // Explicit ISA unavailable: keep the portable SIMD path before the scalar tail so
-                // x86 without AVX2 can still use the best Vector<T> implementation the JIT provides.
-                else if (Vector.IsHardwareAccelerated)
+                else
+#endif
+                // On net10 the else above belongs to this portable fallback; keep them together.
+                // Explicit ISA unavailable: use the best Vector<T> implementation before scalar.
+                if (Vector.IsHardwareAccelerated)
                 {
                     int vectorWidth = Vector<float>.Count;
+#if NET10_0_OR_GREATER
                     Span<float> distanceSq = stackalloc float[vectorWidth];
                     Span<int> rawIntervals = stackalloc int[vectorWidth];
+#else
+                    float[] distanceSq = new float[vectorWidth];
+                    int[] rawIntervals = new int[vectorWidth];
+#endif
                     Vector<float> iXVector = new Vector<float>(iX);
                     Vector<float> iYVector = new Vector<float>(iY);
                     Vector<float> iZVector = new Vector<float>(iZ);
