@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "stage": "A",
+  "profileVersion": 1,
+  "note": "Stage A vectors intentionally do not require a semantically valid JPEG XL codestream. Stage A validates only the canonical container and bounded byte spans; semantic codestream completeness belongs to Stage B WASM.",
+  "vectors": [
+    {
+      "id": "canonical-single-final-jxlp",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000f6a786c7080000000ff0a01",
+      "declaredLength": 47,
+      "expected": "Accept"
+    },
+    {
+      "id": "canonical-two-ordered-jxlp",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000e6a786c7000000000ff0a0000000f6a786c7080000001010203",
+      "declaredLength": 61,
+      "expected": "Accept"
+    },
+    {
+      "id": "bad-signature",
+      "payloadHex": "0000000c4a584c200c0a870a00000014667479706a786c20000000006a786c200000000f6a786c7080000000ff0a01",
+      "declaredLength": 47,
+      "expected": "Malformed"
+    },
+    {
+      "id": "noncanonical-ftyp",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000016a786c200000000f6a786c7080000000ff0a01",
+      "declaredLength": 47,
+      "expected": "Malformed"
+    },
+    {
+      "id": "forbidden-jxlc",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000f6a786c6380000000ff0a01",
+      "declaredLength": 47,
+      "expected": "Malformed"
+    },
+    {
+      "id": "forbidden-metadata-box",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000f4578696680000000ff0a01",
+      "declaredLength": 47,
+      "expected": "Malformed"
+    },
+    {
+      "id": "jxlp-starts-at-one",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000d6a786c708000000101",
+      "declaredLength": 45,
+      "expected": "Malformed"
+    },
+    {
+      "id": "jxlp-missing-final-marker",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000d6a786c700000000001",
+      "declaredLength": 45,
+      "expected": "Malformed"
+    },
+    {
+      "id": "jxlp-skipped-sequence",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000d6a786c7000000000010000000d6a786c708000000202",
+      "declaredLength": 58,
+      "expected": "Malformed"
+    },
+    {
+      "id": "jxlp-duplicate-sequence",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000d6a786c7000000000010000000d6a786c708000000002",
+      "declaredLength": 58,
+      "expected": "Malformed"
+    },
+    {
+      "id": "trailing-byte-after-final-jxlp",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000f6a786c7080000000ff0a0100",
+      "declaredLength": 48,
+      "expected": "Malformed"
+    },
+    {
+      "id": "box-after-final-jxlp",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000d6a786c7080000000010000000d6a786c708000000102",
+      "declaredLength": 58,
+      "expected": "Malformed"
+    },
+    {
+      "id": "truncated-jxlp-container-span",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000f6a786c7080000000ff0a",
+      "declaredLength": 46,
+      "expected": "Malformed"
+    },
+    {
+      "id": "declared-length-mismatch",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000000f6a786c7080000000ff0a01",
+      "declaredLength": 46,
+      "expected": "Malformed"
+    },
+    {
+      "id": "payload-over-64MiB",
+      "payloadHex": "00",
+      "declaredLength": 67108865,
+      "expected": "PayloadLimitExceeded",
+      "note": "The declared cap is checked before any large fixture allocation is required."
+    }
+  ]
+}

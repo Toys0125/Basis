@@ -87,7 +87,7 @@ namespace Basis.ImagePickup
 
         public int CanvasWidth { get; }
         public int CanvasHeight { get; }
-        public int TotalPlayCount { get; }
+        public long TotalPlayCount { get; }
         public long TotalDurationMicroseconds { get; }
         public long DecodedFramePixels { get; }
         public long NativeByteCount => _nativeByteCount;
@@ -120,7 +120,7 @@ namespace Basis.ImagePickup
         internal BasisAnimatedImageData(
             int canvasWidth,
             int canvasHeight,
-            int totalPlayCount,
+            long totalPlayCount,
             Color32 backgroundColor,
             NativeArray<BasisAnimatedImageFrame> frames,
             NativeArray<Color32> pixels,
@@ -370,6 +370,25 @@ namespace Basis.ImagePickup
             IReadOnlyList<BasisAnimatedImageFrameSource> sourceFrames,
             out BasisAnimatedImageData data,
             out string error
+        ) =>
+            TryCreate(
+                canvasWidth,
+                canvasHeight,
+                (long)totalPlayCount,
+                backgroundColor,
+                sourceFrames,
+                out data,
+                out error
+            );
+
+        public static bool TryCreate(
+            int canvasWidth,
+            int canvasHeight,
+            long totalPlayCount,
+            Color32 backgroundColor,
+            IReadOnlyList<BasisAnimatedImageFrameSource> sourceFrames,
+            out BasisAnimatedImageData data,
+            out string error
         )
         {
             data = null;
@@ -520,7 +539,7 @@ namespace Basis.ImagePickup
         internal static bool TryAdoptNative(
             int canvasWidth,
             int canvasHeight,
-            int totalPlayCount,
+            long totalPlayCount,
             Color32 backgroundColor,
             NativeArray<BasisAnimatedImageFrame> frames,
             NativeArray<Color32> pixels,

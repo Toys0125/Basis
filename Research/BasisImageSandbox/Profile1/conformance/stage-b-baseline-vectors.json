@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "stage": "B",
+  "profileVersion": 1,
+  "generator": "Basis/Packages/com.basis.imagesandbox/Native~/Profile1/Smoke/profile1_fixture_encoder.cc",
+  "decoderPin": {
+    "libjxlVersion": "0.12.0",
+    "libjxlCommit": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+    "emscriptenVersion": "4.0.23",
+    "decoderWasmSha256": "b644482523b6ee3cf639fcfcf57e6974f857fa1cdd7528403f08ccc5eec8a37d"
+  },
+  "vectors": [
+    {
+      "id": "valid-two-frame-hidden-rgb",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000003d6a786c7000000000ff0a0070c17f841e008035010800b08d200000000068004b12a5428524d6f0b802001c00bf800800960e93120d16dd07010000002d6a786c7080000001080070d4300040000058004b12a5428524d233c62d6c0000e00b8800b0c2e97d00",
+      "payloadBytes": 138,
+      "stageA": "Accept",
+      "stageB": "Accept",
+      "expected": {
+        "width": 2,
+        "height": 1,
+        "logicalFrames": 2,
+        "totalPlayCount": 0,
+        "submittedCanvasPixels": 4,
+        "baseTimelineMicroseconds": 83335,
+        "frameDurationsMicroseconds": [33334, 50001],
+        "rgba8FramesHex": [
+          "1127c900010203ff",
+          "04050680070809ff"
+        ]
+      },
+      "note": "Frame 0 pixel 0 preserves hidden RGB 17/39/201 under alpha zero."
+    },
+    {
+      "id": "container-complete-semantically-truncated-codestream",
+      "payloadHex": "0000000c4a584c200d0a870a00000014667479706a786c20000000006a786c200000003c6a786c7080000000ff0a0070c17f841e008035010800b08d200000000068004b12a5428524d6f0b802001c00bf800800960e93120d16dd07",
+      "payloadBytes": 92,
+      "stageA": "Accept",
+      "stageB": "Malformed",
+      "note": "The sole jxlp byte span is complete and final-marked, but the JPEG XL codestream is semantically incomplete. This is intentionally distinct from a truncated jxlp container span."
+    }
+  ]
+}

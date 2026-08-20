@@ -1,0 +1,14 @@
+{
+  "name": "com.basis.imagesandbox",
+  "displayName": "Basis Image Sandbox",
+  "version": "0.0.1",
+  "description": "Sandboxed image-codec runtime used by Basis image features. JPEG XL Profile 1 remote decoding runs only through the pinned WebAssembly decoder hosted by Wasmtime.",
+  "author": {
+    "name": "BasisVR",
+    "url": "https://github.com/BasisVR"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "xyz.yewnyx.mediasandbox": "0.2.0"
+  }
+}

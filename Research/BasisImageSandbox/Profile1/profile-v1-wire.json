@@ -1,0 +1,384 @@
+{
+  "profileVersion": 1,
+  "profileVersionPolicy": {
+    "namespace": "Basis animated-image Profile",
+    "legacyV2CodecVersionNamespaceIsSeparate": true,
+    "preReleaseErrataPolicy": true,
+    "nonTestPublicationAllowedBeforeSecondReconciliation": false,
+    "violationAction": "stop publication work and reopen the profile-version compatibility decision"
+  },
+  "codec": "jpeg-xl",
+  "payloadForm": "minimal-jxl-container-jxlp",
+  "pixelFormat": "rgba8",
+  "alpha": "straight",
+  "colorSpace": "srgb",
+  "orientation": "identity",
+  "preserveTransparentRgb": true,
+  "maximumWidth": 2048,
+  "maximumHeight": 2048,
+  "maximumCanvasPixels": 4194304,
+  "maximumFrames": 512,
+  "minimumFrameDurationMicroseconds": 33334,
+  "maximumTotalDurationMicroseconds": 300000000,
+  "timebase": {
+    "numerator": 1000000,
+    "denominator": 1,
+    "canonicalRepresentationRequired": true,
+    "equivalentAlternateRationalsAllowed": false
+  },
+  "timebaseTicksPerSecond": 1000000,
+  "loopSemantics": {
+    "field": "num_loops",
+    "zeroMeans": "infinite",
+    "positiveValueMeans": "totalPlaythroughs",
+    "baseTimelineMultipliedByLoopCount": false
+  },
+  "submittedCanvasPixels": {
+    "maximum": 33554432,
+    "definition": "checked_u64(canvasWidth) * checked_u64(canvasHeight) * checked_u64(logicalFrameCount)",
+    "logicalFramesAreCompleteDisplayCanvases": true,
+    "independentOfJxlCropsReferencesBlendingJxlpAndPatchExtraction": true,
+    "overflowAction": "SharedLimitExceeded"
+  },
+  "profileMaximumSubmittedCanvasPixels": 33554432,
+  "defaultSenderMaximumSubmittedCanvasPixels": 33554432,
+  "baseTimelineDurationMicroseconds": {
+    "maximum": 300000000,
+    "definition": "checked_u64(sum(frameDurationMicroseconds[i])) for exactly one logical playthrough",
+    "loopCountParticipates": false,
+    "overflowAction": "SharedLimitExceeded"
+  },
+  "maximumExtractedPatchPixels": {
+    "previouslyPublishedValue": 67108864,
+    "wireStatus": "UNRESOLVED",
+    "resolution": "single second reconciliation",
+    "runtimeSharedLegacyConstantMustNotChangeAsSideEffect": true,
+    "canonicalPatchEvidence": {
+      "algorithm": "one full-canvas Source/None Basis patch per complete logical RGBA8 frame",
+      "inflationFactor": 1.0,
+      "extractedPixelsEqualSubmittedCanvasPixels": true,
+      "classificationReadyForSecondReconciliation": true
+    }
+  },
+  "maximumPayloadBytes": 67108864,
+  "requiredAlphaChannels": 1,
+  "allowedNonAlphaExtraChannels": 0,
+  "alphaExtraChannel": {
+    "index": 0,
+    "type": "JXL_CHANNEL_ALPHA",
+    "bitsPerSample": 8,
+    "exponentBitsPerSample": 0,
+    "dimShift": 0,
+    "alphaPremultiplied": false
+  },
+  "colorEncoding": {
+    "colorSpace": "RGB",
+    "whitePoint": "D65",
+    "primaries": "sRGB",
+    "transferFunction": "sRGB",
+    "bitsPerSample": 8,
+    "exponentBitsPerSample": 0
+  },
+  "allowHdr": false,
+  "allowFloatingPoint": false,
+  "allowNonSrgb": false,
+  "allowNonidentityOrientation": false,
+  "containerPolicy": {
+    "signatureHex": "0000000c4a584c200d0a870a",
+    "requiredBoxes": ["ftyp", "jxlp"],
+    "allowedBoxes": ["ftyp", "jxlp"],
+    "selectedCodestreamBox": "jxlp",
+    "jxlcAllowed": false,
+    "ftyp": {
+      "boxSizeBytes": 20,
+      "boxType": "ftyp",
+      "majorBrand": "jxl ",
+      "minorVersion": 0,
+      "compatibleBrands": ["jxl "],
+      "exactBytesHex": "00000014667479706a786c20000000006a786c20"
+    },
+    "jxlpRules": {
+      "indexBytes": 4,
+      "indexByteOrder": "big-endian",
+      "sequenceNumberMaskHex": "0x7fffffff",
+      "finalMarkerBitHex": "0x80000000",
+      "indexStartsAt": 0,
+      "indexesAreConsecutive": true,
+      "indexesAreUnique": true,
+      "finalIndexHighBitMarksLastBox": true,
+      "noBoxesOrDataAfterFinalJxlp": true,
+      "stageARequiresCompleteBoundedBoxSpans": true,
+      "semanticCodestreamCompletenessOwnedBy": "Stage B WASM"
+    },
+    "metadataBoxesAllowed": false,
+    "trailingBytesAllowed": false,
+    "rawCodestreamAllowed": false
+  },
+  "codestreamFeaturePolicy": {
+    "policy": "broad pinned-libjxl feature support subject to all Profile 1 semantic and resource limits",
+    "mustNotNarrowForAccountingConvenience": true,
+    "remoteCodestreamParsingOutsideWasmAllowed": false
+  },
+  "hostileReceiverResourceContract": {
+    "status": "PENDING_SECOND_RECONCILIATION",
+    "codedFrameCeiling": null,
+    "decodeWork": {
+      "formula": null,
+      "weights": null,
+      "ceiling": null,
+      "finalizationRequiresProductionWasmBenchmark": true,
+      "implementationIndependent": true,
+      "wallClockIndependent": true,
+      "threadCountIndependent": true,
+      "simdIndependent": true,
+      "privateLibjxlProgressiveStateAllowed": false,
+      "publicApiObservableCandidateTerms": [
+        "codedFrameCount",
+        "codedFrameAreaAndCrops",
+        "referenceRelationships",
+        "blendOperations",
+        "referenceChainStructureAndDepth"
+      ],
+      "unobservableProgressiveAmplificationBoundedBy": [
+        "WASM sandbox memory",
+        "WASM resource policy",
+        "WASM timeout"
+      ]
+    }
+  },
+  "senderPlatformPolicy": {
+    "windowsDesktop": "Profile 1 publication supported after applicable validation gates",
+    "linuxDesktop": "Profile 1 publication supported after applicable validation gates",
+    "questAndroidMobileReceive": "Profile 1 through production WASM decoder",
+    "questAndroidMobileLocalPublication": "V2",
+    "questAndroidMobileJxlEncode": false
+  },
+  "senderMemoryClasses": [
+    {
+      "memoryClass": "unknown-unreported-or-4GiB-or-less",
+      "classification": "smallest-low-memory",
+      "dedicatedEncoderBudgetBytes": 268435456,
+      "localSubmittedPixelAdmissionLimit": 8388608,
+      "effectiveProfile1SubmittedPixelLimit": 8388608,
+      "workerProcessMemoryCapBytes": 268435456
+    },
+    {
+      "memoryClass": "above-4GiB-through-8GiB",
+      "classification": "middle",
+      "dedicatedEncoderBudgetBytes": 805306368,
+      "localSubmittedPixelAdmissionLimit": 33554432,
+      "effectiveProfile1SubmittedPixelLimit": 33554432,
+      "workerProcessMemoryCapBytes": 805306368
+    },
+    {
+      "memoryClass": "above-8GiB",
+      "classification": "high-memory",
+      "dedicatedEncoderBudgetBytes": 1610612736,
+      "localSubmittedPixelAdmissionLimit": 33554432,
+      "effectiveProfile1SubmittedPixelLimit": 33554432,
+      "workerProcessMemoryCapBytes": 1610612736
+    }
+  ],
+  "unknownOrUnreportedMemoryPolicy": "smallest supported memory class",
+  "dedicatedEncoderBudgetPolicy": {
+    "selectedAllocationShareOfAnimationWorkingSet": 0.5,
+    "workerIsolationRequiredForAllEnabledNativeJxlEncoding": true,
+    "workerIsNotAdmissionBypass": true
+  },
+  "senderMemoryEstimate": {
+    "fixedOverheadBytes": 76546048,
+    "bytesPerSubmittedCanvasPixel": 16.72,
+    "bytesPerAdditionalEncoderThread": 1247805,
+    "safetyFactor": 1.2,
+    "formula": "safetyFactor * (fixedOverhead + submittedPixels * bytesPerSubmittedPixel + (threads - 1) * bytesPerAdditionalThread)"
+  },
+  "encoderIsolation": "worker-all-jxl",
+  "safeInProcessMaximumSubmittedCanvasPixels": 0,
+  "jxlPolicy": {
+    "defaultEffort": 3,
+    "latencyFirstEffort": 1,
+    "extendedEffort": 5,
+    "defaultThreads": 4,
+    "lowMemoryThreads": 2,
+    "maximumThreads": 8,
+    "ordinaryInteractiveExcludesEfforts": [7, 9]
+  },
+  "directImportPolicy": {
+    "accepted": true,
+    "acceptedPayloadForm": "exact Profile 1 minimal-jxl-container-jxlp",
+    "path": [
+      "Stage A",
+      "Stage B semantic/resource preflight in WASM",
+      "normal isolated host receiver admission",
+      "full sandbox decode and activation validation",
+      "publish"
+    ],
+    "usesEncoderMemoryAdmission": false,
+    "requiresNormalIsolatedReceiverEnvelope": true,
+    "normalization": "none for direct reuse"
+  },
+  "receiverValidation": {
+    "remoteNativeLibjxlAllowed": false,
+    "stageA": {
+      "location": "host/outside WASM",
+      "allocationPolicy": "allocation-light container-only",
+      "mayValidate": [
+        "profileVersion",
+        "declaredLength",
+        "64MiB payload cap",
+        "container signature",
+        "exact ftyp",
+        "jxlp byte spans",
+        "jxlp sequence/final rules",
+        "forbidden boxes",
+        "no trailing bytes"
+      ],
+      "mustNotInterpret": [
+        "JPEG XL frame headers",
+        "dimensions",
+        "timing",
+        "coded-frame semantics",
+        "references/blending",
+        "semantic codestream completeness"
+      ]
+    },
+    "stageBPreflight": {
+      "location": "production WASM sandbox",
+      "owns": [
+        "semantic codestream completeness/truncation",
+        "dimensions and canvas",
+        "logical frame count",
+        "exact timebase",
+        "frame durations and base timeline",
+        "loop semantics",
+        "pixel/color/alpha/orientation",
+        "submittedCanvasPixels",
+        "coded-frame accounting",
+        "structural decodeWork"
+      ],
+      "hostOutput": "only validated bounded resource-envelope values"
+    },
+    "hostMemoryAdmission": {
+      "order": "after Stage B semantic/resource preflight and before full output decode or host allocations scaling with decoded output",
+      "denial": "MemoryAdmissionDenied",
+      "mayParseCodestreamNatively": false
+    },
+    "stageBFullDecode": {
+      "location": "production WASM sandbox",
+      "order": "only after host memory admission",
+      "activationAtomic": true
+    }
+  },
+  "validationOrder": [
+    "transport reassembly and declared-length/payload-cap enforcement",
+    "Stage A allocation-light canonical container preflight outside WASM",
+    "Stage B semantic/resource preflight inside WASM",
+    "host receiver memory/aggregate admission using only validated bounded envelope values",
+    "full bounded pixel decode inside WASM",
+    "canonical Basis patch conversion",
+    "atomic activation"
+  ],
+  "rejectionClassifications": {
+    "wireProfile": [
+      "Malformed",
+      "UnsupportedProfile",
+      "SharedLimitExceeded",
+      "PayloadLimitExceeded"
+    ],
+    "runtimeResource": [
+      "PatchLimitExceeded",
+      "Timeout",
+      "Cancelled",
+      "MemoryAdmissionDenied"
+    ]
+  },
+  "receiverResidencyPolicy": {
+    "currentLowMemorySharedDecodedPixelsPerSender": 16777216,
+    "statusForProfile1": "PROVISIONAL_PENDING_PRODUCTION_WASM_AND_CANONICAL_PATCH_MEASUREMENT",
+    "isolatedSingleAnimationCompatibilityRequiredOnQuestAndroid": true,
+    "measureBeforeRedesign": true,
+    "sharedBudgetChangeRequiresV2QuestMobileRegression": true,
+    "splitProfile1PolicyOnlyIfSharedArchitectureCannotSafelyPreserveCompatibility": true
+  },
+  "playbackClockCorrectionPolicy": {
+    "source": "Basis synchronized network epoch",
+    "ticksToMicroseconds": "positive elapsed 100ns ticks floor-divided by 10",
+    "backwardCorrection": "clamp to epoch-scoped monotonic target-playback watermark",
+    "watermarkTracks": "epoch-derived playback target, not last composited frame",
+    "newPublicationEpochResetsWatermark": true,
+    "evictionRestorationRetainsWatermark": true,
+    "differentCorrectionHistoriesMayTemporarilyDisagree": true,
+    "convergeWhenCorrectedTimePassesOlderWatermark": true
+  },
+  "canonicalPatchConversion": {
+    "input": "complete logical RGBA8 display canvases",
+    "algorithm": "one full-canvas Basis patch per logical frame",
+    "blend": "Source",
+    "disposal": "None",
+    "deterministic": true,
+    "hiddenRgbPreserved": true,
+    "maximumInflationFactor": 1.0,
+    "wireClassificationStillPendingSecondReconciliation": true
+  },
+  "telemetryNames": {
+    "v2BaselineFailures": "v2BaselineFailures",
+    "profile1FallbackToV2Count": "profile1FallbackToV2Count",
+    "v2FallbackSucceeded": "v2FallbackSucceeded",
+    "v2FallbackFailed": "v2FallbackFailed"
+  },
+  "conformance": {
+    "stageAAndStageBNegativesMustBeDistinct": true,
+    "repoContainedImplementationFixturesAreGateBearing": true,
+    "historicalBenchmarkCorpusIsProductionDependency": false
+  },
+  "historicalEvidence": {
+    "recordedClaims": {
+      "realCorpusExact": "139/139",
+      "nativeConformance": "77/77",
+      "containerMatrix": "9/9",
+      "senderSmoke": "139/139"
+    },
+    "rawDatasetsAvailability": "UNAVAILABLE_OR_UNRECOVERED_IN_CURRENT_REPOSITORY",
+    "profile-v1-phase1-final-recommendation.json": "UNAVAILABLE_OR_UNRECOVERED",
+    "policy": "do not recreate or invent missing historical results; new repo-contained implementation fixtures are gate-bearing"
+  },
+  "reconciliations": {
+    "first": {
+      "status": "PUBLISHED",
+      "profileVersion": 1,
+      "classifications": {
+        "stageATrustOrdering": "security erratum",
+        "stageBOwnsSemanticCodestreamCompleteness": "security erratum",
+        "submittedCanvasPixelsDefinition": "clarification/erratum",
+        "baseTimelineDefinition": "clarification/erratum",
+        "canonicalTimebaseRepresentation": "clarification/erratum",
+        "rejectionLayeringAndCancelled": "clarification",
+        "senderPlatformClassification": "implementation-policy clarification",
+        "maximumExtractedPatchPixels": "UNRESOLVED"
+      }
+    },
+    "second": {
+      "status": "PENDING",
+      "mustPublishTogether": [
+        "final coded-frame semantics and ceiling",
+        "final structural decodeWork formula/weights/ceiling",
+        "final extracted-patch classification"
+      ]
+    }
+  },
+  "gatesBlockedUntilSecondReconciliation": ["A2", "B", "C", "D"],
+  "status": "GO_WITH_GUARDS",
+  "confidence": "implementation-validation pending",
+  "nativeBenchmarkReadyForImplementationValidation": true,
+  "deferred": [
+    "production pinned-libjxl WASM decoder packaging/runtime",
+    "production WASM receiver benchmark",
+    "final coded-frame/decodeWork contract",
+    "single second reconciliation",
+    "desktop sender worker integration",
+    "network Profile 1 transport enablement",
+    "P2P/relay Profile 1 validation",
+    "Quest/Android on-device Gate G validation",
+    "V2-to-JXL export"
+  ]
+}

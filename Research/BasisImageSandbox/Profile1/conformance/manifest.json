@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "profileVersion": 1,
+  "wireSpec": "../JPEG_XL_PROFILE_V1_WIRE_SPEC.md",
+  "portableSuites": [
+    {
+      "stage": "A",
+      "path": "stage-a-vectors.json",
+      "status": "IMPLEMENTED",
+      "gateBearing": true,
+      "runtimeTest": "Basis.ImagePickup.Tests.BasisJpegXlProfile1Tests"
+    },
+    {
+      "stage": "B",
+      "path": "stage-b-baseline-vectors.json",
+      "status": "BASELINE_IMPLEMENTED_RESOURCE_LIMIT_VECTORS_PENDING_SECOND_RECONCILIATION",
+      "gateBearing": true,
+      "runtimeSmoke": "Basis/Packages/com.basis.imagesandbox/Native~/Profile1/Smoke",
+      "implemented": [
+        "real pinned-libjxl valid animated Profile 1 fixture",
+        "exact hidden-RGB/duration/full-pixel decode",
+        "container-complete semantic codestream truncation"
+      ],
+      "pending": [
+        "final coded-frame ceiling vectors",
+        "final decodeWork ceiling vectors",
+        "remaining pixel/color/alpha/orientation negative matrix"
+      ]
+    }
+  ],
+  "historicalNativeCorpus": {
+    "status": "UNAVAILABLE_OR_UNRECOVERED",
+    "gateBearing": false
+  }
+}

@@ -183,6 +183,13 @@ namespace Basis.ImagePickup
         {
 			if (data == null || !data.IsCreated)
                 throw new ArgumentNullException(nameof(data));
+            if (data.TotalPlayCount > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(data),
+                    "Legacy V2 animation payloads store total play count as signed Int32."
+                );
+            }
 
             _startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
             JobHandle cleanupHandle = default;
@@ -222,7 +229,7 @@ namespace Basis.ImagePickup
                 {
                     CanvasWidth = data.CanvasWidth,
                     CanvasHeight = data.CanvasHeight,
-                    TotalPlayCount = data.TotalPlayCount,
+                    TotalPlayCount = checked((int)data.TotalPlayCount),
                     BackgroundColor = data.BackgroundColor,
                     TotalDurationMicroseconds = data.TotalDurationMicroseconds,
                     HasAnyAlpha = data.HasAnyAlpha ? (byte)1 : (byte)0,

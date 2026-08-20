@@ -24,6 +24,7 @@
     "com.valvesoftware.openxr.utils": "https://github.com/ValveSoftware/Unity.git?path=com.valvesoftware.openxr.utils#28c3b8d9a4ecd7a128906e11c398944d3c8524dc",
     "com.valvesoftware.unity.openvr": "file:com.valvesoftware.unity.openvr-1.2.1.tgz",
     "com.xiph.rnnoise": "https://github.com/BasisVR/RNNoise.Net.git",
+    "xyz.yewnyx.mediasandbox": "https://github.com/yewnyx/MediaSandbox.git?path=/unity_package#f200256a2e56c1c5229a07e5530faa4a6b1ab325",
     "org.basisvr.base128": "file:org.basisvr.base128-1.2.2.tgz",
     "org.basisvr.bouncycastle": "file:org.basisvr.bouncycastle-2.5.0.tgz",
     "org.basisvr.generator.equals": "file:org.basisvr.generator.equals-3.2.0.tgz",

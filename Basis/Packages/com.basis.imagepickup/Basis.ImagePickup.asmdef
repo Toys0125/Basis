@@ -3,6 +3,7 @@
     "rootNamespace": "Basis.ImagePickup",
     "references": [
         "Basis Framework",
+        "Basis.ImageSandbox",
         "BasisEventDriver",
         "BasisSDK",
         "BasisCommon",

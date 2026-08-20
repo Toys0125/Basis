@@ -1,0 +1,573 @@
+#include <jxl/codestream_header.h>
+#include <jxl/color_encoding.h>
+#include <jxl/decode.h>
+#include <jxl/types.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+
+namespace {
+
+constexpr uint64_t kAbiVersion = 1;
+constexpr uint32_t kMaximumWidth = 2048;
+constexpr uint32_t kMaximumHeight = 2048;
+constexpr uint64_t kMaximumCanvasPixels = 4'194'304ULL;
+constexpr uint32_t kMaximumLogicalFrames = 512;
+constexpr uint64_t kMaximumSubmittedCanvasPixels = 33'554'432ULL;
+constexpr uint32_t kMinimumFrameDurationMicroseconds = 33'334;
+constexpr uint64_t kMaximumBaseTimelineMicroseconds = 300'000'000ULL;
+constexpr uint32_t kTimebaseNumerator = 1'000'000;
+constexpr uint32_t kTimebaseDenominator = 1;
+
+// The host reads this as a little-endian u64 array. Keep additions append-only
+// until the ABI version changes.
+enum ResultSlot : uint32_t {
+    kSlotAbiVersion = 0,
+    kSlotStatus = 1,
+    kSlotWidth = 2,
+    kSlotHeight = 3,
+    kSlotLogicalFrameCount = 4,
+    kSlotTotalPlayCount = 5,
+    kSlotSubmittedCanvasPixels = 6,
+    kSlotBaseTimelineMicroseconds = 7,
+    kSlotPublicRegularLayerCount = 8,
+    kSlotPublicRegularLayerPixels = 9,
+    kSlotCroppedLayerCount = 10,
+    kSlotReferenceReadEdges = 11,
+    kSlotSavedReferenceCount = 12,
+    kSlotBlendOperationCount = 13,
+    kSlotMaximumReferenceChainDepth = 14,
+    kSlotPreviewPixels = 15,
+    kSlotDurationCount = 16,
+    kSlotDurations = 17,
+    kResultSlotCount = kSlotDurations + kMaximumLogicalFrames,
+};
+
+enum Status : uint32_t {
+    kSuccess = 0,
+    kMalformed = 1,
+    kUnsupportedProfile = 2,
+    kSharedLimitExceeded = 3,
+};
+
+struct StructuralMetrics {
+    uint64_t layer_count = 0;
+    uint64_t layer_pixels = 0;
+    uint64_t cropped_layer_count = 0;
+    uint64_t reference_read_edges = 0;
+    uint64_t saved_reference_count = 0;
+    uint64_t blend_operations = 0;
+    uint64_t maximum_reference_chain_depth = 0;
+    uint64_t reference_depth[4] = {0, 0, 0, 0};
+};
+
+struct LogicalInfo {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t total_play_count = 0;
+    uint32_t frame_count = 0;
+    uint64_t submitted_pixels = 0;
+    uint64_t timeline_microseconds = 0;
+    uint64_t preview_pixels = 0;
+    uint64_t durations[kMaximumLogicalFrames] = {};
+};
+
+bool CheckedMultiply(uint64_t left, uint64_t right, uint64_t* result) {
+    if (left != 0 && right > std::numeric_limits<uint64_t>::max() / left) {
+        return false;
+    }
+    *result = left * right;
+    return true;
+}
+
+bool CheckedAdd(uint64_t left, uint64_t right, uint64_t* result) {
+    if (right > std::numeric_limits<uint64_t>::max() - left) {
+        return false;
+    }
+    *result = left + right;
+    return true;
+}
+
+Status ValidateBasicInfo(const JxlDecoder* decoder, const JxlBasicInfo& info, LogicalInfo* logical) {
+    if (info.xsize == 0 || info.ysize == 0 || info.xsize > kMaximumWidth || info.ysize > kMaximumHeight) {
+        return kSharedLimitExceeded;
+    }
+
+    uint64_t canvas_pixels = 0;
+    if (!CheckedMultiply(info.xsize, info.ysize, &canvas_pixels) || canvas_pixels > kMaximumCanvasPixels) {
+        return kSharedLimitExceeded;
+    }
+
+    if (info.bits_per_sample != 8 || info.exponent_bits_per_sample != 0 ||
+        info.num_color_channels != 3 || info.num_extra_channels != 1 ||
+        info.alpha_bits != 8 || info.alpha_exponent_bits != 0 ||
+        info.alpha_premultiplied != JXL_FALSE || info.orientation != JXL_ORIENT_IDENTITY) {
+        return kUnsupportedProfile;
+    }
+
+    JxlExtraChannelInfo alpha{};
+    if (JxlDecoderGetExtraChannelInfo(decoder, 0, &alpha) != JXL_DEC_SUCCESS ||
+        alpha.type != JXL_CHANNEL_ALPHA || alpha.bits_per_sample != 8 ||
+        alpha.exponent_bits_per_sample != 0 || alpha.dim_shift != 0 ||
+        alpha.alpha_premultiplied != JXL_FALSE) {
+        return kUnsupportedProfile;
+    }
+
+    // A Profile 1 payload always carries animation timing, including the
+    // canonical one-logical-frame case.
+    if (info.have_animation != JXL_TRUE ||
+        info.animation.tps_numerator != kTimebaseNumerator ||
+        info.animation.tps_denominator != kTimebaseDenominator) {
+        return kUnsupportedProfile;
+    }
+
+    logical->width = info.xsize;
+    logical->height = info.ysize;
+    logical->total_play_count = info.animation.num_loops;
+    if (info.have_preview == JXL_TRUE) {
+        if (!CheckedMultiply(info.preview.xsize, info.preview.ysize, &logical->preview_pixels)) {
+            return kSharedLimitExceeded;
+        }
+    }
+    return kSuccess;
+}
+
+Status ValidateColorEncoding(const JxlDecoder* decoder) {
+    JxlColorEncoding color{};
+    if (JxlDecoderGetColorAsEncodedProfile(
+            decoder,
+            JXL_COLOR_PROFILE_TARGET_ORIGINAL,
+            &color) != JXL_DEC_SUCCESS) {
+        return kUnsupportedProfile;
+    }
+
+    if (color.color_space != JXL_COLOR_SPACE_RGB ||
+        color.white_point != JXL_WHITE_POINT_D65 ||
+        color.primaries != JXL_PRIMARIES_SRGB ||
+        color.transfer_function != JXL_TRANSFER_FUNCTION_SRGB) {
+        return kUnsupportedProfile;
+    }
+    return kSuccess;
+}
+
+bool BlendReadsReference(JxlBlendMode mode) {
+    return mode != JXL_BLEND_REPLACE;
+}
+
+Status AccumulateStructure(const JxlFrameHeader& header, StructuralMetrics* metrics) {
+    const JxlLayerInfo& layer = header.layer_info;
+    uint64_t pixels = 0;
+    if (!CheckedMultiply(layer.xsize, layer.ysize, &pixels) ||
+        !CheckedAdd(metrics->layer_pixels, pixels, &metrics->layer_pixels)) {
+        return kSharedLimitExceeded;
+    }
+    if (metrics->layer_count == std::numeric_limits<uint64_t>::max()) {
+        return kSharedLimitExceeded;
+    }
+    ++metrics->layer_count;
+
+    if (layer.have_crop == JXL_TRUE) {
+        ++metrics->cropped_layer_count;
+    }
+
+    uint64_t chain_depth = 1;
+    if (BlendReadsReference(layer.blend_info.blendmode)) {
+        if (layer.blend_info.source >= 4) {
+            return kMalformed;
+        }
+        ++metrics->reference_read_edges;
+        ++metrics->blend_operations;
+        chain_depth = metrics->reference_depth[layer.blend_info.source] + 1;
+    }
+    if (chain_depth > metrics->maximum_reference_chain_depth) {
+        metrics->maximum_reference_chain_depth = chain_depth;
+    }
+
+    // save_as_reference is public decoder state. ID 0 is meaningful only when
+    // the frame duration is zero; for displayed-duration frames, libjxl defines
+    // zero as "not referenced in the future".
+    if (layer.save_as_reference < 4 &&
+        (layer.save_as_reference != 0 || header.duration == 0)) {
+        metrics->reference_depth[layer.save_as_reference] = chain_depth;
+        ++metrics->saved_reference_count;
+    }
+    return kSuccess;
+}
+
+void DiscardPixels(void*, size_t, size_t, size_t, const void*) {}
+
+Status RunStructurePass(const uint8_t* data, size_t size, StructuralMetrics* metrics) {
+    JxlDecoder* decoder = JxlDecoderCreate(nullptr);
+    if (decoder == nullptr) {
+        return kMalformed;
+    }
+
+    Status result = kMalformed;
+    do {
+        if (JxlDecoderSetKeepOrientation(decoder, JXL_TRUE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSetCoalescing(decoder, JXL_FALSE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSubscribeEvents(decoder, JXL_DEC_FRAME | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSetInput(decoder, data, size) != JXL_DEC_SUCCESS) {
+            break;
+        }
+        JxlDecoderCloseInput(decoder);
+
+        bool saw_frame = false;
+        while (true) {
+            const JxlDecoderStatus status = JxlDecoderProcessInput(decoder);
+            if (status == JXL_DEC_FRAME) {
+                saw_frame = true;
+                JxlFrameHeader header{};
+                if (JxlDecoderGetFrameHeader(decoder, &header) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                result = AccumulateStructure(header, metrics);
+                if (result != kSuccess) {
+                    break;
+                }
+                continue;
+            }
+            if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
+                const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+                if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                continue;
+            }
+            if (status == JXL_DEC_FULL_IMAGE) {
+                continue;
+            }
+            if (status == JXL_DEC_SUCCESS) {
+                const size_t remaining = JxlDecoderReleaseInput(decoder);
+                result = saw_frame && remaining == 0 ? kSuccess : kMalformed;
+                break;
+            }
+            if (status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_ERROR ||
+                status == JXL_DEC_NEED_IMAGE_OUT_BUFFER || status == JXL_DEC_NEED_PREVIEW_OUT_BUFFER) {
+                result = kMalformed;
+                break;
+            }
+        }
+    } while (false);
+
+    JxlDecoderDestroy(decoder);
+    return result;
+}
+
+Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical) {
+    JxlDecoder* decoder = JxlDecoderCreate(nullptr);
+    if (decoder == nullptr) {
+        return kMalformed;
+    }
+
+    Status result = kMalformed;
+    do {
+        if (JxlDecoderSetKeepOrientation(decoder, JXL_TRUE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSetCoalescing(decoder, JXL_TRUE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSubscribeEvents(
+                decoder,
+                JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FRAME |
+                    JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSetInput(decoder, data, size) != JXL_DEC_SUCCESS) {
+            break;
+        }
+        JxlDecoderCloseInput(decoder);
+
+        bool saw_basic = false;
+        bool saw_color = false;
+        while (true) {
+            const JxlDecoderStatus status = JxlDecoderProcessInput(decoder);
+            if (status == JXL_DEC_BASIC_INFO) {
+                JxlBasicInfo info{};
+                if (JxlDecoderGetBasicInfo(decoder, &info) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                result = ValidateBasicInfo(decoder, info, logical);
+                if (result != kSuccess) {
+                    break;
+                }
+                saw_basic = true;
+                continue;
+            }
+            if (status == JXL_DEC_COLOR_ENCODING) {
+                result = ValidateColorEncoding(decoder);
+                if (result != kSuccess) {
+                    break;
+                }
+                saw_color = true;
+                continue;
+            }
+            if (status == JXL_DEC_FRAME) {
+                if (logical->frame_count >= kMaximumLogicalFrames) {
+                    result = kSharedLimitExceeded;
+                    break;
+                }
+                JxlFrameHeader header{};
+                if (JxlDecoderGetFrameHeader(decoder, &header) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                if (header.duration < kMinimumFrameDurationMicroseconds) {
+                    result = kSharedLimitExceeded;
+                    break;
+                }
+
+                uint64_t timeline = 0;
+                if (!CheckedAdd(logical->timeline_microseconds, header.duration, &timeline) ||
+                    timeline > kMaximumBaseTimelineMicroseconds) {
+                    result = kSharedLimitExceeded;
+                    break;
+                }
+                logical->timeline_microseconds = timeline;
+                logical->durations[logical->frame_count++] = header.duration;
+
+                uint64_t submitted = 0;
+                if (!CheckedMultiply(
+                        static_cast<uint64_t>(logical->width) * logical->height,
+                        logical->frame_count,
+                        &submitted) ||
+                    submitted > kMaximumSubmittedCanvasPixels) {
+                    result = kSharedLimitExceeded;
+                    break;
+                }
+                logical->submitted_pixels = submitted;
+                continue;
+            }
+            if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
+                const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+                if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                continue;
+            }
+            if (status == JXL_DEC_FULL_IMAGE) {
+                continue;
+            }
+            if (status == JXL_DEC_SUCCESS) {
+                const size_t remaining = JxlDecoderReleaseInput(decoder);
+                result = saw_basic && saw_color && logical->frame_count > 0 && remaining == 0
+                    ? kSuccess
+                    : kMalformed;
+                break;
+            }
+            if (status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_ERROR ||
+                status == JXL_DEC_NEED_IMAGE_OUT_BUFFER || status == JXL_DEC_NEED_PREVIEW_OUT_BUFFER) {
+                result = kMalformed;
+                break;
+            }
+        }
+    } while (false);
+
+    JxlDecoderDestroy(decoder);
+    return result;
+}
+
+void ClearResult(uint64_t* output) {
+    if (output != nullptr) {
+        std::memset(output, 0, sizeof(uint64_t) * kResultSlotCount);
+        output[kSlotAbiVersion] = kAbiVersion;
+    }
+}
+
+void StoreResult(
+    Status status,
+    const LogicalInfo& logical,
+    const StructuralMetrics& metrics,
+    uint64_t* output) {
+    ClearResult(output);
+    output[kSlotStatus] = status;
+    if (status != kSuccess) {
+        return;
+    }
+
+    output[kSlotWidth] = logical.width;
+    output[kSlotHeight] = logical.height;
+    output[kSlotLogicalFrameCount] = logical.frame_count;
+    output[kSlotTotalPlayCount] = logical.total_play_count;
+    output[kSlotSubmittedCanvasPixels] = logical.submitted_pixels;
+    output[kSlotBaseTimelineMicroseconds] = logical.timeline_microseconds;
+    output[kSlotPublicRegularLayerCount] = metrics.layer_count;
+    output[kSlotPublicRegularLayerPixels] = metrics.layer_pixels;
+    output[kSlotCroppedLayerCount] = metrics.cropped_layer_count;
+    output[kSlotReferenceReadEdges] = metrics.reference_read_edges;
+    output[kSlotSavedReferenceCount] = metrics.saved_reference_count;
+    output[kSlotBlendOperationCount] = metrics.blend_operations;
+    output[kSlotMaximumReferenceChainDepth] = metrics.maximum_reference_chain_depth;
+    output[kSlotPreviewPixels] = logical.preview_pixels;
+    output[kSlotDurationCount] = logical.frame_count;
+    for (uint32_t i = 0; i < logical.frame_count; ++i) {
+        output[kSlotDurations + i] = logical.durations[i];
+    }
+}
+
+struct DecodeSession {
+    JxlDecoder* decoder = nullptr;
+    JxlPixelFormat format{4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t frame_index = 0;
+    uint64_t current_duration = 0;
+    bool current_frame_started = false;
+    bool done = false;
+};
+
+DecodeSession g_session;
+
+void ResetDecodeSession() {
+    if (g_session.decoder != nullptr) {
+        JxlDecoderDestroy(g_session.decoder);
+    }
+    g_session = DecodeSession{};
+}
+
+}  // namespace
+
+extern "C" {
+
+uint32_t p1_abi_version() {
+    return static_cast<uint32_t>(kAbiVersion);
+}
+
+uint32_t p1_result_u64_count() {
+    return kResultSlotCount;
+}
+
+void* p1_alloc(uint32_t size) {
+    return std::malloc(size);
+}
+
+void p1_free(void* pointer) {
+    std::free(pointer);
+}
+
+uint32_t p1_preflight(const uint8_t* data, uint32_t size, uint64_t* output) {
+    ClearResult(output);
+    if (data == nullptr || output == nullptr || size == 0) {
+        if (output != nullptr) {
+            output[kSlotStatus] = kMalformed;
+        }
+        return kMalformed;
+    }
+
+    LogicalInfo logical{};
+    StructuralMetrics metrics{};
+    Status status = RunLogicalPass(data, size, &logical);
+    if (status == kSuccess) {
+        status = RunStructurePass(data, size, &metrics);
+    }
+    StoreResult(status, logical, metrics, output);
+    return status;
+}
+
+uint32_t p1_decode_open(const uint8_t* data, uint32_t size, uint32_t width, uint32_t height) {
+    ResetDecodeSession();
+    if (data == nullptr || size == 0 || width == 0 || height == 0 ||
+        width > kMaximumWidth || height > kMaximumHeight) {
+        return kMalformed;
+    }
+
+    JxlDecoder* decoder = JxlDecoderCreate(nullptr);
+    if (decoder == nullptr) {
+        return kMalformed;
+    }
+    g_session.decoder = decoder;
+    g_session.width = width;
+    g_session.height = height;
+
+    if (JxlDecoderSetKeepOrientation(decoder, JXL_TRUE) != JXL_DEC_SUCCESS ||
+        JxlDecoderSetCoalescing(decoder, JXL_TRUE) != JXL_DEC_SUCCESS ||
+        JxlDecoderSubscribeEvents(decoder, JXL_DEC_BASIC_INFO | JXL_DEC_FRAME | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
+        JxlDecoderSetInput(decoder, data, size) != JXL_DEC_SUCCESS) {
+        ResetDecodeSession();
+        return kMalformed;
+    }
+    JxlDecoderCloseInput(decoder);
+    return kSuccess;
+}
+
+// Returns 0 with one complete RGBA8 frame in output, 4 when all frames are
+// consumed, or a Profile 1 validation status on failure. Duration is written in
+// microseconds because the preflight already proved the exact 1,000,000 / 1
+// timebase.
+uint32_t p1_decode_next(uint8_t* output, uint32_t output_size, uint64_t* duration_microseconds) {
+    if (g_session.decoder == nullptr || output == nullptr || duration_microseconds == nullptr) {
+        return kMalformed;
+    }
+    if (g_session.done) {
+        return 4;
+    }
+
+    uint64_t required_bytes = 0;
+    if (!CheckedMultiply(g_session.width, g_session.height, &required_bytes) ||
+        !CheckedMultiply(required_bytes, 4, &required_bytes) ||
+        required_bytes > output_size) {
+        return kSharedLimitExceeded;
+    }
+
+    while (true) {
+        const JxlDecoderStatus status = JxlDecoderProcessInput(g_session.decoder);
+        if (status == JXL_DEC_BASIC_INFO) {
+            JxlBasicInfo info{};
+            if (JxlDecoderGetBasicInfo(g_session.decoder, &info) != JXL_DEC_SUCCESS ||
+                info.xsize != g_session.width || info.ysize != g_session.height) {
+                return kMalformed;
+            }
+            continue;
+        }
+        if (status == JXL_DEC_FRAME) {
+            JxlFrameHeader header{};
+            if (JxlDecoderGetFrameHeader(g_session.decoder, &header) != JXL_DEC_SUCCESS ||
+                header.duration < kMinimumFrameDurationMicroseconds) {
+                return kMalformed;
+            }
+            g_session.current_duration = header.duration;
+            g_session.current_frame_started = true;
+            continue;
+        }
+        if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
+            if (!g_session.current_frame_started ||
+                JxlDecoderSetImageOutBuffer(
+                    g_session.decoder,
+                    &g_session.format,
+                    output,
+                    static_cast<size_t>(required_bytes)) != JXL_DEC_SUCCESS) {
+                return kMalformed;
+            }
+            continue;
+        }
+        if (status == JXL_DEC_FULL_IMAGE) {
+            if (!g_session.current_frame_started) {
+                return kMalformed;
+            }
+            *duration_microseconds = g_session.current_duration;
+            g_session.current_frame_started = false;
+            ++g_session.frame_index;
+            return kSuccess;
+        }
+        if (status == JXL_DEC_SUCCESS) {
+            const size_t remaining = JxlDecoderReleaseInput(g_session.decoder);
+            if (remaining != 0 || g_session.current_frame_started) {
+                return kMalformed;
+            }
+            g_session.done = true;
+            return 4;
+        }
+        if (status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_ERROR ||
+            status == JXL_DEC_NEED_PREVIEW_OUT_BUFFER) {
+            return kMalformed;
+        }
+    }
+}
+
+void p1_decode_close() {
+    ResetDecodeSession();
+}
+
+}

@@ -25,6 +25,8 @@ namespace Basis.ImagePickup
         private BasisAnimatedImageGpuCanvas _gpuCanvas;
         private BasisAnimatedImageCpuCanvas _cpuCanvas;
         private long _playbackEpochUtcTicks;
+        private long _playbackTargetWatermarkEpochUtcTicks;
+        private long _playbackTargetWatermarkMicroseconds;
         private long _decodedFramePixels;
         private long _canvasPixels;
         private long _reloadNativeByteEstimate;
@@ -86,6 +88,30 @@ namespace Basis.ImagePickup
                 : BasisAnimationDecodeTrust.UntrustedRemote;
         }
 
+        internal static long ResolveMonotonicPlaybackTargetMicroseconds(
+            long synchronizedUtcTicks,
+            long playbackEpochUtcTicks,
+            ref long watermarkEpochUtcTicks,
+            ref long watermarkMicroseconds
+        )
+        {
+            if (watermarkEpochUtcTicks != playbackEpochUtcTicks)
+            {
+                watermarkEpochUtcTicks = playbackEpochUtcTicks;
+                watermarkMicroseconds = 0;
+            }
+
+            long elapsedMicroseconds =
+                synchronizedUtcTicks <= playbackEpochUtcTicks
+                    ? 0
+                    : (synchronizedUtcTicks - playbackEpochUtcTicks) / 10L;
+            if (elapsedMicroseconds < watermarkMicroseconds)
+                return watermarkMicroseconds;
+
+            watermarkMicroseconds = elapsedMicroseconds;
+            return elapsedMicroseconds;
+        }
+
         internal bool Initialize(
             BasisAnimatedImageData data,
             BasisImagePickupObject pickup,
@@ -109,6 +135,8 @@ namespace Basis.ImagePickup
                 playbackEpochUtcTicks > 0
                     ? playbackEpochUtcTicks
                     : BasisNetworkManagement.RemoteUtcTime().Ticks;
+            _playbackTargetWatermarkEpochUtcTicks = _playbackEpochUtcTicks;
+            _playbackTargetWatermarkMicroseconds = 0;
             _preferCpuFallback = forceCpuFallback;
             _lastVisibleTime = Time.unscaledTime;
             _nextFaceOcclusionCheckTime = 0f;
@@ -231,8 +259,12 @@ namespace Basis.ImagePickup
 			if (!_initialized || !EnsureAnimationData() || !EnsureCompositor())
                 return;
 
-            long elapsedTicks = synchronizedUtcTicks - _playbackEpochUtcTicks;
-            long elapsedMicroseconds = elapsedTicks <= 0 ? 0 : elapsedTicks / 10L;
+            long elapsedMicroseconds = ResolveMonotonicPlaybackTargetMicroseconds(
+                synchronizedUtcTicks,
+                _playbackEpochUtcTicks,
+                ref _playbackTargetWatermarkEpochUtcTicks,
+                ref _playbackTargetWatermarkMicroseconds
+            );
             _data.GetPlaybackState(elapsedMicroseconds, out long targetPlayIndex, out int targetFrameIndex, out _);
 
 			if (_gpuCanvas != null)

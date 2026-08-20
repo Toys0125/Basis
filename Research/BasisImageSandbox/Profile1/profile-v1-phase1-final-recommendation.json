@@ -1,0 +1,7 @@
+{
+  "artifact": "profile-v1-phase1-final-recommendation.json",
+  "recoveryStatus": "UNAVAILABLE_OR_UNRECOVERED",
+  "historicalArtifactReconstructed": false,
+  "gateBearing": false,
+  "note": "The implementation-validation plan references this completed Phase 1 artifact, but it is not present in the current repository/worktree or reachable Git history. Do not recreate or invent its historical results. New repo-contained implementation/conformance fixtures are gate-bearing."
+}

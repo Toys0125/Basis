@@ -271,7 +271,11 @@ namespace Basis.ImagePickup
             bool mobileOrPortablePlatform
         )
         {
-            if (mobileOrPortablePlatform || (systemMemoryMegabytes > 0 && systemMemoryMegabytes <= 4096))
+            if (
+                mobileOrPortablePlatform
+                || systemMemoryMegabytes <= 0
+                || systemMemoryMegabytes <= 4096
+            )
             {
                 return new AnimationMemoryLimits(
                     64L * MiB,

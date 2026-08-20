@@ -128,6 +128,14 @@
         "com.unity.render-pipelines.universal": "17.4.0"
       }
     },
+    "com.basis.imagesandbox": {
+      "version": "file:com.basis.imagesandbox",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "xyz.yewnyx.mediasandbox": "0.2.0"
+      }
+    },
     "com.basis.integration.audiolink": {
       "version": "file:com.basis.integration.audiolink",
       "depth": 0,
@@ -1111,6 +1119,13 @@
         "com.unity.modules.jsonserialize": "1.0.0",
         "com.unity.modules.subsystems": "1.0.0"
       }
+    },
+    "xyz.yewnyx.mediasandbox": {
+      "version": "https://github.com/yewnyx/MediaSandbox.git?path=/unity_package#f200256a2e56c1c5229a07e5530faa4a6b1ab325",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "f200256a2e56c1c5229a07e5530faa4a6b1ab325"
     }
   }
 }
