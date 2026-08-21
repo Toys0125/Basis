@@ -41,7 +41,8 @@ public abstract class BasisValidationRunner
     private readonly BasisValidationBucket _merged = new BasisValidationBucket();
 
     private Button _validateButton;
-    private bool _pendingPass;
+    private ulong _pendingGroups;
+    private bool _pendingScanRefresh;
     private bool _watchingEdits;
     private bool _waitingOnThrottle;
     private bool _hasRefreshed;
@@ -51,6 +52,18 @@ public abstract class BasisValidationRunner
 
     /// <summary>Number of check groups this validator runs.</summary>
     public int GroupCount => _groups.Length;
+
+    protected ulong AllGroupsMask => _groups.Length >= 64 ? ulong.MaxValue : ((1UL << _groups.Length) - 1UL);
+
+    protected static ulong GroupMask(params int[] groups)
+    {
+        ulong mask = 0;
+        for (int Index = 0; Index < groups.Length; Index++)
+        {
+            mask |= 1UL << groups[Index];
+        }
+        return mask;
+    }
 
     /// <summary>
     /// Wires up the groups and starts watching for changes. Call at the end of the concrete
@@ -101,7 +114,8 @@ public abstract class BasisValidationRunner
         }
 
         _lastPassTime = EditorApplication.timeSinceStartup;
-        _pendingPass = false;
+        _pendingGroups = 0;
+        _pendingScanRefresh = false;
         return _merged;
     }
 
@@ -124,39 +138,62 @@ public abstract class BasisValidationRunner
     protected abstract void Refresh(BasisValidationBucket results);
 
     /// <summary>
+    /// Maps a concrete changed object to the validation groups that can observe that change.
+    /// Returning zero ignores the event; returning <see cref="AllGroupsMask"/> falls back to a full pass.
+    /// </summary>
+    protected virtual ulong GetObjectChangeGroupMask(UnityEngine.Object changedObject)
+    {
+        return AllGroupsMask;
+    }
+
+    /// <summary>
+    /// True when this property change invalidates the cached hierarchy snapshot itself. Most
+    /// component/material edits can reuse the existing scan; GameObject tag changes cannot.
+    /// </summary>
+    protected virtual bool ObjectChangeRequiresScan(UnityEngine.Object changedObject)
+    {
+        return true;
+    }
+
+    /// <summary>
     /// Runs the suite and updates the panels, but only rebuilds them when something actually
     /// changed — the panels recreate their fix buttons and re-lay-out their text, so repainting an
     /// unchanged result is pure waste.
     /// </summary>
-    private void RunPass()
+    private void RunPass(ulong groups, bool refreshScan)
     {
-        if (Root == null)
+        if (Root == null || groups == 0)
         {
             return;
         }
 
-        RefreshScan();
+        if (refreshScan)
+        {
+            RefreshScan();
+        }
 
         bool changed = false;
         _merged.Clear();
         for (int Index = 0; Index < _groups.Length; Index++)
         {
             BasisValidationBucket bucket = _buckets[Index];
-            bucket.Clear();
-            _groups[Index](bucket);
-
-            int signature = bucket.ComputeSignature();
-            if (signature != bucket.Signature)
+            if ((groups & (1UL << Index)) != 0)
             {
-                bucket.Signature = signature;
-                changed = true;
+                bucket.Clear();
+                _groups[Index](bucket);
+
+                int signature = bucket.ComputeSignature();
+                if (signature != bucket.Signature)
+                {
+                    bucket.Signature = signature;
+                    changed = true;
+                }
             }
 
             bucket.AddTo(_merged);
         }
 
         _lastPassTime = EditorApplication.timeSinceStartup;
-        _pendingPass = false;
 
         if (changed || !_hasRefreshed)
         {
@@ -186,7 +223,8 @@ public abstract class BasisValidationRunner
         {
             StopWatchingEdits();
             CancelThrottleWait();
-            _pendingPass = false;
+            _pendingGroups = 0;
+            _pendingScanRefresh = false;
             return;
         }
 
@@ -229,13 +267,38 @@ public abstract class BasisValidationRunner
 
     private void OnObjectChangesPublished(ref ObjectChangeEventStream stream)
     {
-        // Any published change is a reason to look again. Working out whether a given change was
-        // ours would mean resolving instance ids per event, which costs more than the throttled
-        // pass it would occasionally save.
-        if (stream.length > 0)
+        ulong groups = 0;
+        bool refreshScan = false;
+        for (int Index = 0; Index < stream.length; Index++)
         {
-            RequestPass();
+            ObjectChangeKind kind = stream.GetEventType(Index);
+            switch (kind)
+            {
+                case ObjectChangeKind.ChangeGameObjectOrComponentProperties:
+                    stream.GetChangeGameObjectOrComponentPropertiesEvent(Index, out ChangeGameObjectOrComponentPropertiesEventArgs objectChange);
+                    UnityEngine.Object changedObject = EditorUtility.EntityIdToObject(objectChange.entityId);
+                    groups |= GetObjectChangeGroupMask(changedObject);
+                    refreshScan |= ObjectChangeRequiresScan(changedObject);
+                    break;
+                case ObjectChangeKind.ChangeAssetObjectProperties:
+                    stream.GetChangeAssetObjectPropertiesEvent(Index, out ChangeAssetObjectPropertiesEventArgs assetChange);
+                    UnityEngine.Object changedAsset = EditorUtility.EntityIdToObject(assetChange.entityId);
+                    groups |= GetObjectChangeGroupMask(changedAsset);
+                    refreshScan |= ObjectChangeRequiresScan(changedAsset);
+                    break;
+                default:
+                    groups = AllGroupsMask;
+                    refreshScan = true;
+                    break;
+            }
+
+            if (groups == AllGroupsMask)
+            {
+                break;
+            }
         }
+
+        RequestGroups(groups, refreshScan);
     }
 
     /// <summary>
@@ -245,17 +308,27 @@ public abstract class BasisValidationRunner
     /// </summary>
     private void RequestPass()
     {
-        if (_groups.Length == 0 || EditorApplication.isPlayingOrWillChangePlaymode)
+        RequestGroups(AllGroupsMask, true);
+    }
+
+    private void RequestGroups(ulong groups, bool refreshScan)
+    {
+        if (_groups.Length == 0 || groups == 0 || EditorApplication.isPlayingOrWillChangePlaymode)
         {
             return;
         }
 
-        _pendingPass = true;
+        _pendingGroups |= groups;
+        _pendingScanRefresh |= refreshScan;
 
         if (EditorApplication.timeSinceStartup - _lastPassTime >= MinimumSecondsBetweenPasses)
         {
             CancelThrottleWait();
-            RunPass();
+            ulong pending = _pendingGroups;
+            bool scan = _pendingScanRefresh;
+            _pendingGroups = 0;
+            _pendingScanRefresh = false;
+            RunPass(pending, scan);
             return;
         }
 
@@ -268,7 +341,7 @@ public abstract class BasisValidationRunner
 
     private void OnThrottleTick()
     {
-        if (!_pendingPass || EditorApplication.isPlayingOrWillChangePlaymode)
+        if (_pendingGroups == 0 || EditorApplication.isPlayingOrWillChangePlaymode)
         {
             CancelThrottleWait();
             return;
@@ -280,7 +353,11 @@ public abstract class BasisValidationRunner
         }
 
         CancelThrottleWait();
-        RunPass();
+        ulong pending = _pendingGroups;
+        bool scan = _pendingScanRefresh;
+        _pendingGroups = 0;
+        _pendingScanRefresh = false;
+        RunPass(pending, scan);
     }
 
     private void CancelThrottleWait()

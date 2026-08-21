@@ -13,6 +13,10 @@ using UnityEngine.UIElements;
 /// </summary>
 public class BasisPropValidator : BasisValidationRunner
 {
+    private const int ConfigurationGroup = 0;
+    private const int HierarchyGroup = 1;
+    private const int ColliderGroup = 2;
+
     private readonly BasisProp Prop;
     private VisualElement errorPanel;
     private Label errorMessageLabel;
@@ -43,6 +47,32 @@ public class BasisPropValidator : BasisValidationRunner
     protected override void RefreshScan()
     {
         _scan.Rebuild(Prop != null ? Prop.transform : null);
+    }
+
+    protected override ulong GetObjectChangeGroupMask(UnityEngine.Object changedObject)
+    {
+        if (changedObject == null || Prop == null)
+        {
+            return 0;
+        }
+
+        if (changedObject == Prop || changedObject == BasisValidationAssetCache.AssetBundleObject)
+        {
+            return GroupMask(ConfigurationGroup);
+        }
+
+        if (changedObject is GameObject gameObject && gameObject.transform.IsChildOf(Prop.transform))
+        {
+            // Layer affects collider validation; name is also embedded in hierarchy/collider issue text.
+            return GroupMask(HierarchyGroup, ColliderGroup);
+        }
+
+        return 0;
+    }
+
+    protected override bool ObjectChangeRequiresScan(UnityEngine.Object changedObject)
+    {
+        return false;
     }
 
     protected override void Refresh(BasisValidationBucket results)

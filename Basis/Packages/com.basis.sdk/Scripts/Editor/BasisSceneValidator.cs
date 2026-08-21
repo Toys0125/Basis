@@ -11,6 +11,10 @@ using UnityEngine.UIElements;
 /// </summary>
 public class BasisSceneValidator : BasisValidationRunner
 {
+    private const int ConfigurationGroup = 0;
+    private const int SceneSetupGroup = 1;
+    private const int HierarchyGroup = 2;
+
     private readonly BasisScene Scene;
     private VisualElement errorPanel;
     private Label errorMessageLabel;
@@ -35,6 +39,37 @@ public class BasisSceneValidator : BasisValidationRunner
     protected override void RefreshScan()
     {
         _scan.Rebuild(Scene != null ? Scene.transform : null);
+    }
+
+    protected override ulong GetObjectChangeGroupMask(UnityEngine.Object changedObject)
+    {
+        if (changedObject == null || Scene == null)
+        {
+            return 0;
+        }
+
+        if (changedObject == Scene)
+        {
+            return GroupMask(ConfigurationGroup, SceneSetupGroup);
+        }
+
+        if (changedObject == BasisValidationAssetCache.AssetBundleObject)
+        {
+            return GroupMask(ConfigurationGroup);
+        }
+
+        if (changedObject is GameObject gameObject && gameObject.transform.IsChildOf(Scene.transform))
+        {
+            // Missing-script errors include the owner name, so a rename can change the result text.
+            return GroupMask(HierarchyGroup);
+        }
+
+        return 0;
+    }
+
+    protected override bool ObjectChangeRequiresScan(UnityEngine.Object changedObject)
+    {
+        return false;
     }
 
     protected override void Refresh(BasisValidationBucket results)

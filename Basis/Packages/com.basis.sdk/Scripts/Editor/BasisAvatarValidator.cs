@@ -15,6 +15,14 @@ using UnityEngine.UIElements;
 /// </summary>
 public class BasisAvatarValidator : BasisValidationRunner
 {
+    private const int ConfigurationGroup = 0;
+    private const int FaceGroup = 1;
+    private const int RigGroup = 2;
+    private const int HierarchyGroup = 3;
+    private const int MeshGroup = 4;
+    private const int MaterialGroup = 5;
+    private const int TextureGroup = 6;
+
     private readonly BasisAvatar Avatar;
 
     private VisualElement errorPanel;
@@ -41,6 +49,7 @@ public class BasisAvatarValidator : BasisValidationRunner
     private readonly HashSet<EntityId> _seenMaterials = new HashSet<EntityId>();
     private readonly HashSet<EntityId> _seenTextures = new HashSet<EntityId>();
     private readonly HashSet<EntityId> _seenMeshes = new HashSet<EntityId>();
+    private readonly HashSet<EntityId> _seenShaders = new HashSet<EntityId>();
     private readonly HashSet<string> _seenModelPaths = new HashSet<string>();
     private readonly List<Material> _materialScratch = new List<Material>(8);
 
@@ -65,6 +74,78 @@ public class BasisAvatarValidator : BasisValidationRunner
     protected override void RefreshScan()
     {
         _scan.Rebuild(Avatar != null ? Avatar.transform : null);
+    }
+
+    protected override ulong GetObjectChangeGroupMask(UnityEngine.Object changedObject)
+    {
+        if (changedObject == null || Avatar == null)
+        {
+            return 0;
+        }
+
+        if (changedObject == Avatar)
+        {
+            return GroupMask(ConfigurationGroup, FaceGroup, RigGroup, HierarchyGroup);
+        }
+
+        if (changedObject == BasisValidationAssetCache.AssetBundleObject)
+        {
+            return GroupMask(ConfigurationGroup);
+        }
+
+        if (changedObject == Avatar.Animator)
+        {
+            return GroupMask(RigGroup);
+        }
+
+        if (changedObject is GameObject gameObject && IsUnderAvatar(gameObject.transform))
+        {
+            // Object properties include name and tag. A tag change can add/remove an EditorOnly
+            // subtree from the upload-facing scan, so every hierarchy-derived group is affected.
+            return GroupMask(RigGroup, HierarchyGroup, MeshGroup, MaterialGroup, TextureGroup);
+        }
+
+        if (changedObject is SkinnedMeshRenderer skinnedMesh && IsUnderAvatar(skinnedMesh.transform))
+        {
+            return GroupMask(RigGroup, MeshGroup, MaterialGroup, TextureGroup);
+        }
+
+        if (changedObject is Renderer renderer && IsUnderAvatar(renderer.transform))
+        {
+            return GroupMask(MaterialGroup, TextureGroup);
+        }
+
+        if (changedObject is Mesh mesh && _seenMeshes.Contains(mesh.GetEntityId()))
+        {
+            return GroupMask(MeshGroup);
+        }
+
+        if (changedObject is Material material && _seenMaterials.Contains(material.GetEntityId()))
+        {
+            return GroupMask(MaterialGroup, TextureGroup);
+        }
+
+        if (changedObject is Texture texture && _seenTextures.Contains(texture.GetEntityId()))
+        {
+            return GroupMask(TextureGroup);
+        }
+
+        if (changedObject is Shader shader && _seenShaders.Contains(shader.GetEntityId()))
+        {
+            return GroupMask(MaterialGroup, TextureGroup);
+        }
+
+        return 0;
+    }
+
+    protected override bool ObjectChangeRequiresScan(UnityEngine.Object changedObject)
+    {
+        return changedObject is GameObject gameObject && IsUnderAvatar(gameObject.transform);
+    }
+
+    private bool IsUnderAvatar(Transform transform)
+    {
+        return transform != null && Avatar != null && transform.IsChildOf(Avatar.transform);
     }
 
     protected override void Refresh(BasisValidationBucket results)
@@ -352,6 +433,7 @@ public class BasisAvatarValidator : BasisValidationRunner
         if (Avatar == null) return;
 
         _seenMaterials.Clear();
+        _seenShaders.Clear();
         List<Renderer> renderers = _scan.Renderers;
         int rendererCount = renderers.Count;
         for (int Index = 0; Index < rendererCount; Index++)
@@ -368,6 +450,10 @@ public class BasisAvatarValidator : BasisValidationRunner
                 if (!_seenMaterials.Add(material.GetEntityId())) continue;
 
                 Shader shader = material.shader;
+                if (shader != null)
+                {
+                    _seenShaders.Add(shader.GetEntityId());
+                }
                 if (shader != null && shader.isSupported && shader.name != "Hidden/InternalErrorShader") continue;
 
                 bucket.Error(
@@ -846,6 +932,7 @@ public class BasisAvatarValidator : BasisValidationRunner
         }
 
         Mesh mesh = skinnedMeshRenderer.sharedMesh;
+        bool firstUseOfMesh = _seenMeshes.Add(mesh.GetEntityId());
 
         // mesh.triangles and mesh.vertices each marshal a full copy of the buffer out of the mesh
         // just to read a length. The counts are available without touching the data at all.
@@ -860,7 +947,7 @@ public class BasisAvatarValidator : BasisValidationRunner
                 ValidationCategory.Performance);
 
         // One warning per source model, not per renderer that happens to point at it.
-        if (mesh.blendShapeCount != 0 && _seenMeshes.Add(mesh.GetEntityId()))
+        if (mesh.blendShapeCount != 0 && firstUseOfMesh)
         {
             string assetPath = BasisValidationAssetCache.PathOf(mesh);
             if (!string.IsNullOrEmpty(assetPath))
