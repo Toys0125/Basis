@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "projectPath": "Basis",
+  "profiles": {
+    "jiggle-playmode": {
+      "compile": true,
+      "playModeTests": true
+    }
+  }
+}
