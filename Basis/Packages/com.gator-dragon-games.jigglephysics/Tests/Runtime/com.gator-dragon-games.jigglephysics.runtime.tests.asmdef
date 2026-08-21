@@ -1,0 +1,21 @@
+{
+    "name": "com.gator-dragon-games.jigglephysics.runtime.tests",
+    "rootNamespace": "GatorDragonGames.JigglePhysics.Tests",
+    "references": [
+        "com.gator-dragon-games.jigglephysics",
+        "UnityEngine.TestRunner"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
