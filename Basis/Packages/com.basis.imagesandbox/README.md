@@ -16,13 +16,21 @@ Remote/network JPEG XL codestream semantics must be processed only through this 
 
 ## Build the decoder asset
 
-From the repository root, run:
+In the Unity editor, use `Basis/Debug/JPEG XL Profile 1/Build Test Decoder`. The menu runs the native PowerShell build on Windows and the bash build on other editor platforms.
+
+From the repository root, the same builds can be run manually:
+
+```powershell
+# Windows PowerShell
+Basis/Packages/com.basis.imagesandbox/Native~/Profile1/build-profile1-wasm.ps1
+```
 
 ```bash
+# Linux/macOS
 Basis/Packages/com.basis.imagesandbox/Native~/Profile1/build-profile1-wasm.sh
 ```
 
-The script clones the pinned libjxl revision into a temporary build cache, builds with the pinned multi-architecture Emscripten container, verifies the exact decoder SHA-256, and writes:
+Docker must be installed and running; on Windows this means Docker Desktop with Linux containers. The scripts clone the pinned libjxl revision into a temporary build cache, build with the pinned multi-architecture Emscripten container, verify the exact decoder SHA-256, and write:
 
 ```text
 Basis/Packages/com.basis.imagesandbox/Runtime/Resources/BasisImageSandbox/profile1_decoder.bytes

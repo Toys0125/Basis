@@ -11,8 +11,10 @@ namespace Basis.ImageSandbox.Editor
     internal static class BasisProfile1BuildMenu
     {
         private const string MenuPath = "Basis/Debug/JPEG XL Profile 1/Build Test Decoder";
-        private const string BuildScriptRelativePath =
+        private const string BashBuildScriptRelativePath =
             "Packages/com.basis.imagesandbox/Native~/Profile1/build-profile1-wasm.sh";
+        private const string PowerShellBuildScriptRelativePath =
+            "Packages/com.basis.imagesandbox/Native~/Profile1/build-profile1-wasm.ps1";
 
         private static readonly object OutputLock = new object();
         private static readonly StringBuilder Output = new StringBuilder();
@@ -25,7 +27,11 @@ namespace Basis.ImageSandbox.Editor
                 return;
 
             string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-            string scriptPath = Path.Combine(projectRoot, BuildScriptRelativePath);
+            bool isWindows = Application.platform == RuntimePlatform.WindowsEditor;
+            string scriptPath = Path.Combine(
+                projectRoot,
+                isWindows ? PowerShellBuildScriptRelativePath : BashBuildScriptRelativePath
+            );
             if (!File.Exists(scriptPath))
             {
                 ShowFailure($"Profile 1 build script was not found:\n{scriptPath}");
@@ -40,8 +46,10 @@ namespace Basis.ImageSandbox.Editor
                 string normalizedScriptPath = scriptPath.Replace('\\', '/');
                 var startInfo = new ProcessStartInfo
                 {
-                    FileName = "bash",
-                    Arguments = Quote(normalizedScriptPath),
+                    FileName = isWindows ? "powershell.exe" : "bash",
+                    Arguments = isWindows
+                        ? $"-NoProfile -ExecutionPolicy Bypass -File {Quote(scriptPath)}"
+                        : Quote(normalizedScriptPath),
                     WorkingDirectory = projectRoot,
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -74,7 +82,7 @@ namespace Basis.ImageSandbox.Editor
                 _buildProcess?.Dispose();
                 _buildProcess = null;
                 ShowFailure(
-                    "Could not start the Profile 1 decoder build. Docker and a bash shell are required.\n\n"
+                    "Could not start the Profile 1 decoder build. Docker is required; Windows uses PowerShell and other editor platforms use bash.\n\n"
                     + exception.Message
                 );
             }
