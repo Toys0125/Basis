@@ -89,7 +89,22 @@ public class JiggleRig : MonoBehaviour, IJiggleParameterProvider {
     }
     #endif
 
+    public void PrepareSerializedDataForEditor() {
+        if (!jiggleRigData.hasSerializedData) {
+            jiggleRigData = JiggleRigData.Default();
+        }
+        jiggleRigData.OnValidate();
+    }
+
     public void OnInitialize() {
+        // JigglePhysics is a play-mode system. Unity still invokes OnEnable for components
+        // created while editing, but its runtime registries are not initialized there.
+        // Keeping editor-time rigs inert also lets converters configure a freshly-added
+        // component without a spurious null-reference exception.
+        if (!Application.isPlaying) {
+            return;
+        }
+
         if (jiggleRigData.rootBone == null) {
             Debug.LogError($"Jiggle Rig on '{name}' enabled without a root bone assigned, disabling it.", this);
             enabled = false;
