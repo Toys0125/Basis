@@ -59,16 +59,19 @@ internal class JiggleRigEditorLifecycleTests {
         child.transform.localPosition = new Vector3(0f, -0.25f, 0f);
         var host = Spawn("host");
         var rig = host.AddComponent<JiggleRig>();
+        rig.enabled = false;
 
         var serializedObject = new SerializedObject(rig);
         serializedObject.Update();
         serializedObject.FindProperty("jiggleRigData")
             .FindPropertyRelative(nameof(JiggleRigData.rootBone)).objectReferenceValue = root.transform;
         serializedObject.ApplyModifiedProperties();
-
         rig.PrepareSerializedDataForEditor();
+        rig.enabled = true;
 
         var data = rig.GetJiggleRigData();
+        Assert.IsTrue(rig.enabled);
+        Assert.IsNull(rig.GetJiggleTree());
         Assert.IsTrue(data.hasSerializedData);
         Assert.AreSame(root.transform, data.rootBone);
         Assert.AreEqual(2, data.transformCachedData.Length);
