@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using Basis.ImagePickup;
 using UnityEngine;
 
@@ -8,6 +10,8 @@ namespace Basis.ImageSandbox.Editor
 {
     internal static class BasisProfile1GifBenchmarkPreparation
     {
+        private const string CacheFormat = "BasisProfile1GifFullCanvasCacheV1";
+
         public static bool TryConvert(
             string[] gifPaths,
             string outputRoot,
@@ -20,30 +24,35 @@ namespace Basis.ImageSandbox.Editor
             if (gifPaths == null || gifPaths.Length == 0)
                 return true;
 
-            string runName = "gif-prepared-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-            string runRoot = Path.Combine(outputRoot, runName);
-            string rawRoot = Path.Combine(runRoot, "raw");
-            string jxlRoot = Path.Combine(runRoot, "jxl");
-            Directory.CreateDirectory(rawRoot);
-            Directory.CreateDirectory(jxlRoot);
+            string cacheRoot = Path.Combine(outputRoot, "gif-profile1-cache");
+            Directory.CreateDirectory(cacheRoot);
 
             try
             {
-                for (int i = 0; i < gifPaths.Length; i++)
+                foreach (string gifPath in gifPaths)
                 {
-                    string gifPath = gifPaths[i];
-                    string stem = i.ToString("D6") + "_" + SanitizeFileName(Path.GetFileNameWithoutExtension(gifPath));
-                    string rawPath = Path.Combine(rawRoot, stem + ".bp1gif");
-                    string jxlPath = Path.Combine(jxlRoot, stem + ".jxl");
+                    string cacheKey = ComputeCacheKey(gifPath);
+                    string stem = SanitizeFileName(Path.GetFileNameWithoutExtension(gifPath));
+                    string jxlPath = Path.Combine(cacheRoot, cacheKey + "_" + stem + ".jxl");
+                    if (File.Exists(jxlPath) && new FileInfo(jxlPath).Length > 0)
+                    {
+                        convertedByOriginal[gifPath] = jxlPath;
+                        continue;
+                    }
+
                     if (!TryBuildTimeline(gifPath, out byte[] timeline, out error))
                         return false;
-                    File.WriteAllBytes(rawPath, timeline);
                     if (!BasisProfile1EditorNative.TryEncodeTimeline(timeline, out byte[] profile1, out error))
                     {
                         error = "GIF Profile 1 encode failed for " + gifPath + ": " + error;
                         return false;
                     }
-                    File.WriteAllBytes(jxlPath, profile1);
+
+                    string temporaryPath = jxlPath + ".tmp";
+                    if (File.Exists(temporaryPath))
+                        File.Delete(temporaryPath);
+                    File.WriteAllBytes(temporaryPath, profile1);
+                    File.Move(temporaryPath, jxlPath);
                     convertedByOriginal[gifPath] = jxlPath;
                 }
                 return true;
@@ -213,6 +222,26 @@ namespace Basis.ImageSandbox.Editor
                     writer.Write(pixel.a);
                 }
             }
+        }
+
+        private static string ComputeCacheKey(string gifPath)
+        {
+            using var sha = SHA256.Create();
+            byte[] identity = Encoding.UTF8.GetBytes(
+                CacheFormat
+                    + "|profile=" + BasisJpegXlProfile1.ProfileVersion
+                    + "|libjxl=" + BasisProfile1SandboxDecoder.LibJxlCommit
+            );
+            sha.TransformBlock(identity, 0, identity.Length, identity, 0);
+            using (FileStream stream = File.OpenRead(gifPath))
+            {
+                var buffer = new byte[1024 * 1024];
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    sha.TransformBlock(buffer, 0, read, buffer, 0);
+            }
+            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
         }
 
         private static string SanitizeFileName(string value)

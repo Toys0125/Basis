@@ -163,7 +163,7 @@ namespace Basis.ImageSandbox.Editor
 
             if (gifFixtures.Length > 0)
             {
-                _status = $"Preparing {gifFixtures.Length} GIF fixture(s) as lossless Profile 1 JPEG XL...";
+                _status = $"Resolving {gifFixtures.Length} GIF fixture(s) from the Profile 1 cache or preparing cache misses...";
                 Repaint();
                 if (!BasisProfile1GifBenchmarkPreparation.TryConvert(
                         gifFixtures,
