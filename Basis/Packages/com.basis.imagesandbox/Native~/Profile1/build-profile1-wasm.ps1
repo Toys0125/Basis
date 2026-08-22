@@ -23,6 +23,11 @@ $CacheRoot = [System.IO.Path]::GetFullPath($CacheRoot)
 $LibJxlDir = Join-Path $CacheRoot "libjxl"
 $BuildDir = Join-Path $CacheRoot "build"
 
+& docker info | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker Desktop is required and must be running with Linux containers enabled."
+}
+
 New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null
 
@@ -44,11 +49,6 @@ if (Test-Path $BuildDir) {
     Remove-Item -Recurse -Force $BuildDir
 }
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-
-& docker info | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Docker Desktop is required and must be running."
-}
 
 $ProfileMount = "${ScriptDir}:/profile1:ro"
 $LibJxlMount = "${LibJxlDir}:/libjxl"
