@@ -50,5 +50,5 @@ $OutputMount = "${OutputDirectory}:/output"
     -v $InputMount `
     -v $OutputMount `
     $EmscriptenImage `
-    bash -lc "CC=gcc CXX=g++ cmake -S /encoder -B /build -DCMAKE_BUILD_TYPE=Release -DLIBJXL_SOURCE_DIR=/libjxl && cmake --build /build --target profile1_benchmark_encoder --parallel && /build/profile1_benchmark_encoder /input /output"
+    bash -lc "emcmake cmake -S /encoder -B /build -DCMAKE_BUILD_TYPE=Release -DLIBJXL_SOURCE_DIR=/libjxl && cmake --build /build --target profile1_benchmark_encoder --parallel && node /build/profile1_benchmark_encoder.js /input /output"
 if ($LASTEXITCODE -ne 0) { throw "GIF benchmark conversion failed." }
