@@ -2,14 +2,16 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <string>
+#include <limits>
 #include <vector>
 
-namespace fs = std::filesystem;
+#if defined(_WIN32)
+#define BASIS_P1_EXPORT extern "C" __declspec(dllexport)
+#else
+#define BASIS_P1_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
 
 namespace {
 constexpr std::array<uint8_t, 8> kMagic = {'B','P','1','G','I','F','0','1'};
@@ -23,13 +25,19 @@ constexpr std::array<uint8_t, 20> kFtyp = {
     0x6a, 0x78, 0x6c, 0x20,
 };
 
-uint32_t ReadLe32(std::istream& input) {
-  uint8_t bytes[4];
-  input.read(reinterpret_cast<char*>(bytes), sizeof(bytes));
-  return static_cast<uint32_t>(bytes[0]) |
-         (static_cast<uint32_t>(bytes[1]) << 8) |
-         (static_cast<uint32_t>(bytes[2]) << 16) |
-         (static_cast<uint32_t>(bytes[3]) << 24);
+enum ResultCode {
+  kSuccess = 0,
+  kInvalidArgument = 1,
+  kMalformedTimeline = 2,
+  kEncodeFailure = 3,
+  kAllocationFailure = 4,
+};
+
+uint32_t ReadLe32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) |
+         (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 
 uint32_t ReadBe32(const uint8_t* p) {
@@ -46,62 +54,62 @@ void AppendBe32(std::vector<uint8_t>* output, uint32_t value) {
   output->push_back(static_cast<uint8_t>(value));
 }
 
-bool Check(JxlEncoderStatus status, const char* operation) {
-  if (status == JXL_ENC_SUCCESS) return true;
-  std::cerr << operation << " failed with encoder status " << status << "\n";
-  return false;
+bool Check(JxlEncoderStatus status) {
+  return status == JXL_ENC_SUCCESS;
 }
 
 bool Canonicalize(const std::vector<uint8_t>& encoded, std::vector<uint8_t>* output) {
   if (encoded.size() < kSignature.size() + kFtyp.size() + 8 ||
       std::memcmp(encoded.data(), kSignature.data(), kSignature.size()) != 0 ||
       std::memcmp(encoded.data() + kSignature.size(), kFtyp.data(), kFtyp.size()) != 0) {
-    std::cerr << "libjxl did not emit the expected JPEG XL container prefix\n";
     return false;
   }
   const size_t first = kSignature.size() + kFtyp.size();
   const uint32_t size = ReadBe32(encoded.data() + first);
   if (size < 8 || first + size != encoded.size() ||
-      std::memcmp(encoded.data() + first + 4, "jxlc", 4) != 0) {
-    std::cerr << "benchmark encoder expected one jxlc output box\n";
+      std::memcmp(encoded.data() + first + 4, "jxlc", 4) != 0 ||
+      size > std::numeric_limits<uint32_t>::max() - 4U) {
     return false;
   }
   output->clear();
   output->insert(output->end(), encoded.begin(), encoded.begin() + first);
-  AppendBe32(output, size + 4);
+  AppendBe32(output, size + 4U);
   output->insert(output->end(), {'j','x','l','p'});
   AppendBe32(output, 0x80000000U);
   output->insert(output->end(), encoded.begin() + first + 8, encoded.end());
   return true;
 }
 
-bool EncodeOne(const fs::path& input_path, const fs::path& output_path) {
-  std::ifstream input(input_path, std::ios::binary);
-  if (!input) return false;
-  std::array<uint8_t, 8> magic{};
-  input.read(reinterpret_cast<char*>(magic.data()), magic.size());
-  if (!input || magic != kMagic) {
-    std::cerr << input_path << ": invalid benchmark timeline magic\n";
-    return false;
+int EncodeTimeline(const uint8_t* input, size_t input_size, std::vector<uint8_t>* canonical) {
+  if (!input || !canonical || input_size < 24 || std::memcmp(input, kMagic.data(), kMagic.size()) != 0) {
+    return kMalformedTimeline;
   }
-  const uint32_t width = ReadLe32(input);
-  const uint32_t height = ReadLe32(input);
-  const uint32_t frames = ReadLe32(input);
-  const uint32_t loops = ReadLe32(input);
-  if (!input || width == 0 || height == 0 || frames == 0) return false;
-  const uint64_t frame_bytes64 = static_cast<uint64_t>(width) * height * 4;
-  if (frame_bytes64 > static_cast<uint64_t>(SIZE_MAX)) return false;
-  const size_t frame_bytes = static_cast<size_t>(frame_bytes64);
 
-  std::vector<uint32_t> durations(frames);
-  for (uint32_t i = 0; i < frames; ++i) durations[i] = ReadLe32(input);
-  if (!input) return false;
+  const uint32_t width = ReadLe32(input + 8);
+  const uint32_t height = ReadLe32(input + 12);
+  const uint32_t frames = ReadLe32(input + 16);
+  const uint32_t loops = ReadLe32(input + 20);
+  if (width == 0 || height == 0 || frames == 0) return kMalformedTimeline;
+
+  const uint64_t frame_bytes64 = static_cast<uint64_t>(width) * height * 4ULL;
+  const uint64_t durations_bytes64 = static_cast<uint64_t>(frames) * 4ULL;
+  const uint64_t header_bytes64 = 24ULL + durations_bytes64;
+  const uint64_t pixels_bytes64 = frame_bytes64 * frames;
+  const uint64_t expected_size64 = header_bytes64 + pixels_bytes64;
+  if (frame_bytes64 > static_cast<uint64_t>(SIZE_MAX) || expected_size64 != input_size) {
+    return kMalformedTimeline;
+  }
+
+  const size_t frame_bytes = static_cast<size_t>(frame_bytes64);
+  const uint8_t* durations = input + 24;
+  const uint8_t* frames_base = input + static_cast<size_t>(header_bytes64);
 
   JxlEncoder* encoder = JxlEncoderCreate(nullptr);
-  if (!encoder) return false;
-  bool ok = false;
+  if (!encoder) return kAllocationFailure;
+  int result = kEncodeFailure;
   do {
-    if (!Check(JxlEncoderUseContainer(encoder, JXL_TRUE), "JxlEncoderUseContainer")) break;
+    if (!Check(JxlEncoderUseContainer(encoder, JXL_TRUE))) break;
+
     JxlBasicInfo info{};
     JxlEncoderInitBasicInfo(&info);
     info.xsize = width;
@@ -119,44 +127,44 @@ bool EncodeOne(const fs::path& input_path, const fs::path& output_path) {
     info.animation.tps_denominator = 1;
     info.animation.num_loops = loops;
     info.animation.have_timecodes = JXL_FALSE;
-    if (!Check(JxlEncoderSetBasicInfo(encoder, &info), "JxlEncoderSetBasicInfo")) break;
+    if (!Check(JxlEncoderSetBasicInfo(encoder, &info))) break;
 
     JxlExtraChannelInfo alpha{};
     JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
     alpha.bits_per_sample = 8;
     alpha.exponent_bits_per_sample = 0;
     alpha.alpha_premultiplied = JXL_FALSE;
-    if (!Check(JxlEncoderSetExtraChannelInfo(encoder, 0, &alpha), "JxlEncoderSetExtraChannelInfo")) break;
+    if (!Check(JxlEncoderSetExtraChannelInfo(encoder, 0, &alpha))) break;
 
     JxlColorEncoding color{};
     JxlColorEncodingSetToSRGB(&color, JXL_FALSE);
-    if (!Check(JxlEncoderSetColorEncoding(encoder, &color), "JxlEncoderSetColorEncoding")) break;
+    if (!Check(JxlEncoderSetColorEncoding(encoder, &color))) break;
 
     const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
-    std::vector<uint8_t> rgba(frame_bytes);
     bool frames_ok = true;
     for (uint32_t i = 0; i < frames; ++i) {
-      input.read(reinterpret_cast<char*>(rgba.data()), rgba.size());
-      if (!input) { frames_ok = false; break; }
+      const uint32_t duration = ReadLe32(durations + static_cast<size_t>(i) * 4U);
+      if (duration == 0) { frames_ok = false; break; }
       JxlEncoderFrameSettings* settings = JxlEncoderFrameSettingsCreate(encoder, nullptr);
       if (!settings ||
-          !Check(JxlEncoderSetFrameLossless(settings, JXL_TRUE), "JxlEncoderSetFrameLossless") ||
-          !Check(JxlEncoderFrameSettingsSetOption(settings, JXL_ENC_FRAME_SETTING_EFFORT, 1), "JxlEncoder effort")) {
+          !Check(JxlEncoderSetFrameLossless(settings, JXL_TRUE)) ||
+          !Check(JxlEncoderFrameSettingsSetOption(settings, JXL_ENC_FRAME_SETTING_EFFORT, 1))) {
         frames_ok = false;
         break;
       }
       JxlFrameHeader header{};
       JxlEncoderInitFrameHeader(&header);
-      header.duration = durations[i];
-      if (!Check(JxlEncoderSetFrameHeader(settings, &header), "JxlEncoderSetFrameHeader") ||
-          !Check(JxlEncoderAddImageFrame(settings, &format, rgba.data(), rgba.size()), "JxlEncoderAddImageFrame")) {
+      header.duration = duration;
+      const uint8_t* rgba = frames_base + static_cast<size_t>(i) * frame_bytes;
+      if (!Check(JxlEncoderSetFrameHeader(settings, &header)) ||
+          !Check(JxlEncoderAddImageFrame(settings, &format, rgba, frame_bytes))) {
         frames_ok = false;
         break;
       }
     }
     if (!frames_ok) break;
-    JxlEncoderCloseInput(encoder);
 
+    JxlEncoderCloseInput(encoder);
     std::vector<uint8_t> encoded(4096);
     uint8_t* next = encoded.data();
     size_t available = encoded.size();
@@ -166,44 +174,53 @@ bool EncodeOne(const fs::path& input_path, const fs::path& output_path) {
         encoded.resize(encoded.size() - available);
         break;
       }
-      if (status != JXL_ENC_NEED_MORE_OUTPUT) { frames_ok = false; break; }
+      if (status != JXL_ENC_NEED_MORE_OUTPUT) {
+        frames_ok = false;
+        break;
+      }
       const size_t used = encoded.size() - available;
-      encoded.resize(encoded.size() * 2);
+      if (encoded.size() > std::numeric_limits<size_t>::max() / 2U) {
+        frames_ok = false;
+        break;
+      }
+      encoded.resize(encoded.size() * 2U);
       next = encoded.data() + used;
       available = encoded.size() - used;
     }
-    if (!frames_ok) break;
-
-    std::vector<uint8_t> canonical;
-    if (!Canonicalize(encoded, &canonical)) break;
-    std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(canonical.data()), canonical.size());
-    ok = static_cast<bool>(output);
+    if (!frames_ok || !Canonicalize(encoded, canonical)) break;
+    result = kSuccess;
   } while (false);
+
   JxlEncoderDestroy(encoder);
-  return ok;
+  return result;
 }
 }  // namespace
 
-int main(int argc, char** argv) {
-  if (argc != 3) {
-    std::cerr << "Usage: profile1_benchmark_encoder <input-dir> <output-dir>\n";
-    return 2;
-  }
-  const fs::path input_dir(argv[1]);
-  const fs::path output_dir(argv[2]);
-  fs::create_directories(output_dir);
-  int failed = 0;
-  for (const auto& entry : fs::directory_iterator(input_dir)) {
-    if (!entry.is_regular_file() || entry.path().extension() != ".bp1gif") continue;
-    fs::path output = output_dir / entry.path().filename();
-    output.replace_extension(".jxl");
-    if (!EncodeOne(entry.path(), output)) {
-      std::cerr << "Failed to encode " << entry.path() << "\n";
-      ++failed;
-    } else {
-      std::cout << "Encoded " << entry.path().filename() << " -> " << output.filename() << "\n";
-    }
-  }
-  return failed == 0 ? 0 : 3;
+BASIS_P1_EXPORT uint32_t basis_profile1_editor_abi_version() {
+  return 1U;
+}
+
+BASIS_P1_EXPORT int basis_profile1_editor_encode_timeline(
+    const uint8_t* input,
+    size_t input_size,
+    uint8_t** output,
+    size_t* output_size) {
+  if (!input || input_size == 0 || !output || !output_size) return kInvalidArgument;
+  *output = nullptr;
+  *output_size = 0;
+
+  std::vector<uint8_t> canonical;
+  const int result = EncodeTimeline(input, input_size, &canonical);
+  if (result != kSuccess) return result;
+
+  void* memory = std::malloc(canonical.size());
+  if (!memory) return kAllocationFailure;
+  std::memcpy(memory, canonical.data(), canonical.size());
+  *output = static_cast<uint8_t*>(memory);
+  *output_size = canonical.size();
+  return kSuccess;
+}
+
+BASIS_P1_EXPORT void basis_profile1_editor_free(void* memory) {
+  std::free(memory);
 }

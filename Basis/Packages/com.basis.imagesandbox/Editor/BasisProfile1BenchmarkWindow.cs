@@ -152,7 +152,6 @@ namespace Basis.ImageSandbox.Editor
             }
 
             Directory.CreateDirectory(_outputDirectory);
-            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
             var fixturePaths = new List<string>(jxlFixtures);
             var fixtureDisplayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixturePreparationPrefixes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -165,7 +164,6 @@ namespace Basis.ImageSandbox.Editor
                 _status = $"Preparing {gifFixtures.Length} GIF fixture(s) as lossless Profile 1 JPEG XL...";
                 Repaint();
                 if (!BasisProfile1GifBenchmarkPreparation.TryConvert(
-                        projectRoot,
                         gifFixtures,
                         _outputDirectory,
                         out Dictionary<string, string> convertedGifs,

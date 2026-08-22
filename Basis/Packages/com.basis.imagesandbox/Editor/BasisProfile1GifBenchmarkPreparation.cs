@@ -1,20 +1,14 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using Basis.ImagePickup;
 using UnityEngine;
-using Debug = UnityEngine.Debug;
 
 namespace Basis.ImageSandbox.Editor
 {
     internal static class BasisProfile1GifBenchmarkPreparation
     {
-        private const string WindowsScript = "Packages/com.basis.imagesandbox/Native~/Profile1/encode-profile1-benchmark-gifs.ps1";
-        private const string UnixScript = "Packages/com.basis.imagesandbox/Native~/Profile1/encode-profile1-benchmark-gifs.sh";
-
         public static bool TryConvert(
-            string projectRoot,
             string[] gifPaths,
             string outputRoot,
             out Dictionary<string, string> convertedByOriginal,
@@ -40,58 +34,17 @@ namespace Basis.ImageSandbox.Editor
                     string gifPath = gifPaths[i];
                     string stem = i.ToString("D6") + "_" + SanitizeFileName(Path.GetFileNameWithoutExtension(gifPath));
                     string rawPath = Path.Combine(rawRoot, stem + ".bp1gif");
-                    if (!TryWriteTimeline(gifPath, rawPath, out error))
+                    string jxlPath = Path.Combine(jxlRoot, stem + ".jxl");
+                    if (!TryBuildTimeline(gifPath, out byte[] timeline, out error))
                         return false;
-                    convertedByOriginal[gifPath] = Path.Combine(jxlRoot, stem + ".jxl");
-                }
-
-                bool isWindows = Application.platform == RuntimePlatform.WindowsEditor;
-                string scriptPath = Path.Combine(projectRoot, isWindows ? WindowsScript : UnixScript);
-                if (!File.Exists(scriptPath))
-                {
-                    error = "GIF benchmark encoder script was not found: " + scriptPath;
-                    return false;
-                }
-
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = isWindows ? "powershell.exe" : "bash",
-                    Arguments = isWindows
-                        ? $"-NoProfile -ExecutionPolicy Bypass -File {Quote(scriptPath)} -InputDirectory {Quote(rawRoot)} -OutputDirectory {Quote(jxlRoot)}"
-                        : $"{Quote(scriptPath.Replace('\\', '/'))} {Quote(rawRoot.Replace('\\', '/'))} {Quote(jxlRoot.Replace('\\', '/'))}",
-                    WorkingDirectory = projectRoot,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-
-                using var process = Process.Start(startInfo);
-                if (process == null)
-                {
-                    error = "Failed to start the trusted-local GIF benchmark encoder.";
-                    return false;
-                }
-                var stdoutTask = process.StandardOutput.ReadToEndAsync();
-                var stderrTask = process.StandardError.ReadToEndAsync();
-                process.WaitForExit();
-                string stdout = stdoutTask.GetAwaiter().GetResult();
-                string stderr = stderrTask.GetAwaiter().GetResult();
-                if (!string.IsNullOrWhiteSpace(stdout))
-                    Debug.Log(stdout);
-                if (process.ExitCode != 0)
-                {
-                    error = "GIF benchmark encoder failed.\n" + stderr;
-                    return false;
-                }
-
-                foreach (KeyValuePair<string, string> pair in convertedByOriginal)
-                {
-                    if (!File.Exists(pair.Value) || new FileInfo(pair.Value).Length == 0)
+                    File.WriteAllBytes(rawPath, timeline);
+                    if (!BasisProfile1EditorNative.TryEncodeTimeline(timeline, out byte[] profile1, out error))
                     {
-                        error = "GIF benchmark encoder did not produce output for " + pair.Key;
+                        error = "GIF Profile 1 encode failed for " + gifPath + ": " + error;
                         return false;
                     }
+                    File.WriteAllBytes(jxlPath, profile1);
+                    convertedByOriginal[gifPath] = jxlPath;
                 }
                 return true;
             }
@@ -102,8 +55,9 @@ namespace Basis.ImageSandbox.Editor
             }
         }
 
-        private static bool TryWriteTimeline(string gifPath, string rawPath, out string error)
+        private static bool TryBuildTimeline(string gifPath, out byte[] timeline, out string error)
         {
+            timeline = null;
             error = null;
             byte[] source = File.ReadAllBytes(gifPath);
             using var request = BasisBurstGifDecoder.Schedule(source);
@@ -128,7 +82,7 @@ namespace Basis.ImageSandbox.Editor
             var previous = animation.RequiresPreviousCanvas ? new Color32[canvasPixels] : null;
             Fill(canvas, animation.BackgroundColor);
 
-            using var stream = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
             writer.Write(new byte[] { (byte)'B', (byte)'P', (byte)'1', (byte)'G', (byte)'I', (byte)'F', (byte)'0', (byte)'1' });
             writer.Write((uint)width);
@@ -161,6 +115,8 @@ namespace Basis.ImageSandbox.Editor
                 WriteTopDownRgba(writer, canvas, width, height);
                 previousFrame = frame;
             }
+            writer.Flush();
+            timeline = stream.ToArray();
             return true;
         }
 
@@ -265,7 +221,5 @@ namespace Basis.ImageSandbox.Editor
                 value = value.Replace(invalid, '_');
             return value;
         }
-
-        private static string Quote(string value) => "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 }
