@@ -385,7 +385,7 @@ namespace Basis.ImageSandbox.Editor
         {
             var sample = new BenchmarkSample();
             Stopwatch stopwatch = Stopwatch.StartNew();
-            using (var nativePayload = new NativeArray<byte>(payload, Allocator.Temp))
+            using (var nativePayload = new NativeArray<byte>(payload, Allocator.Persistent))
             {
                 bool stageAOk = BasisJpegXlProfile1.TryValidateStageA(
                     nativePayload,
