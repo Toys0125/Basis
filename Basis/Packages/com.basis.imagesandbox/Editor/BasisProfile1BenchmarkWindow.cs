@@ -60,7 +60,8 @@ namespace Basis.ImageSandbox.Editor
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             EditorGUILayout.LabelField("JPEG XL Profile 1 Benchmark", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Runs the production WASM/Wasmtime decoder against canonical Profile 1 .jxl fixtures. "
+                "Accepts ordinary .jxl files and prepares them into the canonical Profile 1 container before timing. "
+                    + "Raw codestreams and standard jxlc/jxlp containers are rewrapped without decoding or re-encoding. "
                     + "Results include Stage A, Stage B, full-decode timing, structural counters, module initialization, "
                     + "working-set peak/delta, and concurrency scaling. Fuel consumption and exact WASM linear-memory "
                     + "high-water marks are not exposed by the current runtime and are reported as unavailable.",
@@ -97,8 +98,9 @@ namespace Basis.ImageSandbox.Editor
             EditorGUILayout.SelectableLabel(_status, EditorStyles.textArea, GUILayout.MinHeight(70));
             EditorGUILayout.Space();
             EditorGUILayout.HelpBox(
-                "Use representative real and synthetic canonical Profile 1 containers. The benchmark reads every .jxl file "
-                    + "in the selected directory and writes both aggregate CSV and detailed JSON results.",
+                "Use representative real and synthetic JPEG XL files. Fixture preparation is excluded from timing and the "
+                    + "original format/size plus prepared Profile 1 size are recorded in CSV/JSON. Files whose codestream cannot "
+                    + "be extracted are reported as preparation failures rather than benchmarked.",
                 MessageType.None
             );
             EditorGUILayout.EndScrollView();
@@ -264,11 +266,26 @@ namespace Basis.ImageSandbox.Editor
             foreach (string fixturePath in configuration.Fixtures)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                byte[] payload = File.ReadAllBytes(fixturePath);
+                byte[] sourcePayload = File.ReadAllBytes(fixturePath);
+                if (!TryPrepareCanonicalProfile1(sourcePayload, out PreparedFixture prepared, out string preparationError))
+                {
+                    foreach (int concurrency in configuration.Concurrency)
+                    {
+                        result.Fixtures.Add(CreatePreparationFailure(
+                            configuration,
+                            fixturePath,
+                            sourcePayload.LongLength,
+                            concurrency,
+                            preparationError
+                        ));
+                    }
+                    continue;
+                }
+
                 foreach (int concurrency in configuration.Concurrency)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    result.Fixtures.Add(RunFixture(configuration, fixturePath, payload, concurrency, cancellationToken));
+                    result.Fixtures.Add(RunFixture(configuration, fixturePath, prepared, concurrency, cancellationToken));
                 }
             }
 
@@ -276,18 +293,304 @@ namespace Basis.ImageSandbox.Editor
             return result;
         }
 
+        private static FixtureBenchmarkResult CreatePreparationFailure(
+            BenchmarkConfiguration configuration,
+            string fixturePath,
+            long originalPayloadBytes,
+            int concurrency,
+            string error
+        )
+        {
+            return new FixtureBenchmarkResult
+            {
+                Fixture = Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/'),
+                OriginalPayloadBytes = originalPayloadBytes,
+                PayloadBytes = 0,
+                PreparationKind = "Failed",
+                PreparationError = error,
+                Concurrency = concurrency,
+                Samples = new List<BenchmarkSample>(),
+                FailureCount = configuration.MeasuredIterations * concurrency,
+                FuelConsumedAvailable = false,
+                WasmPeakMemoryAvailable = false,
+            };
+        }
+
+        private static bool TryPrepareCanonicalProfile1(
+            byte[] source,
+            out PreparedFixture prepared,
+            out string error
+        )
+        {
+            prepared = null;
+            error = null;
+            if (source == null || source.Length < 2)
+            {
+                error = "JPEG XL fixture is empty or truncated.";
+                return false;
+            }
+
+            if (IsCanonicalProfile1Container(source))
+            {
+                prepared = new PreparedFixture(source, source.LongLength, "CanonicalProfile1");
+                return true;
+            }
+
+            byte[] codestream;
+            string kind;
+            if (source[0] == 0xff && source[1] == 0x0a)
+            {
+                codestream = source;
+                kind = "RawCodestream";
+            }
+            else
+            {
+                if (!TryExtractCodestreamFromContainer(source, out codestream, out kind, out error))
+                    return false;
+            }
+
+            if (codestream.Length < 2 || codestream[0] != 0xff || codestream[1] != 0x0a)
+            {
+                error = "Extracted JPEG XL codestream does not start with the expected FF 0A signature.";
+                return false;
+            }
+
+            long preparedLength = 32L + 12L + codestream.LongLength;
+            if (preparedLength > BasisJpegXlProfile1.MaximumPayloadBytes)
+            {
+                error = $"Canonical Profile 1 wrapper would be {preparedLength} bytes, above the {BasisJpegXlProfile1.MaximumPayloadBytes}-byte payload limit.";
+                return false;
+            }
+            if (preparedLength > int.MaxValue)
+            {
+                error = "Canonical Profile 1 wrapper is too large for the benchmark process.";
+                return false;
+            }
+
+            var payload = new byte[(int)preparedLength];
+            WriteCanonicalContainerPrefix(payload);
+            int offset = 32;
+            WriteUInt32BigEndian(payload, offset, checked((uint)(12 + codestream.Length)));
+            payload[offset + 4] = (byte)'j';
+            payload[offset + 5] = (byte)'x';
+            payload[offset + 6] = (byte)'l';
+            payload[offset + 7] = (byte)'p';
+            WriteUInt32BigEndian(payload, offset + 8, 0x80000000U);
+            Buffer.BlockCopy(codestream, 0, payload, offset + 12, codestream.Length);
+
+            prepared = new PreparedFixture(payload, source.LongLength, kind + "ToCanonicalJxlp");
+            return true;
+        }
+
+        private static bool IsCanonicalProfile1Container(byte[] source)
+        {
+            using var native = new NativeArray<byte>(source, Allocator.Persistent);
+            return BasisJpegXlProfile1.TryValidateStageA(
+                native,
+                source.Length,
+                BasisJpegXlProfile1.ProfileVersion,
+                out _,
+                out _,
+                out _
+            );
+        }
+
+        private static bool TryExtractCodestreamFromContainer(
+            byte[] source,
+            out byte[] codestream,
+            out string kind,
+            out string error
+        )
+        {
+            codestream = null;
+            kind = null;
+            error = null;
+            if (source.Length < 12 || !HasJxlContainerSignature(source))
+            {
+                error = "Fixture is neither a raw JPEG XL codestream nor a recognized JPEG XL container.";
+                return false;
+            }
+
+            var fragments = new List<ArraySegment<byte>>();
+            bool sawJxlc = false;
+            bool sawJxlp = false;
+            uint expectedSequence = 0;
+            bool sawFinalJxlp = false;
+            long totalCodestreamBytes = 0;
+            int offset = 12;
+
+            while (offset < source.Length)
+            {
+                if (source.Length - offset < 8)
+                {
+                    error = "JPEG XL container ends inside a box header.";
+                    return false;
+                }
+
+                uint size32 = ReadUInt32BigEndian(source, offset);
+                string boxType = Encoding.ASCII.GetString(source, offset + 4, 4);
+                int headerBytes = 8;
+                long boxBytes;
+                if (size32 == 1)
+                {
+                    if (source.Length - offset < 16)
+                    {
+                        error = "JPEG XL container ends inside an extended-size box header.";
+                        return false;
+                    }
+                    ulong size64 = ReadUInt64BigEndian(source, offset + 8);
+                    if (size64 > long.MaxValue)
+                    {
+                        error = "JPEG XL container box size is too large.";
+                        return false;
+                    }
+                    boxBytes = (long)size64;
+                    headerBytes = 16;
+                }
+                else if (size32 == 0)
+                {
+                    boxBytes = source.Length - offset;
+                }
+                else
+                {
+                    boxBytes = size32;
+                }
+
+                if (boxBytes < headerBytes || boxBytes > source.Length - offset)
+                {
+                    error = $"JPEG XL container has an invalid {boxType} box size.";
+                    return false;
+                }
+
+                int contentOffset = offset + headerBytes;
+                int contentBytes = checked((int)(boxBytes - headerBytes));
+                if (boxType == "jxlc")
+                {
+                    if (sawJxlc || sawJxlp)
+                    {
+                        error = "JPEG XL container mixes or repeats codestream box forms.";
+                        return false;
+                    }
+                    sawJxlc = true;
+                    fragments.Add(new ArraySegment<byte>(source, contentOffset, contentBytes));
+                    totalCodestreamBytes = contentBytes;
+                }
+                else if (boxType == "jxlp")
+                {
+                    if (sawJxlc || sawFinalJxlp || contentBytes < 4)
+                    {
+                        error = "JPEG XL container has an invalid jxlp fragment sequence.";
+                        return false;
+                    }
+                    sawJxlp = true;
+                    uint counter = ReadUInt32BigEndian(source, contentOffset);
+                    uint sequence = counter & 0x7fffffffU;
+                    bool isFinal = (counter & 0x80000000U) != 0;
+                    if (sequence != expectedSequence)
+                    {
+                        error = $"JPEG XL jxlp sequence expected {expectedSequence} but found {sequence}.";
+                        return false;
+                    }
+                    expectedSequence++;
+                    sawFinalJxlp = isFinal;
+                    int fragmentBytes = contentBytes - 4;
+                    fragments.Add(new ArraySegment<byte>(source, contentOffset + 4, fragmentBytes));
+                    totalCodestreamBytes = checked(totalCodestreamBytes + fragmentBytes);
+                }
+
+                offset = checked(offset + (int)boxBytes);
+            }
+
+            if (!sawJxlc && !sawJxlp)
+            {
+                error = "JPEG XL container does not contain a jxlc or jxlp codestream box.";
+                return false;
+            }
+            if (sawJxlp && !sawFinalJxlp)
+            {
+                error = "JPEG XL fragmented codestream is missing the final jxlp marker.";
+                return false;
+            }
+            if (totalCodestreamBytes <= 0 || totalCodestreamBytes > BasisJpegXlProfile1.MaximumPayloadBytes)
+            {
+                error = "Extracted JPEG XL codestream is empty or exceeds the Profile 1 payload budget.";
+                return false;
+            }
+
+            codestream = new byte[(int)totalCodestreamBytes];
+            int destination = 0;
+            foreach (ArraySegment<byte> fragment in fragments)
+            {
+                Buffer.BlockCopy(fragment.Array, fragment.Offset, codestream, destination, fragment.Count);
+                destination += fragment.Count;
+            }
+            kind = sawJxlc ? "StandardJxlcContainer" : "FragmentedJxlpContainer";
+            return true;
+        }
+
+        private static bool HasJxlContainerSignature(byte[] source)
+        {
+            byte[] signature = { 0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a };
+            if (source.Length < signature.Length)
+                return false;
+            for (int i = 0; i < signature.Length; i++)
+            {
+                if (source[i] != signature[i])
+                    return false;
+            }
+            return true;
+        }
+
+        private static void WriteCanonicalContainerPrefix(byte[] destination)
+        {
+            byte[] prefix =
+            {
+                0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20,
+                0x0d, 0x0a, 0x87, 0x0a,
+                0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70,
+                0x6a, 0x78, 0x6c, 0x20, 0x00, 0x00, 0x00, 0x00,
+                0x6a, 0x78, 0x6c, 0x20,
+            };
+            Buffer.BlockCopy(prefix, 0, destination, 0, prefix.Length);
+        }
+
+        private static uint ReadUInt32BigEndian(byte[] source, int offset)
+        {
+            return ((uint)source[offset] << 24)
+                | ((uint)source[offset + 1] << 16)
+                | ((uint)source[offset + 2] << 8)
+                | source[offset + 3];
+        }
+
+        private static ulong ReadUInt64BigEndian(byte[] source, int offset)
+        {
+            return ((ulong)ReadUInt32BigEndian(source, offset) << 32)
+                | ReadUInt32BigEndian(source, offset + 4);
+        }
+
+        private static void WriteUInt32BigEndian(byte[] destination, int offset, uint value)
+        {
+            destination[offset] = (byte)(value >> 24);
+            destination[offset + 1] = (byte)(value >> 16);
+            destination[offset + 2] = (byte)(value >> 8);
+            destination[offset + 3] = (byte)value;
+        }
+
         private static FixtureBenchmarkResult RunFixture(
             BenchmarkConfiguration configuration,
             string fixturePath,
-            byte[] payload,
+            PreparedFixture prepared,
             int concurrency,
             CancellationToken cancellationToken
         )
         {
+            byte[] payload = prepared.Payload;
             var aggregate = new FixtureBenchmarkResult
             {
                 Fixture = Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/'),
+                OriginalPayloadBytes = prepared.OriginalPayloadBytes,
                 PayloadBytes = payload.LongLength,
+                PreparationKind = prepared.PreparationKind,
                 Concurrency = concurrency,
                 Samples = new List<BenchmarkSample>(),
                 FuelConsumedAvailable = false,
@@ -515,11 +818,14 @@ namespace Basis.ImageSandbox.Editor
         private static string BuildCsv(BenchmarkRunResult run)
         {
             var csv = new StringBuilder();
-            csv.AppendLine("fixture,payload_bytes,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_limit,fuel_consumed_available,wasm_peak_memory_available");
+            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_limit,fuel_consumed_available,wasm_peak_memory_available");
             foreach (FixtureBenchmarkResult item in run.Fixtures)
             {
                 csv.Append(Csv(item.Fixture)).Append(',')
+                    .Append(item.OriginalPayloadBytes).Append(',')
                     .Append(item.PayloadBytes).Append(',')
+                    .Append(Csv(item.PreparationKind)).Append(',')
+                    .Append(Csv(item.PreparationError)).Append(',')
                     .Append(item.Concurrency).Append(',')
                     .Append(item.SampleCount).Append(',')
                     .Append(item.Width).Append(',')
@@ -639,6 +945,20 @@ namespace Basis.ImageSandbox.Editor
             [NonSerialized] public string JsonPath;
         }
 
+        private sealed class PreparedFixture
+        {
+            public readonly byte[] Payload;
+            public readonly long OriginalPayloadBytes;
+            public readonly string PreparationKind;
+
+            public PreparedFixture(byte[] payload, long originalPayloadBytes, string preparationKind)
+            {
+                Payload = payload;
+                OriginalPayloadBytes = originalPayloadBytes;
+                PreparationKind = preparationKind;
+            }
+        }
+
         private sealed class WorkerResult
         {
             public double ModuleInitMilliseconds;
@@ -649,7 +969,10 @@ namespace Basis.ImageSandbox.Editor
         private sealed class FixtureBenchmarkResult
         {
             public string Fixture;
+            public long OriginalPayloadBytes;
             public long PayloadBytes;
+            public string PreparationKind;
+            public string PreparationError;
             public int Concurrency;
             public int SampleCount;
             public uint Width;
