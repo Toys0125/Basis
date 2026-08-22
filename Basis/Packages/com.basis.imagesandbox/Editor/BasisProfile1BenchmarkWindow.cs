@@ -138,19 +138,56 @@ namespace Basis.ImageSandbox.Editor
                 return;
             }
 
-            string[] fixtures = Directory.GetFiles(
-                _fixtureDirectory,
-                "*.jxl",
-                _includeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly
-            );
-            Array.Sort(fixtures, StringComparer.OrdinalIgnoreCase);
-            if (fixtures.Length == 0)
+            SearchOption searchOption = _includeSubdirectories
+                ? SearchOption.AllDirectories
+                : SearchOption.TopDirectoryOnly;
+            string[] jxlFixtures = Directory.GetFiles(_fixtureDirectory, "*.jxl", searchOption);
+            string[] gifFixtures = Directory.GetFiles(_fixtureDirectory, "*.gif", searchOption);
+            Array.Sort(jxlFixtures, StringComparer.OrdinalIgnoreCase);
+            Array.Sort(gifFixtures, StringComparer.OrdinalIgnoreCase);
+            if (jxlFixtures.Length == 0 && gifFixtures.Length == 0)
             {
-                EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", "No .jxl fixtures were found.", "OK");
+                EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", "No .jxl or .gif fixtures were found.", "OK");
                 return;
             }
 
             Directory.CreateDirectory(_outputDirectory);
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var fixturePaths = new List<string>(jxlFixtures);
+            var fixtureDisplayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var fixturePreparationPrefixes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var fixtureOriginalPayloadBytes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in jxlFixtures)
+                fixtureDisplayNames[path] = Path.GetRelativePath(_fixtureDirectory, path).Replace('\\', '/');
+
+            if (gifFixtures.Length > 0)
+            {
+                _status = $"Preparing {gifFixtures.Length} GIF fixture(s) as lossless Profile 1 JPEG XL...";
+                Repaint();
+                if (!BasisProfile1GifBenchmarkPreparation.TryConvert(
+                        projectRoot,
+                        gifFixtures,
+                        _outputDirectory,
+                        out Dictionary<string, string> convertedGifs,
+                        out string gifError
+                    ))
+                {
+                    EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", gifError, "OK");
+                    _status = "GIF fixture preparation failed.";
+                    return;
+                }
+
+                foreach (string gifPath in gifFixtures)
+                {
+                    string convertedPath = convertedGifs[gifPath];
+                    fixturePaths.Add(convertedPath);
+                    fixtureDisplayNames[convertedPath] = Path.GetRelativePath(_fixtureDirectory, gifPath).Replace('\\', '/');
+                    fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
+                    fixtureOriginalPayloadBytes[convertedPath] = new FileInfo(gifPath).Length;
+                }
+            }
+
+            string[] fixtures = fixturePaths.ToArray();
             var configuration = new BenchmarkConfiguration
             {
                 FixtureDirectory = Path.GetFullPath(_fixtureDirectory),
@@ -163,6 +200,9 @@ namespace Basis.ImageSandbox.Editor
                 TimeoutSeconds = _timeoutSeconds,
                 DecoderBytes = (byte[])decoderAsset.bytes.Clone(),
                 Fixtures = fixtures,
+                FixtureDisplayNames = fixtureDisplayNames,
+                FixturePreparationPrefixes = fixturePreparationPrefixes,
+                FixtureOriginalPayloadBytes = fixtureOriginalPayloadBytes,
                 Metadata = CaptureMetadata(),
             };
 
@@ -282,6 +322,14 @@ namespace Basis.ImageSandbox.Editor
                     continue;
                 }
 
+                long originalPayloadBytes = prepared.OriginalPayloadBytes;
+                if (configuration.FixtureOriginalPayloadBytes.TryGetValue(fixturePath, out long originalOverride))
+                    originalPayloadBytes = originalOverride;
+                if (configuration.FixturePreparationPrefixes.TryGetValue(fixturePath, out string prefix))
+                    prepared = new PreparedFixture(prepared.Payload, originalPayloadBytes, prefix + "+" + prepared.PreparationKind);
+                else if (originalPayloadBytes != prepared.OriginalPayloadBytes)
+                    prepared = new PreparedFixture(prepared.Payload, originalPayloadBytes, prepared.PreparationKind);
+
                 foreach (int concurrency in configuration.Concurrency)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -303,7 +351,7 @@ namespace Basis.ImageSandbox.Editor
         {
             return new FixtureBenchmarkResult
             {
-                Fixture = Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/'),
+                Fixture = GetFixtureDisplayName(configuration, fixturePath),
                 OriginalPayloadBytes = originalPayloadBytes,
                 PayloadBytes = 0,
                 PreparationKind = "Failed",
@@ -587,7 +635,7 @@ namespace Basis.ImageSandbox.Editor
             byte[] payload = prepared.Payload;
             var aggregate = new FixtureBenchmarkResult
             {
-                Fixture = Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/'),
+                Fixture = GetFixtureDisplayName(configuration, fixturePath),
                 OriginalPayloadBytes = prepared.OriginalPayloadBytes,
                 PayloadBytes = payload.LongLength,
                 PreparationKind = prepared.PreparationKind,
@@ -870,6 +918,13 @@ namespace Basis.ImageSandbox.Editor
             return csv.ToString();
         }
 
+        private static string GetFixtureDisplayName(BenchmarkConfiguration configuration, string fixturePath)
+        {
+            if (configuration.FixtureDisplayNames != null && configuration.FixtureDisplayNames.TryGetValue(fixturePath, out string displayName))
+                return displayName;
+            return Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/');
+        }
+
         private static string Csv(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
         private static string F(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
 
@@ -908,6 +963,9 @@ namespace Basis.ImageSandbox.Editor
             public float TimeoutSeconds;
             public byte[] DecoderBytes;
             public string[] Fixtures;
+            public Dictionary<string, string> FixtureDisplayNames;
+            public Dictionary<string, string> FixturePreparationPrefixes;
+            public Dictionary<string, long> FixtureOriginalPayloadBytes;
             public BenchmarkMetadata Metadata;
         }
 
