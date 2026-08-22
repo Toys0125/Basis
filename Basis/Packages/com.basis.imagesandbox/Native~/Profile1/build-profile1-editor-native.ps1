@@ -15,6 +15,34 @@ function Invoke-Checked([scriptblock]$Command, [string]$Message) {
     if ($LASTEXITCODE -ne 0) { throw $Message }
 }
 
+function Find-CMake {
+    $command = Get-Command cmake.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
+    if (Test-Path $vswhere) {
+        $installations = & $vswhere -products * -property installationPath
+        foreach ($installation in $installations) {
+            if ([string]::IsNullOrWhiteSpace($installation)) { continue }
+            $candidate = Join-Path $installation "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+            if (Test-Path $candidate) { return $candidate }
+        }
+    }
+
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        foreach ($edition in @("Community", "Professional", "Enterprise", "BuildTools")) {
+            $candidate = Join-Path $root "Microsoft Visual Studio/2022/$edition/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+            if (Test-Path $candidate) { return $candidate }
+        }
+    }
+
+    throw "CMake was not found. Install the Visual Studio 'C++ CMake tools for Windows' component (or a standalone CMake) and retry."
+}
+
+$CMake = Find-CMake
+Write-Host "Using CMake: $CMake"
+
 New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
 if (-not (Test-Path (Join-Path $LibJxlDir ".git"))) {
     Invoke-Checked { git clone https://github.com/libjxl/libjxl.git $LibJxlDir } "Failed to clone libjxl."
@@ -29,11 +57,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Invoke-Checked {
-    cmake -S $EncoderDir -B $BuildDir -A x64 `
+    & $CMake -S $EncoderDir -B $BuildDir -A x64 `
         -DLIBJXL_SOURCE_DIR=$LibJxlDir `
         -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
 } "Failed to configure the Profile 1 editor-native codec."
-Invoke-Checked { cmake --build $BuildDir --config Release --target basis_profile1_editor --parallel } "Failed to build the Profile 1 editor-native codec."
+Invoke-Checked { & $CMake --build $BuildDir --config Release --target basis_profile1_editor --parallel } "Failed to build the Profile 1 editor-native codec."
 
 $Built = Join-Path $BuildDir "Release/basis_profile1_editor.dll"
 if (-not (Test-Path $Built)) { throw "Native build succeeded but $Built was not produced." }
