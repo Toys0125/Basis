@@ -184,6 +184,7 @@ namespace Basis.ImageSandbox.Editor
             var fixturePaths = new List<string>(jxlFixtures);
             var fixtureDisplayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixturePreparationPrefixes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var fixturePreparationErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixtureOriginalPayloadBytes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             foreach (string path in jxlFixtures)
                 fixtureDisplayNames[path] = Path.GetRelativePath(_fixtureDirectory, path).Replace('\\', '/');
@@ -242,11 +243,22 @@ namespace Basis.ImageSandbox.Editor
 
                 foreach (string gifPath in gifFixtures)
                 {
-                    string convertedPath = gifResult.ConvertedByOriginal[gifPath];
-                    fixturePaths.Add(convertedPath);
-                    fixtureDisplayNames[convertedPath] = Path.GetRelativePath(_fixtureDirectory, gifPath).Replace('\\', '/');
-                    fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
-                    fixtureOriginalPayloadBytes[convertedPath] = new FileInfo(gifPath).Length;
+                    string displayName = Path.GetRelativePath(_fixtureDirectory, gifPath).Replace('\\', '/');
+                    long originalBytes = new FileInfo(gifPath).Length;
+                    if (gifResult.ConvertedByOriginal.TryGetValue(gifPath, out string convertedPath))
+                    {
+                        fixturePaths.Add(convertedPath);
+                        fixtureDisplayNames[convertedPath] = displayName;
+                        fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
+                        fixtureOriginalPayloadBytes[convertedPath] = originalBytes;
+                    }
+                    else if (gifResult.ErrorsByOriginal.TryGetValue(gifPath, out string gifError))
+                    {
+                        fixturePaths.Add(gifPath);
+                        fixtureDisplayNames[gifPath] = displayName;
+                        fixturePreparationErrors[gifPath] = gifError;
+                        fixtureOriginalPayloadBytes[gifPath] = originalBytes;
+                    }
                 }
             }
 
@@ -265,6 +277,7 @@ namespace Basis.ImageSandbox.Editor
                 Fixtures = fixtures,
                 FixtureDisplayNames = fixtureDisplayNames,
                 FixturePreparationPrefixes = fixturePreparationPrefixes,
+                FixturePreparationErrors = fixturePreparationErrors,
                 FixtureOriginalPayloadBytes = fixtureOriginalPayloadBytes,
                 Metadata = CaptureMetadata(),
             };
@@ -410,6 +423,34 @@ namespace Basis.ImageSandbox.Editor
                     totalGroups,
                     $"Fixture {fixtureIndex + 1}/{configuration.Fixtures.Length}: {fixtureName}\nPreparing canonical Profile 1 payload..."
                 );
+                if (configuration.FixturePreparationErrors.TryGetValue(fixturePath, out string gifPreparationError))
+                {
+                    long originalPayloadBytes = configuration.FixtureOriginalPayloadBytes.TryGetValue(fixturePath, out long originalBytes)
+                        ? originalBytes
+                        : new FileInfo(fixturePath).Length;
+                    foreach (ulong fuel in configuration.FuelSweep)
+                    {
+                        foreach (int concurrency in configuration.Concurrency)
+                        {
+                            result.Fixtures.Add(CreatePreparationFailure(
+                                configuration,
+                                fixturePath,
+                                originalPayloadBytes,
+                                fuel,
+                                concurrency,
+                                gifPreparationError
+                            ));
+                            completedGroups++;
+                            reportProgress?.Invoke(
+                                completedGroups,
+                                totalGroups,
+                                $"Fixture {fixtureIndex + 1}/{configuration.Fixtures.Length}: {fixtureName}\nGIF preparation failed; recorded fuel {fuel}, concurrency {concurrency}."
+                            );
+                        }
+                    }
+                    continue;
+                }
+
                 byte[] sourcePayload = File.ReadAllBytes(fixturePath);
                 if (!TryPrepareCanonicalProfile1(sourcePayload, out PreparedFixture prepared, out string preparationError))
                 {
@@ -1133,6 +1174,7 @@ namespace Basis.ImageSandbox.Editor
             public string[] Fixtures;
             public Dictionary<string, string> FixtureDisplayNames;
             public Dictionary<string, string> FixturePreparationPrefixes;
+            public Dictionary<string, string> FixturePreparationErrors;
             public Dictionary<string, long> FixtureOriginalPayloadBytes;
             public BenchmarkMetadata Metadata;
         }

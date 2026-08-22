@@ -23,8 +23,9 @@ namespace Basis.ImageSandbox.Editor
         )
         {
             var convertedByOriginal = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var errorsByOriginal = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (gifPaths == null || gifPaths.Length == 0)
-                return GifPreparationResult.Success(convertedByOriginal);
+                return GifPreparationResult.Success(convertedByOriginal, errorsByOriginal);
 
             string cacheRoot = Path.Combine(outputRoot, "gif-profile1-cache");
             Directory.CreateDirectory(cacheRoot);
@@ -35,50 +36,72 @@ namespace Basis.ImageSandbox.Editor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     string gifPath = gifPaths[i];
-                    progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Checking cache");
-                    string cacheKey = await Task.Run(() => ComputeCacheKey(gifPath), cancellationToken);
-                    string stem = SanitizeFileName(Path.GetFileNameWithoutExtension(gifPath));
-                    string jxlPath = Path.Combine(cacheRoot, cacheKey + "_" + stem + ".jxl");
-                    if (File.Exists(jxlPath) && new FileInfo(jxlPath).Length > 0)
+                    try
                     {
+                        progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Checking cache");
+                        string cacheKey = await Task.Run(() => ComputeCacheKey(gifPath), cancellationToken);
+                        string stem = SanitizeFileName(Path.GetFileNameWithoutExtension(gifPath));
+                        string jxlPath = Path.Combine(cacheRoot, cacheKey + "_" + stem + ".jxl");
+                        if (File.Exists(jxlPath) && new FileInfo(jxlPath).Length > 0)
+                        {
+                            convertedByOriginal[gifPath] = jxlPath;
+                            progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Cache hit");
+                            continue;
+                        }
+
+                        byte[] source = await Task.Run(() => File.ReadAllBytes(gifPath), cancellationToken);
+                        progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Decoding GIF");
+                        using var request = BasisBurstGifDecoder.Schedule(source);
+                        using BasisBurstGifDecodeResult result = await WaitForDecodeAsync(request, cancellationToken);
+                        if (result == null || !result.Ok || result.Animation == null)
+                        {
+                            string decodeError = result?.Error ?? "unknown error";
+                            errorsByOriginal[gifPath] = "GIF decode failed: " + decodeError;
+                            progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Failed");
+                            continue;
+                        }
+
+                        if (!TryBuildTimeline(gifPath, result.Animation, out byte[] timeline, out string timelineError))
+                        {
+                            errorsByOriginal[gifPath] = timelineError;
+                            progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Failed");
+                            continue;
+                        }
+
+                        progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Encoding JPEG XL");
+                        EncodeResult encoded = await Task.Run(
+                            () => EncodeTimeline(timeline),
+                            cancellationToken
+                        );
+                        if (!encoded.Ok)
+                        {
+                            errorsByOriginal[gifPath] = "GIF Profile 1 encode failed: " + encoded.Error;
+                            progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Failed");
+                            continue;
+                        }
+
+                        string temporaryPath = jxlPath + ".tmp";
+                        await Task.Run(() =>
+                        {
+                            if (File.Exists(temporaryPath))
+                                File.Delete(temporaryPath);
+                            File.WriteAllBytes(temporaryPath, encoded.Profile1);
+                            File.Move(temporaryPath, jxlPath);
+                        }, cancellationToken);
                         convertedByOriginal[gifPath] = jxlPath;
-                        progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Cache hit");
-                        continue;
+                        progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Cached");
                     }
-
-                    byte[] source = await Task.Run(() => File.ReadAllBytes(gifPath), cancellationToken);
-                    progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Decoding GIF");
-                    using var request = BasisBurstGifDecoder.Schedule(source);
-                    using BasisBurstGifDecodeResult result = await WaitForDecodeAsync(request, cancellationToken);
-                    if (result == null || !result.Ok || result.Animation == null)
+                    catch (OperationCanceledException)
                     {
-                        string decodeError = result?.Error ?? "unknown error";
-                        return GifPreparationResult.Failure("GIF decode failed for " + gifPath + ": " + decodeError);
+                        throw;
                     }
-
-                    if (!TryBuildTimeline(gifPath, result.Animation, out byte[] timeline, out string timelineError))
-                        return GifPreparationResult.Failure(timelineError);
-
-                    progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Encoding JPEG XL");
-                    EncodeResult encoded = await Task.Run(
-                        () => EncodeTimeline(timeline),
-                        cancellationToken
-                    );
-                    if (!encoded.Ok)
-                        return GifPreparationResult.Failure("GIF Profile 1 encode failed for " + gifPath + ": " + encoded.Error);
-
-                    string temporaryPath = jxlPath + ".tmp";
-                    await Task.Run(() =>
+                    catch (Exception exception)
                     {
-                        if (File.Exists(temporaryPath))
-                            File.Delete(temporaryPath);
-                        File.WriteAllBytes(temporaryPath, encoded.Profile1);
-                        File.Move(temporaryPath, jxlPath);
-                    }, cancellationToken);
-                    convertedByOriginal[gifPath] = jxlPath;
-                    progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Cached");
+                        errorsByOriginal[gifPath] = "GIF benchmark preparation failed: " + exception.Message;
+                        progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Failed");
+                    }
                 }
-                return GifPreparationResult.Success(convertedByOriginal);
+                return GifPreparationResult.Success(convertedByOriginal, errorsByOriginal);
             }
             catch (OperationCanceledException)
             {
@@ -327,25 +350,31 @@ namespace Basis.ImageSandbox.Editor
         {
             public readonly bool Ok;
             public readonly Dictionary<string, string> ConvertedByOriginal;
+            public readonly Dictionary<string, string> ErrorsByOriginal;
             public readonly string Error;
 
             private GifPreparationResult(
                 bool ok,
                 Dictionary<string, string> convertedByOriginal,
+                Dictionary<string, string> errorsByOriginal,
                 string error
             )
             {
                 Ok = ok;
                 ConvertedByOriginal = convertedByOriginal;
+                ErrorsByOriginal = errorsByOriginal;
                 Error = error;
             }
 
-            public static GifPreparationResult Success(Dictionary<string, string> converted) =>
-                new GifPreparationResult(true, converted, null);
+            public static GifPreparationResult Success(
+                Dictionary<string, string> converted,
+                Dictionary<string, string> errors
+            ) => new GifPreparationResult(true, converted, errors, null);
 
             public static GifPreparationResult Failure(string error) =>
                 new GifPreparationResult(
                     false,
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     error
                 );
