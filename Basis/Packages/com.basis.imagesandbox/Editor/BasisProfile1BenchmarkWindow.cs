@@ -37,6 +37,9 @@ namespace Basis.ImageSandbox.Editor
         private int _preparationCompleted;
         private int _preparationTotal;
         private string _preparationCurrent = string.Empty;
+        private volatile int _benchmarkCompleted;
+        private volatile int _benchmarkTotal;
+        private volatile string _benchmarkProgress = string.Empty;
         private string _status = "Idle";
 
         [MenuItem(MenuPath, false, MenuPriority)]
@@ -110,6 +113,16 @@ namespace Basis.ImageSandbox.Editor
                     progressRect,
                     progress,
                     $"{_preparationCompleted}/{_preparationTotal}  {_preparationCurrent}"
+                );
+            }
+            else if (_runTask != null && _benchmarkTotal > 0)
+            {
+                float progress = Mathf.Clamp01((float)_benchmarkCompleted / _benchmarkTotal);
+                Rect progressRect = GUILayoutUtility.GetRect(1f, 20f, GUILayout.ExpandWidth(true));
+                EditorGUI.ProgressBar(
+                    progressRect,
+                    progress,
+                    $"{_benchmarkCompleted}/{_benchmarkTotal} benchmark groups"
                 );
             }
             EditorGUILayout.Space();
@@ -258,8 +271,14 @@ namespace Basis.ImageSandbox.Editor
 
             if (_cancellation == null)
                 _cancellation = new CancellationTokenSource();
-            _status = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}, fuel {string.Join(",", fuelSweep)}...";
-            _runTask = Task.Run(() => RunBenchmark(configuration, _cancellation.Token), _cancellation.Token);
+            _benchmarkCompleted = 0;
+            _benchmarkTotal = checked(fixtures.Length * concurrency.Length * fuelSweep.Length);
+            _benchmarkProgress = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}, fuel {string.Join(",", fuelSweep)}...";
+            _status = _benchmarkProgress;
+            _runTask = Task.Run(
+                () => RunBenchmark(configuration, ReportBenchmarkProgress, _cancellation.Token),
+                _cancellation.Token
+            );
             Repaint();
         }
 
@@ -362,7 +381,11 @@ namespace Basis.ImageSandbox.Editor
             };
         }
 
-        private static BenchmarkRunResult RunBenchmark(BenchmarkConfiguration configuration, CancellationToken cancellationToken)
+        private static BenchmarkRunResult RunBenchmark(
+            BenchmarkConfiguration configuration,
+            Action<int, int, string> reportProgress,
+            CancellationToken cancellationToken
+        )
         {
             var result = new BenchmarkRunResult
             {
@@ -371,9 +394,22 @@ namespace Basis.ImageSandbox.Editor
                 Fixtures = new List<FixtureBenchmarkResult>(),
             };
 
-            foreach (string fixturePath in configuration.Fixtures)
+            int completedGroups = 0;
+            int totalGroups = checked(
+                configuration.Fixtures.Length
+                    * configuration.FuelSweep.Length
+                    * configuration.Concurrency.Length
+            );
+            for (int fixtureIndex = 0; fixtureIndex < configuration.Fixtures.Length; fixtureIndex++)
             {
+                string fixturePath = configuration.Fixtures[fixtureIndex];
                 cancellationToken.ThrowIfCancellationRequested();
+                string fixtureName = GetFixtureDisplayName(configuration, fixturePath);
+                reportProgress?.Invoke(
+                    completedGroups,
+                    totalGroups,
+                    $"Fixture {fixtureIndex + 1}/{configuration.Fixtures.Length}: {fixtureName}\nPreparing canonical Profile 1 payload..."
+                );
                 byte[] sourcePayload = File.ReadAllBytes(fixturePath);
                 if (!TryPrepareCanonicalProfile1(sourcePayload, out PreparedFixture prepared, out string preparationError))
                 {
@@ -389,6 +425,12 @@ namespace Basis.ImageSandbox.Editor
                                 concurrency,
                                 preparationError
                             ));
+                            completedGroups++;
+                            reportProgress?.Invoke(
+                                completedGroups,
+                                totalGroups,
+                                $"Fixture {fixtureIndex + 1}/{configuration.Fixtures.Length}: {fixtureName}\nPreparation failed; recorded fuel {fuel}, concurrency {concurrency}."
+                            );
                         }
                     }
                     continue;
@@ -402,12 +444,28 @@ namespace Basis.ImageSandbox.Editor
                 else if (originalPayloadBytes != prepared.OriginalPayloadBytes)
                     prepared = new PreparedFixture(prepared.Payload, originalPayloadBytes, prepared.PreparationKind);
 
-                foreach (ulong fuel in configuration.FuelSweep)
+                for (int fuelIndex = 0; fuelIndex < configuration.FuelSweep.Length; fuelIndex++)
                 {
-                    foreach (int concurrency in configuration.Concurrency)
+                    ulong fuel = configuration.FuelSweep[fuelIndex];
+                    for (int concurrencyIndex = 0; concurrencyIndex < configuration.Concurrency.Length; concurrencyIndex++)
                     {
+                        int concurrency = configuration.Concurrency[concurrencyIndex];
                         cancellationToken.ThrowIfCancellationRequested();
+                        reportProgress?.Invoke(
+                            completedGroups,
+                            totalGroups,
+                            $"Fixture {fixtureIndex + 1}/{configuration.Fixtures.Length}: {fixtureName}\n"
+                                + $"Fuel {fuelIndex + 1}/{configuration.FuelSweep.Length}: {fuel:N0}  |  "
+                                + $"Concurrency {concurrencyIndex + 1}/{configuration.Concurrency.Length}: {concurrency}"
+                        );
                         result.Fixtures.Add(RunFixture(configuration, fixturePath, prepared, fuel, concurrency, cancellationToken));
+                        completedGroups++;
+                        reportProgress?.Invoke(
+                            completedGroups,
+                            totalGroups,
+                            $"Completed {completedGroups}/{totalGroups} benchmark groups.\n"
+                                + $"Last: {fixtureName} — fuel {fuel:N0}, concurrency {concurrency}"
+                        );
                     }
                 }
             }
@@ -905,11 +963,26 @@ namespace Basis.ImageSandbox.Editor
             sample.PreviewPixels = preflight.PreviewPixels;
         }
 
+        private void ReportBenchmarkProgress(int completed, int total, string status)
+        {
+            _benchmarkCompleted = completed;
+            _benchmarkTotal = total;
+            _benchmarkProgress = status ?? string.Empty;
+        }
+
         private void PollRun()
         {
             Task<BenchmarkRunResult> task = _runTask;
-            if (task == null || !task.IsCompleted)
+            if (task == null)
                 return;
+            if (!task.IsCompleted)
+            {
+                string progress = _benchmarkProgress;
+                if (!string.IsNullOrEmpty(progress))
+                    _status = progress;
+                Repaint();
+                return;
+            }
 
             _runTask = null;
             _cancellation?.Dispose();
