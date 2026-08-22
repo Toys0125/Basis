@@ -14,6 +14,7 @@ using HVR.Basis.Comms.OSC;
 using HVR.Basis.Comms.OSC.Lyuma;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
 using static BasisNetworkContentBase;
 
@@ -621,6 +622,45 @@ namespace HVR.Basis.Comms.Tests
             finally
             {
                 Object.DestroyImmediate(go);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator BasisOsc_PublishValue_DoesNotDispatchToAnotherLocalSubscriber()
+        {
+            DestroySceneInstance();
+            GameObject avatarObject = new GameObject("OscLocalDispatchAvatar");
+            GameObject publisherObject = new GameObject("OscLocalDispatchPublisher");
+            GameObject subscriberObject = new GameObject("OscLocalDispatchSubscriber");
+
+            try
+            {
+                BasisAvatar avatar = avatarObject.AddComponent<BasisAvatar>();
+                avatar.IsOwnedLocally = true;
+                publisherObject.transform.SetParent(avatarObject.transform, false);
+                subscriberObject.transform.SetParent(avatarObject.transform, false);
+
+                BasisOsc publisher = publisherObject.AddComponent<BasisOsc>();
+                BasisOsc subscriber = subscriberObject.AddComponent<BasisOsc>();
+                bool subscriberTriggered = false;
+                const string address = "/avatar/public/LocalDispatchProbe";
+
+                subscriber.Subscribe(address, (message, arguments) => subscriberTriggered = true);
+                publisher.PublishValue(address, OscData.Float32(0.75f));
+
+                object leaf = ResolveNode(GetQueryRoot(), "avatar", "public", "LocalDispatchProbe");
+                Assert.That(leaf, Is.Not.Null, "PublishValue should still publish the value into the OSCQuery node map.");
+
+                yield return null;
+                yield return null;
+
+                Assert.That(subscriberTriggered, Is.False,
+                    "Publishing through BasisOsc/OSCQuery unexpectedly dispatched the message to another local BasisOsc subscriber.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(avatarObject);
+                DestroySceneInstance();
             }
         }
 
