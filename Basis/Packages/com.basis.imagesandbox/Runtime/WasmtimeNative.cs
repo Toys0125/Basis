@@ -178,6 +178,9 @@ namespace Basis.ImageSandbox
         internal static extern IntPtr wasmtime_context_set_fuel(IntPtr context, ulong fuel);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr wasmtime_context_get_fuel(IntPtr context, out ulong fuel);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void wasmtime_context_set_epoch_deadline(
             IntPtr context,
             ulong ticksBeyondCurrent

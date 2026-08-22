@@ -83,9 +83,9 @@ using (var fuelLimitedDecoder = new BasisProfile1SandboxDecoder(
 ))
 {
     BasisProfile1SandboxPreflight exhausted = fuelLimitedDecoder.Preflight(positivePayload);
-    if (exhausted.Status != BasisProfile1SandboxStatus.Timeout)
+    if (exhausted.Status != BasisProfile1SandboxStatus.OutOfFuel)
     {
-        Console.Error.WriteLine($"Expected fuel exhaustion Timeout, got {exhausted.Status}.");
+        Console.Error.WriteLine($"Expected fuel exhaustion OutOfFuel, got {exhausted.Status}.");
         return 7;
     }
 }

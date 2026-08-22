@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,7 +27,7 @@ namespace Basis.ImageSandbox.Editor
         private int _measuredIterations = 20;
         private string _concurrencySweep = "1,2,4";
         private int _maximumLinearMemoryMiB = 256;
-        private long _fuel = 1_000_000_000L;
+        private string _fuelSweep = "1000000000,4000000000,16000000000";
         private float _timeoutSeconds = 30f;
         private bool _includeSubdirectories = true;
         private Vector2 _scroll;
@@ -63,8 +64,9 @@ namespace Basis.ImageSandbox.Editor
                 "Accepts ordinary .jxl files and prepares them into the canonical Profile 1 container before timing. "
                     + "Raw codestreams and standard jxlc/jxlp containers are rewrapped without decoding or re-encoding. "
                     + "Results include Stage A, Stage B, full-decode timing, structural counters, module initialization, "
-                    + "working-set peak/delta, and concurrency scaling. Fuel consumption and exact WASM linear-memory "
-                    + "high-water marks are not exposed by the current runtime and are reported as unavailable.",
+                    + "working-set peak/delta, concurrency scaling, and actual Wasmtime fuel consumption. "
+                    + "A configurable fuel sweep distinguishes out-of-fuel from real wall-clock timeouts. Exact WASM "
+                    + "linear-memory high-water marks are still reported as unavailable.",
                 MessageType.Info
             );
 
@@ -79,7 +81,7 @@ namespace Basis.ImageSandbox.Editor
                 _measuredIterations = EditorGUILayout.IntField("Measured iterations / worker", _measuredIterations);
                 _concurrencySweep = EditorGUILayout.TextField("Concurrency sweep", _concurrencySweep);
                 _maximumLinearMemoryMiB = EditorGUILayout.IntField("WASM memory limit (MiB)", _maximumLinearMemoryMiB);
-                _fuel = EditorGUILayout.LongField("Fuel limit / call", _fuel);
+                _fuelSweep = EditorGUILayout.TextField("Fuel sweep / call", _fuelSweep);
                 _timeoutSeconds = EditorGUILayout.FloatField("Timeout / call (seconds)", _timeoutSeconds);
 
                 EditorGUILayout.Space();
@@ -121,7 +123,7 @@ namespace Basis.ImageSandbox.Editor
 
         private void StartBenchmark()
         {
-            if (!TryValidateSettings(out int[] concurrency, out string error))
+            if (!TryValidateSettings(out int[] concurrency, out ulong[] fuelSweep, out string error))
             {
                 EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", error, "OK");
                 return;
@@ -194,7 +196,7 @@ namespace Basis.ImageSandbox.Editor
                 MeasuredIterations = _measuredIterations,
                 Concurrency = concurrency,
                 MaximumLinearMemoryBytes = (long)_maximumLinearMemoryMiB * 1024L * 1024L,
-                Fuel = (ulong)_fuel,
+                FuelSweep = fuelSweep,
                 TimeoutSeconds = _timeoutSeconds,
                 DecoderBytes = (byte[])decoderAsset.bytes.Clone(),
                 Fixtures = fixtures,
@@ -205,14 +207,15 @@ namespace Basis.ImageSandbox.Editor
             };
 
             _cancellation = new CancellationTokenSource();
-            _status = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}...";
+            _status = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}, fuel {string.Join(",", fuelSweep)}...";
             _runTask = Task.Run(() => RunBenchmark(configuration, _cancellation.Token), _cancellation.Token);
             Repaint();
         }
 
-        private bool TryValidateSettings(out int[] concurrency, out string error)
+        private bool TryValidateSettings(out int[] concurrency, out ulong[] fuelSweep, out string error)
         {
             concurrency = Array.Empty<int>();
+            fuelSweep = Array.Empty<ulong>();
             error = null;
             if (string.IsNullOrWhiteSpace(_fixtureDirectory) || !Directory.Exists(_fixtureDirectory))
             {
@@ -239,11 +242,6 @@ namespace Basis.ImageSandbox.Editor
                 error = "WASM memory limit must be between 32 and 4096 MiB.";
                 return false;
             }
-            if (_fuel <= 0)
-            {
-                error = "Fuel must be greater than zero.";
-                return false;
-            }
             if (_timeoutSeconds <= 0f || _timeoutSeconds > 600f)
             {
                 error = "Timeout must be greater than zero and no more than 600 seconds.";
@@ -268,6 +266,27 @@ namespace Basis.ImageSandbox.Editor
             if (concurrency.Length == 0 || concurrency.Any(value => value < 1 || value > 32))
             {
                 error = "Concurrency values must be between 1 and 32.";
+                return false;
+            }
+
+            try
+            {
+                fuelSweep = _fuelSweep
+                    .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(value => ulong.Parse(value, CultureInfo.InvariantCulture))
+                    .Distinct()
+                    .OrderBy(value => value)
+                    .ToArray();
+            }
+            catch (Exception)
+            {
+                error = "Fuel sweep must contain positive integers such as 1000000000,4000000000,16000000000.";
+                return false;
+            }
+
+            if (fuelSweep.Length == 0 || fuelSweep.Any(value => value == 0))
+            {
+                error = "Fuel values must be greater than zero.";
                 return false;
             }
             return true;
@@ -307,15 +326,19 @@ namespace Basis.ImageSandbox.Editor
                 byte[] sourcePayload = File.ReadAllBytes(fixturePath);
                 if (!TryPrepareCanonicalProfile1(sourcePayload, out PreparedFixture prepared, out string preparationError))
                 {
-                    foreach (int concurrency in configuration.Concurrency)
+                    foreach (ulong fuel in configuration.FuelSweep)
                     {
-                        result.Fixtures.Add(CreatePreparationFailure(
-                            configuration,
-                            fixturePath,
-                            sourcePayload.LongLength,
-                            concurrency,
-                            preparationError
-                        ));
+                        foreach (int concurrency in configuration.Concurrency)
+                        {
+                            result.Fixtures.Add(CreatePreparationFailure(
+                                configuration,
+                                fixturePath,
+                                sourcePayload.LongLength,
+                                fuel,
+                                concurrency,
+                                preparationError
+                            ));
+                        }
                     }
                     continue;
                 }
@@ -328,10 +351,13 @@ namespace Basis.ImageSandbox.Editor
                 else if (originalPayloadBytes != prepared.OriginalPayloadBytes)
                     prepared = new PreparedFixture(prepared.Payload, originalPayloadBytes, prepared.PreparationKind);
 
-                foreach (int concurrency in configuration.Concurrency)
+                foreach (ulong fuel in configuration.FuelSweep)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    result.Fixtures.Add(RunFixture(configuration, fixturePath, prepared, concurrency, cancellationToken));
+                    foreach (int concurrency in configuration.Concurrency)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        result.Fixtures.Add(RunFixture(configuration, fixturePath, prepared, fuel, concurrency, cancellationToken));
+                    }
                 }
             }
 
@@ -343,6 +369,7 @@ namespace Basis.ImageSandbox.Editor
             BenchmarkConfiguration configuration,
             string fixturePath,
             long originalPayloadBytes,
+            ulong fuel,
             int concurrency,
             string error
         )
@@ -354,6 +381,7 @@ namespace Basis.ImageSandbox.Editor
                 PayloadBytes = 0,
                 PreparationKind = "Failed",
                 PreparationError = error,
+                FuelLimit = fuel,
                 Concurrency = concurrency,
                 Samples = new List<BenchmarkSample>(),
                 FailureCount = configuration.MeasuredIterations * concurrency,
@@ -626,6 +654,7 @@ namespace Basis.ImageSandbox.Editor
             BenchmarkConfiguration configuration,
             string fixturePath,
             PreparedFixture prepared,
+            ulong fuel,
             int concurrency,
             CancellationToken cancellationToken
         )
@@ -637,13 +666,14 @@ namespace Basis.ImageSandbox.Editor
                 OriginalPayloadBytes = prepared.OriginalPayloadBytes,
                 PayloadBytes = payload.LongLength,
                 PreparationKind = prepared.PreparationKind,
+                FuelLimit = fuel,
                 Concurrency = concurrency,
                 Samples = new List<BenchmarkSample>(),
-                FuelConsumedAvailable = false,
+                FuelConsumedAvailable = true,
                 WasmPeakMemoryAvailable = false,
             };
 
-            long workingSetBefore = Process.GetCurrentProcess().WorkingSet64;
+            long workingSetBefore = GetCurrentWorkingSetBytes();
             using var sampler = new WorkingSetSampler();
             sampler.Start();
 
@@ -652,7 +682,7 @@ namespace Basis.ImageSandbox.Editor
             for (int workerIndex = 0; workerIndex < concurrency; workerIndex++)
             {
                 workers[workerIndex] = Task.Run(
-                    () => RunWorker(configuration, payload, cancellationToken),
+                    () => RunWorker(configuration, payload, fuel, cancellationToken),
                     cancellationToken
                 );
             }
@@ -668,7 +698,7 @@ namespace Basis.ImageSandbox.Editor
                 aggregate.Samples.AddRange(worker.Samples);
             }
 
-            long workingSetAfter = Process.GetCurrentProcess().WorkingSet64;
+            long workingSetAfter = GetCurrentWorkingSetBytes();
             aggregate.WorkingSetBeforeBytes = workingSetBefore;
             aggregate.WorkingSetAfterBytes = workingSetAfter;
             aggregate.WorkingSetPeakBytes = sampler.PeakBytes;
@@ -687,12 +717,13 @@ namespace Basis.ImageSandbox.Editor
         private static WorkerResult RunWorker(
             BenchmarkConfiguration configuration,
             byte[] payload,
+            ulong fuel,
             CancellationToken cancellationToken
         )
         {
             var limits = new BasisProfile1SandboxLimits(
                 configuration.MaximumLinearMemoryBytes,
-                configuration.Fuel,
+                fuel,
                 TimeSpan.FromSeconds(configuration.TimeoutSeconds)
             );
             var worker = new WorkerResult();
@@ -755,10 +786,17 @@ namespace Basis.ImageSandbox.Editor
             }
 
             stopwatch.Restart();
-            BasisProfile1SandboxPreflight preflight = decoder.Preflight(payload, cancellationToken);
+            BasisProfile1SandboxPreflight preflight = decoder.Preflight(
+                payload,
+                out ulong stageBFuelConsumed,
+                out bool stageBFuelConsumedAvailable,
+                cancellationToken
+            );
             stopwatch.Stop();
             sample.StageBMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
             sample.StageBStatus = preflight.Status.ToString();
+            sample.StageBFuelConsumed = stageBFuelConsumed;
+            sample.StageBFuelConsumedAvailable = stageBFuelConsumedAvailable;
             CopyPreflight(sample, preflight);
             if (preflight.Status != BasisProfile1SandboxStatus.Success)
                 return sample;
@@ -780,11 +818,15 @@ namespace Basis.ImageSandbox.Editor
                     checksum ^= duration + (ulong)frameIndex;
                     return !cancellationToken.IsCancellationRequested;
                 },
+                out ulong decodeFuelConsumed,
+                out bool decodeFuelConsumedAvailable,
                 cancellationToken
             );
             stopwatch.Stop();
             sample.DecodeMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
             sample.DecodeStatus = decodeStatus.ToString();
+            sample.DecodeFuelConsumed = decodeFuelConsumed;
+            sample.DecodeFuelConsumedAvailable = decodeFuelConsumedAvailable;
             sample.DecodedFrames = consumedFrames;
             sample.DecodeChecksum = checksum.ToString("x16", CultureInfo.InvariantCulture);
             if (preflight.SubmittedCanvasPixels > 0)
@@ -864,7 +906,7 @@ namespace Basis.ImageSandbox.Editor
         private static string BuildCsv(BenchmarkRunResult run)
         {
             var csv = new StringBuilder();
-            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_limit,fuel_consumed_available,wasm_peak_memory_available");
+            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,fuel_limit,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_consumed_available,stage_b_fuel_mean,stage_b_fuel_max,decode_fuel_mean,decode_fuel_max,wasm_peak_memory_available");
             foreach (FixtureBenchmarkResult item in run.Fixtures)
             {
                 csv.Append(Csv(item.Fixture)).Append(',')
@@ -872,6 +914,7 @@ namespace Basis.ImageSandbox.Editor
                     .Append(item.PayloadBytes).Append(',')
                     .Append(Csv(item.PreparationKind)).Append(',')
                     .Append(Csv(item.PreparationError)).Append(',')
+                    .Append(item.FuelLimit).Append(',')
                     .Append(item.Concurrency).Append(',')
                     .Append(item.SampleCount).Append(',')
                     .Append(item.Width).Append(',')
@@ -908,8 +951,11 @@ namespace Basis.ImageSandbox.Editor
                     .Append(item.WorkingSetPeakDeltaBytes).Append(',')
                     .Append(item.SuccessCount).Append(',')
                     .Append(item.FailureCount).Append(',')
-                    .Append(run.Configuration.Fuel).Append(',')
                     .Append(item.FuelConsumedAvailable ? "true" : "false").Append(',')
+                    .Append(F(item.StageBFuelMean)).Append(',')
+                    .Append(item.StageBFuelMax).Append(',')
+                    .Append(F(item.DecodeFuelMean)).Append(',')
+                    .Append(item.DecodeFuelMax).Append(',')
                     .Append(item.WasmPeakMemoryAvailable ? "true" : "false")
                     .AppendLine();
             }
@@ -957,7 +1003,7 @@ namespace Basis.ImageSandbox.Editor
             public int MeasuredIterations;
             public int[] Concurrency;
             public long MaximumLinearMemoryBytes;
-            public ulong Fuel;
+            public ulong[] FuelSweep;
             public float TimeoutSeconds;
             public byte[] DecoderBytes;
             public string[] Fixtures;
@@ -975,7 +1021,7 @@ namespace Basis.ImageSandbox.Editor
             public int MeasuredIterations;
             public int[] Concurrency;
             public long MaximumLinearMemoryBytes;
-            public ulong Fuel;
+            public ulong[] FuelSweep;
             public float TimeoutSeconds;
 
             public SerializableConfiguration(BenchmarkConfiguration source)
@@ -985,7 +1031,7 @@ namespace Basis.ImageSandbox.Editor
                 MeasuredIterations = source.MeasuredIterations;
                 Concurrency = source.Concurrency;
                 MaximumLinearMemoryBytes = source.MaximumLinearMemoryBytes;
-                Fuel = source.Fuel;
+                FuelSweep = source.FuelSweep;
                 TimeoutSeconds = source.TimeoutSeconds;
             }
         }
@@ -1029,6 +1075,7 @@ namespace Basis.ImageSandbox.Editor
             public long PayloadBytes;
             public string PreparationKind;
             public string PreparationError;
+            public ulong FuelLimit;
             public int Concurrency;
             public int SampleCount;
             public uint Width;
@@ -1067,6 +1114,10 @@ namespace Basis.ImageSandbox.Editor
             public int SuccessCount;
             public int FailureCount;
             public bool FuelConsumedAvailable;
+            public double StageBFuelMean;
+            public ulong StageBFuelMax;
+            public double DecodeFuelMean;
+            public ulong DecodeFuelMax;
             public bool WasmPeakMemoryAvailable;
             public List<BenchmarkSample> Samples;
 
@@ -1092,6 +1143,19 @@ namespace Basis.ImageSandbox.Editor
 
                 SuccessCount = Samples.Count(sample => sample.DecodeStatus == BasisProfile1SandboxStatus.Success.ToString());
                 FailureCount = SampleCount - SuccessCount;
+                ulong[] stageBFuel = Samples
+                    .Where(sample => sample.StageBFuelConsumedAvailable)
+                    .Select(sample => sample.StageBFuelConsumed)
+                    .ToArray();
+                ulong[] decodeFuel = Samples
+                    .Where(sample => sample.DecodeFuelConsumedAvailable)
+                    .Select(sample => sample.DecodeFuelConsumed)
+                    .ToArray();
+                FuelConsumedAvailable = stageBFuel.Length > 0 || decodeFuel.Length > 0;
+                StageBFuelMean = stageBFuel.Length == 0 ? 0 : stageBFuel.Average(value => (double)value);
+                StageBFuelMax = stageBFuel.Length == 0 ? 0 : stageBFuel.Max();
+                DecodeFuelMean = decodeFuel.Length == 0 ? 0 : decodeFuel.Average(value => (double)value);
+                DecodeFuelMax = decodeFuel.Length == 0 ? 0 : decodeFuel.Max();
                 ModuleInitMeanMilliseconds = Stats.Mean(ModuleInitMilliseconds);
                 StageAMeanMilliseconds = Stats.Mean(Samples.Select(sample => sample.StageAMilliseconds));
                 StageAMedianMilliseconds = Stats.Percentile(Samples.Select(sample => sample.StageAMilliseconds), 0.50);
@@ -1121,8 +1185,12 @@ namespace Basis.ImageSandbox.Editor
             public long ConcatenatedCodestreamBytes;
             public double StageBMilliseconds;
             public string StageBStatus;
+            public ulong StageBFuelConsumed;
+            public bool StageBFuelConsumedAvailable;
             public double DecodeMilliseconds;
             public string DecodeStatus;
+            public ulong DecodeFuelConsumed;
+            public bool DecodeFuelConsumedAvailable;
             public double DecodeMillisecondsPerSubmittedMegapixel;
             public double DecodeMillisecondsPerFrame;
             public int DecodedFrames;
@@ -1143,6 +1211,64 @@ namespace Basis.ImageSandbox.Editor
             public ulong PreviewPixels;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProcessMemoryCounters
+        {
+            public uint cb;
+            public uint PageFaultCount;
+            public UIntPtr PeakWorkingSetSize;
+            public UIntPtr WorkingSetSize;
+            public UIntPtr QuotaPeakPagedPoolUsage;
+            public UIntPtr QuotaPagedPoolUsage;
+            public UIntPtr QuotaPeakNonPagedPoolUsage;
+            public UIntPtr QuotaNonPagedPoolUsage;
+            public UIntPtr PagefileUsage;
+            public UIntPtr PeakPagefileUsage;
+        }
+
+        [DllImport("psapi.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessMemoryInfo(
+            IntPtr process,
+            out ProcessMemoryCounters counters,
+            uint size
+        );
+
+        private static long GetCurrentWorkingSetBytes()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                try
+                {
+                    using Process process = Process.GetCurrentProcess();
+                    var counters = new ProcessMemoryCounters
+                    {
+                        cb = (uint)Marshal.SizeOf<ProcessMemoryCounters>(),
+                    };
+                    if (GetProcessMemoryInfo(process.Handle, out counters, counters.cb))
+                        return checked((long)counters.WorkingSetSize.ToUInt64());
+                }
+                catch
+                {
+                }
+            }
+
+            long environmentWorkingSet = Environment.WorkingSet;
+            if (environmentWorkingSet > 0)
+                return environmentWorkingSet;
+
+            try
+            {
+                using Process process = Process.GetCurrentProcess();
+                process.Refresh();
+                return process.WorkingSet64;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
         private sealed class WorkingSetSampler : IDisposable
         {
             private readonly CancellationTokenSource _stop = new CancellationTokenSource();
@@ -1151,16 +1277,14 @@ namespace Basis.ImageSandbox.Editor
 
             public void Start()
             {
-                PeakBytes = Process.GetCurrentProcess().WorkingSet64;
+                PeakBytes = GetCurrentWorkingSetBytes();
                 _task = Task.Run(async () =>
                 {
-                    using Process process = Process.GetCurrentProcess();
                     while (!_stop.IsCancellationRequested)
                     {
                         try
                         {
-                            process.Refresh();
-                            long current = process.WorkingSet64;
+                            long current = GetCurrentWorkingSetBytes();
                             if (current > PeakBytes)
                                 PeakBytes = current;
                             await Task.Delay(10, _stop.Token).ConfigureAwait(false);

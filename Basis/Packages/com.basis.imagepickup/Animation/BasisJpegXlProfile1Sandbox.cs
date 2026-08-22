@@ -364,6 +364,7 @@ namespace Basis.ImagePickup
                 case BasisProfile1SandboxStatus.SharedLimitExceeded:
                     return BasisProfile1RejectionCategory.SharedLimitExceeded;
                 case BasisProfile1SandboxStatus.Timeout:
+                case BasisProfile1SandboxStatus.OutOfFuel:
                     return BasisProfile1RejectionCategory.Timeout;
                 case BasisProfile1SandboxStatus.Cancelled:
                     return BasisProfile1RejectionCategory.Cancelled;

@@ -13,6 +13,7 @@ namespace Basis.ImageSandbox
         SharedLimitExceeded = 3,
         Timeout = 6,
         Cancelled = 7,
+        OutOfFuel = 8,
         SandboxFailure = 255,
     }
 
@@ -150,8 +151,17 @@ namespace Basis.ImageSandbox
         public BasisProfile1SandboxPreflight Preflight(
             byte[] canonicalProfile1Container,
             CancellationToken cancellationToken = default
+        ) => Preflight(canonicalProfile1Container, out _, out _, cancellationToken);
+
+        public BasisProfile1SandboxPreflight Preflight(
+            byte[] canonicalProfile1Container,
+            out ulong fuelConsumed,
+            out bool fuelConsumedAvailable,
+            CancellationToken cancellationToken = default
         )
         {
+            fuelConsumed = 0;
+            fuelConsumedAvailable = false;
             if (canonicalProfile1Container == null || canonicalProfile1Container.Length == 0)
                 return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.Malformed);
 
@@ -238,6 +248,7 @@ namespace Basis.ImageSandbox
                 }
                 finally
                 {
+                    fuelConsumedAvailable = TryGetFuelConsumed(instance, out fuelConsumed);
                     if (resultPointer != 0)
                         CallVoidBestEffort(instance, "p1_free", WasmtimeNative.WasmtimeValue.I32(resultPointer));
                     if (inputPointer != 0)
@@ -255,8 +266,26 @@ namespace Basis.ImageSandbox
             BasisProfile1SandboxPreflight preflight,
             BasisProfile1DecodedFrameConsumer consumer,
             CancellationToken cancellationToken = default
+        ) => DecodeFrames(
+            canonicalProfile1Container,
+            preflight,
+            consumer,
+            out _,
+            out _,
+            cancellationToken
+        );
+
+        public BasisProfile1SandboxStatus DecodeFrames(
+            byte[] canonicalProfile1Container,
+            BasisProfile1SandboxPreflight preflight,
+            BasisProfile1DecodedFrameConsumer consumer,
+            out ulong fuelConsumed,
+            out bool fuelConsumedAvailable,
+            CancellationToken cancellationToken = default
         )
         {
+            fuelConsumed = 0;
+            fuelConsumedAvailable = false;
             if (
                 canonicalProfile1Container == null
                 || canonicalProfile1Container.Length == 0
@@ -400,6 +429,7 @@ namespace Basis.ImageSandbox
                 }
                 finally
                 {
+                    fuelConsumedAvailable = TryGetFuelConsumed(instance, out fuelConsumed);
                     if (sessionOpen)
                         CallVoidBestEffort(instance, "p1_decode_close");
                     if (durationPointer != 0)
@@ -876,6 +906,23 @@ namespace Basis.ImageSandbox
             return true;
         }
 
+        private bool TryGetFuelConsumed(SandboxInstance instance, out ulong fuelConsumed)
+        {
+            fuelConsumed = 0;
+            if (instance == null || !instance.IsValid)
+                return false;
+
+            IntPtr error = WasmtimeNative.wasmtime_context_get_fuel(instance.Context, out ulong remaining);
+            if (error != IntPtr.Zero)
+            {
+                WasmtimeNative.wasmtime_error_delete(error);
+                return false;
+            }
+
+            fuelConsumed = remaining <= _limits.Fuel ? _limits.Fuel - remaining : 0;
+            return true;
+        }
+
         private TimeoutScope CreateTimeout(CancellationToken cancellationToken) =>
             new TimeoutScope(cancellationToken, _limits.Timeout);
 
@@ -904,7 +951,9 @@ namespace Basis.ImageSandbox
         {
             if (WasmtimeNative.wasmtime_trap_code(trap, out byte code))
             {
-                if (code == WasmtimeNative.TrapInterrupt || code == WasmtimeNative.TrapOutOfFuel)
+                if (code == WasmtimeNative.TrapOutOfFuel)
+                    return BasisProfile1SandboxStatus.OutOfFuel;
+                if (code == WasmtimeNative.TrapInterrupt)
                     return BasisProfile1SandboxStatus.Timeout;
             }
             return BasisProfile1SandboxStatus.SandboxFailure;
