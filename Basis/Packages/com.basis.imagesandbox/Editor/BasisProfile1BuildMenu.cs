@@ -202,6 +202,14 @@ namespace Basis.ImageSandbox.Editor
                     || preflight.TotalPlayCount != 0
                     || preflight.SubmittedCanvasPixels != 4
                     || preflight.BaseTimelineMicroseconds != 83_335
+                    || preflight.PublicRegularLayerCount != 2
+                    || preflight.PublicRegularLayerPixels != 4
+                    || preflight.CroppedLayerCount != 0
+                    || preflight.ReferenceReadEdges != 0
+                    || preflight.SavedReferenceCount != 0
+                    || preflight.BlendOperationCount != 0
+                    || preflight.MaximumReferenceChainDepth != 1
+                    || preflight.PreviewPixels != 0
                 )
                 {
                     error = $"Unexpected Profile 1 preflight result: {preflight.Status}, {preflight.Width}x{preflight.Height}, {preflight.LogicalFrameCount} frames.";

@@ -4,7 +4,7 @@ set -euo pipefail
 LIBJXL_TAG="v0.12.0"
 LIBJXL_COMMIT="a7a9c787341cf703dede03c2009fa460cae5e5df"
 EMSCRIPTEN_IMAGE="emscripten/emsdk:4.0.23"
-EXPECTED_SHA256="b644482523b6ee3cf639fcfcf57e6974f857fa1cdd7528403f08ccc5eec8a37d"
+EXPECTED_SHA256="2a08424d9c55af3e4359c932157b03b5a539be11b46ffa9b46e7655e3ede5c39"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_PATH="${1:-${SCRIPT_DIR}/../../Runtime/Resources/BasisImageSandbox/profile1_decoder.bytes}"

@@ -232,8 +232,9 @@ Status RunStructurePass(const uint8_t* data, size_t size, StructuralMetrics* met
                 continue;
             }
             if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
-                const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
-                if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
+                // Structural metrics are fully available from JxlFrameHeader. Do not
+                // decode pixels a second time just to advance to the next regular layer.
+                if (JxlDecoderSkipCurrentFrame(decoder) != JXL_DEC_SUCCESS) {
                     result = kMalformed;
                     break;
                 }
@@ -259,7 +260,7 @@ Status RunStructurePass(const uint8_t* data, size_t size, StructuralMetrics* met
     return result;
 }
 
-Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical) {
+Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bool skip_pixels) {
     JxlDecoder* decoder = JxlDecoderCreate(nullptr);
     if (decoder == nullptr) {
         return kMalformed;
@@ -340,10 +341,17 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical) {
                 continue;
             }
             if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
-                const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
-                if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
-                    result = kMalformed;
-                    break;
+                if (skip_pixels) {
+                    if (JxlDecoderSkipCurrentFrame(decoder) != JXL_DEC_SUCCESS) {
+                        result = kMalformed;
+                        break;
+                    }
+                } else {
+                    const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+                    if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
+                        result = kMalformed;
+                        break;
+                    }
                 }
                 continue;
             }
@@ -367,6 +375,23 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical) {
 
     JxlDecoderDestroy(decoder);
     return result;
+}
+
+bool LogicalInfoMatches(const LogicalInfo& left, const LogicalInfo& right) {
+    if (left.width != right.width || left.height != right.height ||
+        left.total_play_count != right.total_play_count ||
+        left.frame_count != right.frame_count ||
+        left.submitted_pixels != right.submitted_pixels ||
+        left.timeline_microseconds != right.timeline_microseconds ||
+        left.preview_pixels != right.preview_pixels) {
+        return false;
+    }
+    for (uint32_t i = 0; i < left.frame_count; ++i) {
+        if (left.durations[i] != right.durations[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void ClearResult(uint64_t* output) {
@@ -456,13 +481,29 @@ uint32_t p1_preflight(const uint8_t* data, uint32_t size, uint64_t* output) {
         return kMalformed;
     }
 
-    LogicalInfo logical{};
+    // Reject anything discoverable from public decoder metadata before paying for
+    // a full pixel decode. Coalescing stays enabled here so frame count, durations
+    // and submitted-pixel accounting use logical/displayed frames.
+    LogicalInfo header_logical{};
     StructuralMetrics metrics{};
-    Status status = RunLogicalPass(data, size, &logical);
+    Status status = RunLogicalPass(data, size, &header_logical, true);
     if (status == kSuccess) {
+        // Structural counters require non-coalesced regular-layer headers, but not
+        // their pixels. This pass can reject malformed structure cheaply too.
         status = RunStructurePass(data, size, &metrics);
     }
-    StoreResult(status, logical, metrics, output);
+
+    if (status == kSuccess) {
+        // Keep one complete coalesced decode before admission so malformed pixel
+        // data cannot pass a header-only preflight. It must agree with the header scan.
+        LogicalInfo decoded_logical{};
+        status = RunLogicalPass(data, size, &decoded_logical, false);
+        if (status == kSuccess && !LogicalInfoMatches(header_logical, decoded_logical)) {
+            status = kMalformed;
+        }
+    }
+
+    StoreResult(status, header_logical, metrics, output);
     return status;
 }
 

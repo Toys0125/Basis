@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $LibJxlTag = "v0.12.0"
 $LibJxlCommit = "a7a9c787341cf703dede03c2009fa460cae5e5df"
 $EmscriptenImage = "emscripten/emsdk:4.0.23"
-$ExpectedSha256 = "b644482523b6ee3cf639fcfcf57e6974f857fa1cdd7528403f08ccc5eec8a37d"
+$ExpectedSha256 = "2a08424d9c55af3e4359c932157b03b5a539be11b46ffa9b46e7655e3ede5c39"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {

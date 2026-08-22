@@ -39,6 +39,14 @@ if (
     || positive.TotalPlayCount != 0
     || positive.SubmittedCanvasPixels != 4
     || positive.BaseTimelineMicroseconds != 83_335
+    || positive.PublicRegularLayerCount != 2
+    || positive.PublicRegularLayerPixels != 4
+    || positive.CroppedLayerCount != 0
+    || positive.ReferenceReadEdges != 0
+    || positive.SavedReferenceCount != 0
+    || positive.BlendOperationCount != 0
+    || positive.MaximumReferenceChainDepth != 1
+    || positive.PreviewPixels != 0
     || positive.FrameDurationsMicroseconds.Length != 2
     || positive.FrameDurationsMicroseconds[0] != 33_334
     || positive.FrameDurationsMicroseconds[1] != 50_001

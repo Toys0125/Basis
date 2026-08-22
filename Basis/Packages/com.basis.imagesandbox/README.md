@@ -10,7 +10,7 @@ The initial Profile 1 decoder is pinned to:
 - Emscripten `4.0.23`
 - Wasmtime `44.0.0`
 - MediaSandbox native-runtime package commit `f200256a2e56c1c5229a07e5530faa4a6b1ab325`
-- decoder WASM SHA-256 `b644482523b6ee3cf639fcfcf57e6974f857fa1cdd7528403f08ccc5eec8a37d`
+- decoder WASM SHA-256 `2a08424d9c55af3e4359c932157b03b5a539be11b46ffa9b46e7655e3ede5c39`
 
 Remote/network JPEG XL codestream semantics must be processed only through this WASM path. Native libjxl is reserved for trusted-local/editor/oracle use.
 
@@ -38,7 +38,7 @@ Basis/Packages/com.basis.imagesandbox/Runtime/Resources/BasisImageSandbox/profil
 
 The runtime fails closed if that generated resource is absent. Do not update the libjxl/Emscripten/decoder hash pins without rerunning the native/WASM differential and receiver benchmark suites required by the Profile 1 implementation-validation plan.
 
-The generated module has no WASI, filesystem, networking, clock, or random imports. Its only host import is the validated Emscripten memory-growth notification callback; Wasmtime linear-memory, fuel, and epoch-interruption limits remain host-controlled.
+The generated module has no WASI, filesystem, networking, clock, or random imports. Its only host import is the validated Emscripten memory-growth notification callback; Wasmtime linear-memory, fuel, and epoch-interruption limits remain host-controlled. Stage B first walks coalesced logical-frame headers and non-coalesced structural headers with pixel processing skipped, so profile/shared-limit/structural failures are rejected before expensive pixel work. Candidates that survive those checks still receive one complete coalesced decode before admission to validate the compressed pixel stream.
 
 ## Benchmarking
 
