@@ -33,6 +33,10 @@ namespace Basis.ImageSandbox.Editor
         private Vector2 _scroll;
         private Task<BenchmarkRunResult> _runTask;
         private CancellationTokenSource _cancellation;
+        private bool _preparing;
+        private int _preparationCompleted;
+        private int _preparationTotal;
+        private string _preparationCurrent = string.Empty;
         private string _status = "Idle";
 
         [MenuItem(MenuPath, false, MenuPriority)]
@@ -70,7 +74,7 @@ namespace Basis.ImageSandbox.Editor
                 MessageType.Info
             );
 
-            using (new EditorGUI.DisabledScope(_runTask != null))
+            using (new EditorGUI.DisabledScope(_runTask != null || _preparing))
             {
                 DrawDirectoryField("Fixture directory", ref _fixtureDirectory, "Choose Profile 1 fixture directory");
                 _includeSubdirectories = EditorGUILayout.Toggle("Include subdirectories", _includeSubdirectories);
@@ -89,7 +93,7 @@ namespace Basis.ImageSandbox.Editor
                     StartBenchmark();
             }
 
-            if (_runTask != null && GUILayout.Button("Cancel", GUILayout.Height(26)))
+            if ((_runTask != null || _preparing) && GUILayout.Button("Cancel", GUILayout.Height(26)))
             {
                 _status = "Cancelling...";
                 _cancellation?.Cancel();
@@ -98,6 +102,16 @@ namespace Basis.ImageSandbox.Editor
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Status", EditorStyles.boldLabel);
             EditorGUILayout.SelectableLabel(_status, EditorStyles.textArea, GUILayout.MinHeight(70));
+            if (_preparing && _preparationTotal > 0)
+            {
+                float progress = Mathf.Clamp01((float)_preparationCompleted / _preparationTotal);
+                Rect progressRect = GUILayoutUtility.GetRect(1f, 20f, GUILayout.ExpandWidth(true));
+                EditorGUI.ProgressBar(
+                    progressRect,
+                    progress,
+                    $"{_preparationCompleted}/{_preparationTotal}  {_preparationCurrent}"
+                );
+            }
             EditorGUILayout.Space();
             EditorGUILayout.HelpBox(
                 "Use representative real and synthetic JPEG XL files. Fixture preparation is excluded from timing and the "
@@ -121,7 +135,7 @@ namespace Basis.ImageSandbox.Editor
             EditorGUILayout.EndHorizontal();
         }
 
-        private void StartBenchmark()
+        private async void StartBenchmark()
         {
             if (!TryValidateSettings(out int[] concurrency, out ulong[] fuelSweep, out string error))
             {
@@ -163,23 +177,59 @@ namespace Basis.ImageSandbox.Editor
 
             if (gifFixtures.Length > 0)
             {
-                _status = $"Resolving {gifFixtures.Length} GIF fixture(s) from the Profile 1 cache or preparing cache misses...";
+                _cancellation = new CancellationTokenSource();
+                _preparing = true;
+                _preparationCompleted = 0;
+                _preparationTotal = gifFixtures.Length;
+                _preparationCurrent = "Checking cache";
+                _status = $"Resolving {gifFixtures.Length} GIF fixture(s) from the Profile 1 cache...";
                 Repaint();
-                if (!BasisProfile1GifBenchmarkPreparation.TryConvert(
+                BasisProfile1GifBenchmarkPreparation.GifPreparationResult gifResult;
+                try
+                {
+                    gifResult = await BasisProfile1GifBenchmarkPreparation.ConvertAsync(
                         gifFixtures,
                         _outputDirectory,
-                        out Dictionary<string, string> convertedGifs,
-                        out string gifError
-                    ))
+                        (completed, total, fileName, phase) =>
+                        {
+                            _preparationCompleted = completed;
+                            _preparationTotal = total;
+                            _preparationCurrent = phase + " — " + fileName;
+                            _status = $"GIF preparation: {completed}/{total} — {phase}: {fileName}";
+                            Repaint();
+                        },
+                        _cancellation.Token
+                    );
+                }
+                catch (OperationCanceledException)
                 {
-                    EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", gifError, "OK");
+                    _status = "GIF fixture preparation cancelled.";
+                    _preparing = false;
+                    _preparationCurrent = string.Empty;
+                    _cancellation.Dispose();
+                    _cancellation = null;
+                    Repaint();
+                    return;
+                }
+                finally
+                {
+                    _preparing = false;
+                    _preparationCurrent = string.Empty;
+                }
+
+                if (!gifResult.Ok)
+                {
+                    EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", gifResult.Error, "OK");
                     _status = "GIF fixture preparation failed.";
+                    _cancellation.Dispose();
+                    _cancellation = null;
+                    Repaint();
                     return;
                 }
 
                 foreach (string gifPath in gifFixtures)
                 {
-                    string convertedPath = convertedGifs[gifPath];
+                    string convertedPath = gifResult.ConvertedByOriginal[gifPath];
                     fixturePaths.Add(convertedPath);
                     fixtureDisplayNames[convertedPath] = Path.GetRelativePath(_fixtureDirectory, gifPath).Replace('\\', '/');
                     fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
@@ -206,7 +256,8 @@ namespace Basis.ImageSandbox.Editor
                 Metadata = CaptureMetadata(),
             };
 
-            _cancellation = new CancellationTokenSource();
+            if (_cancellation == null)
+                _cancellation = new CancellationTokenSource();
             _status = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}, fuel {string.Join(",", fuelSweep)}...";
             _runTask = Task.Run(() => RunBenchmark(configuration, _cancellation.Token), _cancellation.Token);
             Repaint();
