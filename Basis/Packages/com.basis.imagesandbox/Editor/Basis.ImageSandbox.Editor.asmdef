@@ -2,7 +2,9 @@
   "name": "Basis.ImageSandbox.Editor",
   "rootNamespace": "Basis.ImageSandbox.Editor",
   "references": [
-    "Basis.ImageSandbox"
+    "Basis.ImageSandbox",
+    "Basis.ImagePickup",
+    "Unity.Collections"
   ],
   "includePlatforms": [
     "Editor"

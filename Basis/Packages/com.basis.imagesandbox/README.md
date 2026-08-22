@@ -39,3 +39,9 @@ Basis/Packages/com.basis.imagesandbox/Runtime/Resources/BasisImageSandbox/profil
 The runtime fails closed if that generated resource is absent. Do not update the libjxl/Emscripten/decoder hash pins without rerunning the native/WASM differential and receiver benchmark suites required by the Profile 1 implementation-validation plan.
 
 The generated module has no WASI, filesystem, networking, clock, or random imports. Its only host import is the validated Emscripten memory-growth notification callback; Wasmtime linear-memory, fuel, and epoch-interruption limits remain host-controlled.
+
+## Benchmarking
+
+After building the decoder, use `Basis/Debug/JPEG XL Profile 1/Benchmark` in the Unity editor. Select a directory containing canonical Profile 1 `.jxl` fixtures, choose warmup/measured iteration counts and a concurrency sweep such as `1,2,4`, then run the benchmark. The tool exports aggregate CSV plus detailed JSON results with platform/runtime pins, Stage A and Stage B timing, full-decode latency, structural counters, concurrency throughput, and process working-set measurements.
+
+Fuel consumed and exact WASM linear-memory high-water marks are intentionally marked unavailable until the runtime exposes those measurements directly; the benchmark does not infer or fabricate them.

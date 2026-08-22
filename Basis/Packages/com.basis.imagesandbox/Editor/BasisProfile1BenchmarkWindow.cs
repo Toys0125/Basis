@@ -1,0 +1,853 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Basis.ImagePickup;
+using Unity.Collections;
+using UnityEditor;
+using UnityEngine;
+using Debug = UnityEngine.Debug;
+
+namespace Basis.ImageSandbox.Editor
+{
+    internal sealed class BasisProfile1BenchmarkWindow : EditorWindow
+    {
+        private const string MenuPath = "Basis/Debug/JPEG XL Profile 1/Benchmark";
+        private const int MenuPriority = 609;
+
+        private string _fixtureDirectory = string.Empty;
+        private string _outputDirectory = string.Empty;
+        private int _warmupIterations = 1;
+        private int _measuredIterations = 20;
+        private string _concurrencySweep = "1,2,4";
+        private int _maximumLinearMemoryMiB = 256;
+        private long _fuel = 1_000_000_000L;
+        private float _timeoutSeconds = 30f;
+        private bool _includeSubdirectories = true;
+        private Vector2 _scroll;
+        private Task<BenchmarkRunResult> _runTask;
+        private CancellationTokenSource _cancellation;
+        private string _status = "Idle";
+
+        [MenuItem(MenuPath, false, MenuPriority)]
+        private static void OpenWindow()
+        {
+            var window = GetWindow<BasisProfile1BenchmarkWindow>("JPEG XL Profile 1 Benchmark");
+            window.minSize = new Vector2(560, 430);
+            window.Show();
+        }
+
+        private void OnEnable()
+        {
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            if (string.IsNullOrWhiteSpace(_outputDirectory))
+                _outputDirectory = Path.Combine(projectRoot, "Profile1BenchmarkResults");
+            EditorApplication.update += PollRun;
+        }
+
+        private void OnDisable()
+        {
+            EditorApplication.update -= PollRun;
+        }
+
+        private void OnGUI()
+        {
+            _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            EditorGUILayout.LabelField("JPEG XL Profile 1 Benchmark", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "Runs the production WASM/Wasmtime decoder against canonical Profile 1 .jxl fixtures. "
+                    + "Results include Stage A, Stage B, full-decode timing, structural counters, module initialization, "
+                    + "working-set peak/delta, and concurrency scaling. Fuel consumption and exact WASM linear-memory "
+                    + "high-water marks are not exposed by the current runtime and are reported as unavailable.",
+                MessageType.Info
+            );
+
+            using (new EditorGUI.DisabledScope(_runTask != null))
+            {
+                DrawDirectoryField("Fixture directory", ref _fixtureDirectory, "Choose Profile 1 fixture directory");
+                _includeSubdirectories = EditorGUILayout.Toggle("Include subdirectories", _includeSubdirectories);
+                DrawDirectoryField("Output directory", ref _outputDirectory, "Choose benchmark output directory");
+
+                EditorGUILayout.Space();
+                _warmupIterations = EditorGUILayout.IntField("Warmup iterations / worker", _warmupIterations);
+                _measuredIterations = EditorGUILayout.IntField("Measured iterations / worker", _measuredIterations);
+                _concurrencySweep = EditorGUILayout.TextField("Concurrency sweep", _concurrencySweep);
+                _maximumLinearMemoryMiB = EditorGUILayout.IntField("WASM memory limit (MiB)", _maximumLinearMemoryMiB);
+                _fuel = EditorGUILayout.LongField("Fuel limit / call", _fuel);
+                _timeoutSeconds = EditorGUILayout.FloatField("Timeout / call (seconds)", _timeoutSeconds);
+
+                EditorGUILayout.Space();
+                if (GUILayout.Button("Run Benchmark", GUILayout.Height(32)))
+                    StartBenchmark();
+            }
+
+            if (_runTask != null && GUILayout.Button("Cancel", GUILayout.Height(26)))
+            {
+                _status = "Cancelling...";
+                _cancellation?.Cancel();
+            }
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Status", EditorStyles.boldLabel);
+            EditorGUILayout.SelectableLabel(_status, EditorStyles.textArea, GUILayout.MinHeight(70));
+            EditorGUILayout.Space();
+            EditorGUILayout.HelpBox(
+                "Use representative real and synthetic canonical Profile 1 containers. The benchmark reads every .jxl file "
+                    + "in the selected directory and writes both aggregate CSV and detailed JSON results.",
+                MessageType.None
+            );
+            EditorGUILayout.EndScrollView();
+        }
+
+        private static void DrawDirectoryField(string label, ref string value, string dialogTitle)
+        {
+            EditorGUILayout.BeginHorizontal();
+            value = EditorGUILayout.TextField(label, value);
+            if (GUILayout.Button("Browse", GUILayout.Width(80)))
+            {
+                string selected = EditorUtility.OpenFolderPanel(dialogTitle, value, string.Empty);
+                if (!string.IsNullOrWhiteSpace(selected))
+                    value = selected;
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void StartBenchmark()
+        {
+            if (!TryValidateSettings(out int[] concurrency, out string error))
+            {
+                EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", error, "OK");
+                return;
+            }
+
+            TextAsset decoderAsset = Resources.Load<TextAsset>(BasisProfile1SandboxResources.DecoderResourcePath);
+            if (decoderAsset == null || decoderAsset.bytes == null || decoderAsset.bytes.Length == 0)
+            {
+                EditorUtility.DisplayDialog(
+                    "JPEG XL Profile 1 Benchmark",
+                    "The Profile 1 decoder resource is missing. Run Basis/Debug/JPEG XL Profile 1/Build Test Decoder first.",
+                    "OK"
+                );
+                return;
+            }
+
+            string[] fixtures = Directory.GetFiles(
+                _fixtureDirectory,
+                "*.jxl",
+                _includeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly
+            );
+            Array.Sort(fixtures, StringComparer.OrdinalIgnoreCase);
+            if (fixtures.Length == 0)
+            {
+                EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", "No .jxl fixtures were found.", "OK");
+                return;
+            }
+
+            Directory.CreateDirectory(_outputDirectory);
+            var configuration = new BenchmarkConfiguration
+            {
+                FixtureDirectory = Path.GetFullPath(_fixtureDirectory),
+                OutputDirectory = Path.GetFullPath(_outputDirectory),
+                WarmupIterations = _warmupIterations,
+                MeasuredIterations = _measuredIterations,
+                Concurrency = concurrency,
+                MaximumLinearMemoryBytes = (long)_maximumLinearMemoryMiB * 1024L * 1024L,
+                Fuel = (ulong)_fuel,
+                TimeoutSeconds = _timeoutSeconds,
+                DecoderBytes = (byte[])decoderAsset.bytes.Clone(),
+                Fixtures = fixtures,
+                Metadata = CaptureMetadata(),
+            };
+
+            _cancellation = new CancellationTokenSource();
+            _status = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}...";
+            _runTask = Task.Run(() => RunBenchmark(configuration, _cancellation.Token), _cancellation.Token);
+            Repaint();
+        }
+
+        private bool TryValidateSettings(out int[] concurrency, out string error)
+        {
+            concurrency = Array.Empty<int>();
+            error = null;
+            if (string.IsNullOrWhiteSpace(_fixtureDirectory) || !Directory.Exists(_fixtureDirectory))
+            {
+                error = "Choose an existing fixture directory.";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(_outputDirectory))
+            {
+                error = "Choose an output directory.";
+                return false;
+            }
+            if (_warmupIterations < 0 || _warmupIterations > 100)
+            {
+                error = "Warmup iterations must be between 0 and 100.";
+                return false;
+            }
+            if (_measuredIterations < 1 || _measuredIterations > 1000)
+            {
+                error = "Measured iterations must be between 1 and 1000.";
+                return false;
+            }
+            if (_maximumLinearMemoryMiB < 32 || _maximumLinearMemoryMiB > 4096)
+            {
+                error = "WASM memory limit must be between 32 and 4096 MiB.";
+                return false;
+            }
+            if (_fuel <= 0)
+            {
+                error = "Fuel must be greater than zero.";
+                return false;
+            }
+            if (_timeoutSeconds <= 0f || _timeoutSeconds > 600f)
+            {
+                error = "Timeout must be greater than zero and no more than 600 seconds.";
+                return false;
+            }
+
+            try
+            {
+                concurrency = _concurrencySweep
+                    .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(value => int.Parse(value, CultureInfo.InvariantCulture))
+                    .Distinct()
+                    .OrderBy(value => value)
+                    .ToArray();
+            }
+            catch (Exception)
+            {
+                error = "Concurrency sweep must contain integers such as 1,2,4.";
+                return false;
+            }
+
+            if (concurrency.Length == 0 || concurrency.Any(value => value < 1 || value > 32))
+            {
+                error = "Concurrency values must be between 1 and 32.";
+                return false;
+            }
+            return true;
+        }
+
+        private BenchmarkMetadata CaptureMetadata()
+        {
+            return new BenchmarkMetadata
+            {
+                TimestampUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                OperatingSystem = SystemInfo.operatingSystem,
+                Processor = SystemInfo.processorType,
+                ProcessorCount = SystemInfo.processorCount,
+                SystemMemoryMiB = SystemInfo.systemMemorySize,
+                UnityVersion = Application.unityVersion,
+                LibJxlVersion = BasisProfile1SandboxDecoder.LibJxlVersion,
+                LibJxlCommit = BasisProfile1SandboxDecoder.LibJxlCommit,
+                EmscriptenVersion = BasisProfile1SandboxDecoder.EmscriptenVersion,
+                WasmtimeVersion = BasisProfile1SandboxDecoder.WasmtimeVersion,
+                NativeRuntimeSourceCommit = BasisProfile1SandboxDecoder.NativeRuntimeSourceCommit,
+                DecoderSha256 = ComputeSha256(Resources.Load<TextAsset>(BasisProfile1SandboxResources.DecoderResourcePath).bytes),
+            };
+        }
+
+        private static BenchmarkRunResult RunBenchmark(BenchmarkConfiguration configuration, CancellationToken cancellationToken)
+        {
+            var result = new BenchmarkRunResult
+            {
+                Metadata = configuration.Metadata,
+                Configuration = new SerializableConfiguration(configuration),
+                Fixtures = new List<FixtureBenchmarkResult>(),
+            };
+
+            foreach (string fixturePath in configuration.Fixtures)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                byte[] payload = File.ReadAllBytes(fixturePath);
+                foreach (int concurrency in configuration.Concurrency)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    result.Fixtures.Add(RunFixture(configuration, fixturePath, payload, concurrency, cancellationToken));
+                }
+            }
+
+            result.OutputDirectory = configuration.OutputDirectory;
+            return result;
+        }
+
+        private static FixtureBenchmarkResult RunFixture(
+            BenchmarkConfiguration configuration,
+            string fixturePath,
+            byte[] payload,
+            int concurrency,
+            CancellationToken cancellationToken
+        )
+        {
+            var aggregate = new FixtureBenchmarkResult
+            {
+                Fixture = Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/'),
+                PayloadBytes = payload.LongLength,
+                Concurrency = concurrency,
+                Samples = new List<BenchmarkSample>(),
+                FuelConsumedAvailable = false,
+                WasmPeakMemoryAvailable = false,
+            };
+
+            long workingSetBefore = Process.GetCurrentProcess().WorkingSet64;
+            using var sampler = new WorkingSetSampler();
+            sampler.Start();
+
+            Stopwatch groupStopwatch = Stopwatch.StartNew();
+            var workers = new Task<WorkerResult>[concurrency];
+            for (int workerIndex = 0; workerIndex < concurrency; workerIndex++)
+            {
+                workers[workerIndex] = Task.Run(
+                    () => RunWorker(configuration, payload, cancellationToken),
+                    cancellationToken
+                );
+            }
+            Task.WaitAll(workers, cancellationToken);
+            groupStopwatch.Stop();
+            sampler.Stop();
+            aggregate.GroupWallMilliseconds = groupStopwatch.Elapsed.TotalMilliseconds;
+
+            foreach (Task<WorkerResult> workerTask in workers)
+            {
+                WorkerResult worker = workerTask.Result;
+                aggregate.ModuleInitMilliseconds.Add(worker.ModuleInitMilliseconds);
+                aggregate.Samples.AddRange(worker.Samples);
+            }
+
+            long workingSetAfter = Process.GetCurrentProcess().WorkingSet64;
+            aggregate.WorkingSetBeforeBytes = workingSetBefore;
+            aggregate.WorkingSetAfterBytes = workingSetAfter;
+            aggregate.WorkingSetPeakBytes = sampler.PeakBytes;
+            aggregate.WorkingSetPeakDeltaBytes = Math.Max(0, sampler.PeakBytes - workingSetBefore);
+            aggregate.FinalizeSummary();
+            if (aggregate.GroupWallMilliseconds > 0)
+            {
+                long decodedFrames = aggregate.Samples
+                    .Where(sample => sample.DecodeStatus == BasisProfile1SandboxStatus.Success.ToString())
+                    .Sum(sample => (long)sample.DecodedFrames);
+                aggregate.AggregateDecodedFramesPerSecond = decodedFrames * 1000.0 / aggregate.GroupWallMilliseconds;
+            }
+            return aggregate;
+        }
+
+        private static WorkerResult RunWorker(
+            BenchmarkConfiguration configuration,
+            byte[] payload,
+            CancellationToken cancellationToken
+        )
+        {
+            var limits = new BasisProfile1SandboxLimits(
+                configuration.MaximumLinearMemoryBytes,
+                configuration.Fuel,
+                TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            );
+            var worker = new WorkerResult();
+            var stopwatch = Stopwatch.StartNew();
+            BasisProfile1SandboxDecoder decoder;
+            try
+            {
+                decoder = new BasisProfile1SandboxDecoder(configuration.DecoderBytes, limits);
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException("Could not create Profile 1 decoder.", exception);
+            }
+            stopwatch.Stop();
+            worker.ModuleInitMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+
+            using (decoder)
+            {
+                for (int i = 0; i < configuration.WarmupIterations; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    RunOne(payload, decoder, cancellationToken, false);
+                }
+                for (int i = 0; i < configuration.MeasuredIterations; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    worker.Samples.Add(RunOne(payload, decoder, cancellationToken, true));
+                }
+            }
+            return worker;
+        }
+
+        private static BenchmarkSample RunOne(
+            byte[] payload,
+            BasisProfile1SandboxDecoder decoder,
+            CancellationToken cancellationToken,
+            bool measured
+        )
+        {
+            var sample = new BenchmarkSample();
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            using (var nativePayload = new NativeArray<byte>(payload, Allocator.Temp))
+            {
+                bool stageAOk = BasisJpegXlProfile1.TryValidateStageA(
+                    nativePayload,
+                    payload.Length,
+                    BasisJpegXlProfile1.ProfileVersion,
+                    out BasisProfile1StageAResult stageA,
+                    out BasisProfile1RejectionCategory stageARejection,
+                    out string stageAError
+                );
+                stopwatch.Stop();
+                sample.StageAMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+                sample.StageAStatus = stageAOk ? "Success" : stageARejection.ToString();
+                sample.StageAError = stageAError;
+                sample.JxlpBoxCount = stageA.JxlpBoxCount;
+                sample.ConcatenatedCodestreamBytes = stageA.ConcatenatedCodestreamBytes;
+                if (!stageAOk)
+                    return sample;
+            }
+
+            stopwatch.Restart();
+            BasisProfile1SandboxPreflight preflight = decoder.Preflight(payload, cancellationToken);
+            stopwatch.Stop();
+            sample.StageBMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+            sample.StageBStatus = preflight.Status.ToString();
+            CopyPreflight(sample, preflight);
+            if (preflight.Status != BasisProfile1SandboxStatus.Success)
+                return sample;
+
+            int consumedFrames = 0;
+            ulong checksum = 0;
+            stopwatch.Restart();
+            BasisProfile1SandboxStatus decodeStatus = decoder.DecodeFrames(
+                payload,
+                preflight,
+                (frameIndex, rgba, duration) =>
+                {
+                    consumedFrames++;
+                    if (rgba.Length > 0)
+                    {
+                        checksum = (checksum * 16777619UL) ^ rgba[0];
+                        checksum = (checksum * 16777619UL) ^ rgba[rgba.Length - 1];
+                    }
+                    checksum ^= duration + (ulong)frameIndex;
+                    return !cancellationToken.IsCancellationRequested;
+                },
+                cancellationToken
+            );
+            stopwatch.Stop();
+            sample.DecodeMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+            sample.DecodeStatus = decodeStatus.ToString();
+            sample.DecodedFrames = consumedFrames;
+            sample.DecodeChecksum = checksum.ToString("x16", CultureInfo.InvariantCulture);
+            if (preflight.SubmittedCanvasPixels > 0)
+                sample.DecodeMillisecondsPerSubmittedMegapixel = sample.DecodeMilliseconds / (preflight.SubmittedCanvasPixels / 1_000_000.0);
+            if (preflight.LogicalFrameCount > 0)
+                sample.DecodeMillisecondsPerFrame = sample.DecodeMilliseconds / preflight.LogicalFrameCount;
+            return sample;
+        }
+
+        private static void CopyPreflight(BenchmarkSample sample, BasisProfile1SandboxPreflight preflight)
+        {
+            sample.Width = preflight.Width;
+            sample.Height = preflight.Height;
+            sample.LogicalFrames = preflight.LogicalFrameCount;
+            sample.TotalPlayCount = preflight.TotalPlayCount;
+            sample.SubmittedCanvasPixels = preflight.SubmittedCanvasPixels;
+            sample.BaseTimelineMicroseconds = preflight.BaseTimelineMicroseconds;
+            sample.PublicRegularLayerCount = preflight.PublicRegularLayerCount;
+            sample.PublicRegularLayerPixels = preflight.PublicRegularLayerPixels;
+            sample.CroppedLayerCount = preflight.CroppedLayerCount;
+            sample.ReferenceReadEdges = preflight.ReferenceReadEdges;
+            sample.SavedReferenceCount = preflight.SavedReferenceCount;
+            sample.BlendOperationCount = preflight.BlendOperationCount;
+            sample.MaximumReferenceChainDepth = preflight.MaximumReferenceChainDepth;
+            sample.PreviewPixels = preflight.PreviewPixels;
+        }
+
+        private void PollRun()
+        {
+            Task<BenchmarkRunResult> task = _runTask;
+            if (task == null || !task.IsCompleted)
+                return;
+
+            _runTask = null;
+            _cancellation?.Dispose();
+            _cancellation = null;
+
+            if (task.IsCanceled)
+            {
+                _status = "Benchmark cancelled.";
+            }
+            else if (task.IsFaulted)
+            {
+                Exception exception = task.Exception?.GetBaseException();
+                _status = "Benchmark failed: " + exception?.Message;
+                Debug.LogException(exception ?? new Exception("Profile 1 benchmark failed."));
+            }
+            else
+            {
+                BenchmarkRunResult result = task.Result;
+                try
+                {
+                    WriteResults(result);
+                    _status = "Benchmark complete.\nCSV: " + result.CsvPath + "\nJSON: " + result.JsonPath;
+                    Debug.Log(_status);
+                    EditorUtility.RevealInFinder(result.CsvPath);
+                }
+                catch (Exception exception)
+                {
+                    _status = "Benchmark completed, but writing results failed: " + exception.Message;
+                    Debug.LogException(exception);
+                }
+            }
+            Repaint();
+        }
+
+        private static void WriteResults(BenchmarkRunResult result)
+        {
+            string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            string stem = Path.Combine(result.OutputDirectory, $"profile1-benchmark-{timestamp}");
+            result.JsonPath = stem + ".json";
+            result.CsvPath = stem + ".csv";
+            File.WriteAllText(result.JsonPath, JsonUtility.ToJson(result, true));
+            File.WriteAllText(result.CsvPath, BuildCsv(result));
+        }
+
+        private static string BuildCsv(BenchmarkRunResult run)
+        {
+            var csv = new StringBuilder();
+            csv.AppendLine("fixture,payload_bytes,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_limit,fuel_consumed_available,wasm_peak_memory_available");
+            foreach (FixtureBenchmarkResult item in run.Fixtures)
+            {
+                csv.Append(Csv(item.Fixture)).Append(',')
+                    .Append(item.PayloadBytes).Append(',')
+                    .Append(item.Concurrency).Append(',')
+                    .Append(item.SampleCount).Append(',')
+                    .Append(item.Width).Append(',')
+                    .Append(item.Height).Append(',')
+                    .Append(item.LogicalFrames).Append(',')
+                    .Append(item.SubmittedCanvasPixels).Append(',')
+                    .Append(item.PublicRegularLayerCount).Append(',')
+                    .Append(item.PublicRegularLayerPixels).Append(',')
+                    .Append(item.CroppedLayerCount).Append(',')
+                    .Append(item.ReferenceReadEdges).Append(',')
+                    .Append(item.SavedReferenceCount).Append(',')
+                    .Append(item.BlendOperationCount).Append(',')
+                    .Append(item.MaximumReferenceChainDepth).Append(',')
+                    .Append(item.PreviewPixels).Append(',')
+                    .Append(F(item.ModuleInitMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageAMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageAMedianMilliseconds)).Append(',')
+                    .Append(F(item.StageAP95Milliseconds)).Append(',')
+                    .Append(F(item.StageBMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageBMedianMilliseconds)).Append(',')
+                    .Append(F(item.StageBP95Milliseconds)).Append(',')
+                    .Append(F(item.DecodeMeanMilliseconds)).Append(',')
+                    .Append(F(item.DecodeMedianMilliseconds)).Append(',')
+                    .Append(F(item.DecodeP95Milliseconds)).Append(',')
+                    .Append(F(item.DecodeMaxMilliseconds)).Append(',')
+                    .Append(F(item.DecodeStdDevMilliseconds)).Append(',')
+                    .Append(F(item.DecodeMeanMillisecondsPerSubmittedMegapixel)).Append(',')
+                    .Append(F(item.DecodeMeanMillisecondsPerFrame)).Append(',')
+                    .Append(F(item.GroupWallMilliseconds)).Append(',')
+                    .Append(F(item.AggregateDecodedFramesPerSecond)).Append(',')
+                    .Append(item.WorkingSetBeforeBytes).Append(',')
+                    .Append(item.WorkingSetAfterBytes).Append(',')
+                    .Append(item.WorkingSetPeakBytes).Append(',')
+                    .Append(item.WorkingSetPeakDeltaBytes).Append(',')
+                    .Append(item.SuccessCount).Append(',')
+                    .Append(item.FailureCount).Append(',')
+                    .Append(run.Configuration.Fuel).Append(',')
+                    .Append(item.FuelConsumedAvailable ? "true" : "false").Append(',')
+                    .Append(item.WasmPeakMemoryAvailable ? "true" : "false")
+                    .AppendLine();
+            }
+            return csv.ToString();
+        }
+
+        private static string Csv(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
+        private static string F(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+
+        private static string ComputeSha256(byte[] bytes)
+        {
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty).ToLowerInvariant();
+        }
+
+        [Serializable]
+        private sealed class BenchmarkMetadata
+        {
+            public string TimestampUtc;
+            public string OperatingSystem;
+            public string Processor;
+            public int ProcessorCount;
+            public int SystemMemoryMiB;
+            public string UnityVersion;
+            public string LibJxlVersion;
+            public string LibJxlCommit;
+            public string EmscriptenVersion;
+            public string WasmtimeVersion;
+            public string NativeRuntimeSourceCommit;
+            public string DecoderSha256;
+        }
+
+        private sealed class BenchmarkConfiguration
+        {
+            public string FixtureDirectory;
+            public string OutputDirectory;
+            public int WarmupIterations;
+            public int MeasuredIterations;
+            public int[] Concurrency;
+            public long MaximumLinearMemoryBytes;
+            public ulong Fuel;
+            public float TimeoutSeconds;
+            public byte[] DecoderBytes;
+            public string[] Fixtures;
+            public BenchmarkMetadata Metadata;
+        }
+
+        [Serializable]
+        private sealed class SerializableConfiguration
+        {
+            public string FixtureDirectory;
+            public int WarmupIterations;
+            public int MeasuredIterations;
+            public int[] Concurrency;
+            public long MaximumLinearMemoryBytes;
+            public ulong Fuel;
+            public float TimeoutSeconds;
+
+            public SerializableConfiguration(BenchmarkConfiguration source)
+            {
+                FixtureDirectory = source.FixtureDirectory;
+                WarmupIterations = source.WarmupIterations;
+                MeasuredIterations = source.MeasuredIterations;
+                Concurrency = source.Concurrency;
+                MaximumLinearMemoryBytes = source.MaximumLinearMemoryBytes;
+                Fuel = source.Fuel;
+                TimeoutSeconds = source.TimeoutSeconds;
+            }
+        }
+
+        [Serializable]
+        private sealed class BenchmarkRunResult
+        {
+            public BenchmarkMetadata Metadata;
+            public SerializableConfiguration Configuration;
+            public List<FixtureBenchmarkResult> Fixtures;
+            [NonSerialized] public string OutputDirectory;
+            [NonSerialized] public string CsvPath;
+            [NonSerialized] public string JsonPath;
+        }
+
+        private sealed class WorkerResult
+        {
+            public double ModuleInitMilliseconds;
+            public readonly List<BenchmarkSample> Samples = new List<BenchmarkSample>();
+        }
+
+        [Serializable]
+        private sealed class FixtureBenchmarkResult
+        {
+            public string Fixture;
+            public long PayloadBytes;
+            public int Concurrency;
+            public int SampleCount;
+            public uint Width;
+            public uint Height;
+            public uint LogicalFrames;
+            public ulong SubmittedCanvasPixels;
+            public ulong PublicRegularLayerCount;
+            public ulong PublicRegularLayerPixels;
+            public ulong CroppedLayerCount;
+            public ulong ReferenceReadEdges;
+            public ulong SavedReferenceCount;
+            public ulong BlendOperationCount;
+            public ulong MaximumReferenceChainDepth;
+            public ulong PreviewPixels;
+            public List<double> ModuleInitMilliseconds = new List<double>();
+            public double ModuleInitMeanMilliseconds;
+            public double StageAMeanMilliseconds;
+            public double StageAMedianMilliseconds;
+            public double StageAP95Milliseconds;
+            public double StageBMeanMilliseconds;
+            public double StageBMedianMilliseconds;
+            public double StageBP95Milliseconds;
+            public double DecodeMeanMilliseconds;
+            public double DecodeMedianMilliseconds;
+            public double DecodeP95Milliseconds;
+            public double DecodeMaxMilliseconds;
+            public double DecodeStdDevMilliseconds;
+            public double DecodeMeanMillisecondsPerSubmittedMegapixel;
+            public double DecodeMeanMillisecondsPerFrame;
+            public double GroupWallMilliseconds;
+            public double AggregateDecodedFramesPerSecond;
+            public long WorkingSetBeforeBytes;
+            public long WorkingSetAfterBytes;
+            public long WorkingSetPeakBytes;
+            public long WorkingSetPeakDeltaBytes;
+            public int SuccessCount;
+            public int FailureCount;
+            public bool FuelConsumedAvailable;
+            public bool WasmPeakMemoryAvailable;
+            public List<BenchmarkSample> Samples;
+
+            public void FinalizeSummary()
+            {
+                SampleCount = Samples.Count;
+                BenchmarkSample firstSuccess = Samples.FirstOrDefault(sample => sample.DecodeStatus == BasisProfile1SandboxStatus.Success.ToString());
+                if (firstSuccess != null)
+                {
+                    Width = firstSuccess.Width;
+                    Height = firstSuccess.Height;
+                    LogicalFrames = firstSuccess.LogicalFrames;
+                    SubmittedCanvasPixels = firstSuccess.SubmittedCanvasPixels;
+                    PublicRegularLayerCount = firstSuccess.PublicRegularLayerCount;
+                    PublicRegularLayerPixels = firstSuccess.PublicRegularLayerPixels;
+                    CroppedLayerCount = firstSuccess.CroppedLayerCount;
+                    ReferenceReadEdges = firstSuccess.ReferenceReadEdges;
+                    SavedReferenceCount = firstSuccess.SavedReferenceCount;
+                    BlendOperationCount = firstSuccess.BlendOperationCount;
+                    MaximumReferenceChainDepth = firstSuccess.MaximumReferenceChainDepth;
+                    PreviewPixels = firstSuccess.PreviewPixels;
+                }
+
+                SuccessCount = Samples.Count(sample => sample.DecodeStatus == BasisProfile1SandboxStatus.Success.ToString());
+                FailureCount = SampleCount - SuccessCount;
+                ModuleInitMeanMilliseconds = Stats.Mean(ModuleInitMilliseconds);
+                StageAMeanMilliseconds = Stats.Mean(Samples.Select(sample => sample.StageAMilliseconds));
+                StageAMedianMilliseconds = Stats.Percentile(Samples.Select(sample => sample.StageAMilliseconds), 0.50);
+                StageAP95Milliseconds = Stats.Percentile(Samples.Select(sample => sample.StageAMilliseconds), 0.95);
+                StageBMeanMilliseconds = Stats.Mean(Samples.Where(sample => sample.StageBMilliseconds > 0).Select(sample => sample.StageBMilliseconds));
+                StageBMedianMilliseconds = Stats.Percentile(Samples.Where(sample => sample.StageBMilliseconds > 0).Select(sample => sample.StageBMilliseconds), 0.50);
+                StageBP95Milliseconds = Stats.Percentile(Samples.Where(sample => sample.StageBMilliseconds > 0).Select(sample => sample.StageBMilliseconds), 0.95);
+
+                double[] decode = Samples.Where(sample => sample.DecodeMilliseconds > 0).Select(sample => sample.DecodeMilliseconds).ToArray();
+                DecodeMeanMilliseconds = Stats.Mean(decode);
+                DecodeMedianMilliseconds = Stats.Percentile(decode, 0.50);
+                DecodeP95Milliseconds = Stats.Percentile(decode, 0.95);
+                DecodeMaxMilliseconds = decode.Length == 0 ? 0 : decode.Max();
+                DecodeStdDevMilliseconds = Stats.StandardDeviation(decode);
+                DecodeMeanMillisecondsPerSubmittedMegapixel = Stats.Mean(Samples.Where(sample => sample.DecodeMillisecondsPerSubmittedMegapixel > 0).Select(sample => sample.DecodeMillisecondsPerSubmittedMegapixel));
+                DecodeMeanMillisecondsPerFrame = Stats.Mean(Samples.Where(sample => sample.DecodeMillisecondsPerFrame > 0).Select(sample => sample.DecodeMillisecondsPerFrame));
+            }
+        }
+
+        [Serializable]
+        private sealed class BenchmarkSample
+        {
+            public double StageAMilliseconds;
+            public string StageAStatus;
+            public string StageAError;
+            public int JxlpBoxCount;
+            public long ConcatenatedCodestreamBytes;
+            public double StageBMilliseconds;
+            public string StageBStatus;
+            public double DecodeMilliseconds;
+            public string DecodeStatus;
+            public double DecodeMillisecondsPerSubmittedMegapixel;
+            public double DecodeMillisecondsPerFrame;
+            public int DecodedFrames;
+            public string DecodeChecksum;
+            public uint Width;
+            public uint Height;
+            public uint LogicalFrames;
+            public uint TotalPlayCount;
+            public ulong SubmittedCanvasPixels;
+            public ulong BaseTimelineMicroseconds;
+            public ulong PublicRegularLayerCount;
+            public ulong PublicRegularLayerPixels;
+            public ulong CroppedLayerCount;
+            public ulong ReferenceReadEdges;
+            public ulong SavedReferenceCount;
+            public ulong BlendOperationCount;
+            public ulong MaximumReferenceChainDepth;
+            public ulong PreviewPixels;
+        }
+
+        private sealed class WorkingSetSampler : IDisposable
+        {
+            private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+            private Task _task;
+            public long PeakBytes { get; private set; }
+
+            public void Start()
+            {
+                PeakBytes = Process.GetCurrentProcess().WorkingSet64;
+                _task = Task.Run(async () =>
+                {
+                    using Process process = Process.GetCurrentProcess();
+                    while (!_stop.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            process.Refresh();
+                            long current = process.WorkingSet64;
+                            if (current > PeakBytes)
+                                PeakBytes = current;
+                            await Task.Delay(10, _stop.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            public void Stop()
+            {
+                if (_task == null)
+                    return;
+                _stop.Cancel();
+                try { _task.Wait(); } catch (AggregateException) { }
+                _task = null;
+            }
+
+            public void Dispose()
+            {
+                Stop();
+                _stop.Dispose();
+            }
+        }
+
+        private static class Stats
+        {
+            public static double Mean(IEnumerable<double> values)
+            {
+                double[] array = values?.ToArray() ?? Array.Empty<double>();
+                return array.Length == 0 ? 0 : array.Average();
+            }
+
+            public static double Percentile(IEnumerable<double> values, double percentile)
+            {
+                double[] array = values?.OrderBy(value => value).ToArray() ?? Array.Empty<double>();
+                if (array.Length == 0)
+                    return 0;
+                if (array.Length == 1)
+                    return array[0];
+                double position = (array.Length - 1) * percentile;
+                int lower = (int)Math.Floor(position);
+                int upper = (int)Math.Ceiling(position);
+                if (lower == upper)
+                    return array[lower];
+                double fraction = position - lower;
+                return array[lower] + ((array[upper] - array[lower]) * fraction);
+            }
+
+            public static double StandardDeviation(IEnumerable<double> values)
+            {
+                double[] array = values?.ToArray() ?? Array.Empty<double>();
+                if (array.Length < 2)
+                    return 0;
+                double mean = array.Average();
+                double sum = 0;
+                foreach (double value in array)
+                {
+                    double delta = value - mean;
+                    sum += delta * delta;
+                }
+                return Math.Sqrt(sum / (array.Length - 1));
+            }
+        }
+    }
+}
