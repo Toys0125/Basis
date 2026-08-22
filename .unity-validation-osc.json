@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "projectPath": "Basis",
+  "profiles": {
+    "osc-local-playmode": {
+      "compile": true,
+      "playModeTests": true
+    }
+  }
+}
