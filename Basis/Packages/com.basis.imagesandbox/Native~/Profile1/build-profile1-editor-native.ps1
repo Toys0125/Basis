@@ -56,10 +56,12 @@ if ($LASTEXITCODE -ne 0) {
     Invoke-Checked { git -C $LibJxlDir submodule update --init --recursive --force } "Failed to initialize libjxl submodules."
 }
 
+$LibJxlCMakeArgument = "-DLIBJXL_SOURCE_DIR=$LibJxlDir"
+$MsvcRuntimeArgument = "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
 Invoke-Checked {
     & $CMake -S $EncoderDir -B $BuildDir -A x64 `
-        -DLIBJXL_SOURCE_DIR=$LibJxlDir `
-        -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+        $LibJxlCMakeArgument `
+        $MsvcRuntimeArgument
 } "Failed to configure the Profile 1 editor-native codec."
 Invoke-Checked { & $CMake --build $BuildDir --config Release --target basis_profile1_editor --parallel } "Failed to build the Profile 1 editor-native codec."
 
