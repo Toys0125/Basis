@@ -68,5 +68,15 @@ Invoke-Checked { & $CMake --build $BuildDir --config Release --target basis_prof
 $Built = Join-Path $BuildDir "Release/basis_profile1_editor.dll"
 if (-not (Test-Path $Built)) { throw "Native build succeeded but $Built was not produced." }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-Copy-Item -Force $Built (Join-Path $OutputDir "basis_profile1_editor.dll")
-Write-Host "Built editor-only Profile 1 native codec: $(Join-Path $OutputDir 'basis_profile1_editor.dll')"
+$Installed = Join-Path $OutputDir "basis_profile1_editor.dll"
+$Pending = Join-Path $OutputDir "basis_profile1_editor.dll.pending"
+try {
+    Copy-Item -Force $Built $Installed -ErrorAction Stop
+    if (Test-Path $Pending) { Remove-Item -Force $Pending }
+    Write-Host "Built editor-only Profile 1 native codec: $Installed"
+}
+catch [System.IO.IOException] {
+    Copy-Item -Force $Built $Pending
+    Write-Host "Built editor-only Profile 1 native codec, but Unity currently has the previous DLL loaded."
+    Write-Host "Staged replacement for next Unity launch: $Pending"
+}

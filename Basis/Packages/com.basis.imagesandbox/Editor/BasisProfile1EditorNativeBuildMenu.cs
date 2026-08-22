@@ -19,6 +19,33 @@ namespace Basis.ImageSandbox.Editor
         private static readonly StringBuilder Output = new StringBuilder();
         private static Process _process;
 
+        [InitializeOnLoadMethod]
+        private static void InstallPendingWindowsPlugin()
+        {
+            if (Application.platform != RuntimePlatform.WindowsEditor)
+                return;
+
+            string pending = GetPendingPluginPath();
+            string installed = GetPluginFilePath();
+            if (string.IsNullOrEmpty(pending) || string.IsNullOrEmpty(installed) || !File.Exists(pending))
+                return;
+
+            try
+            {
+                File.Copy(pending, installed, true);
+                File.Delete(pending);
+                Debug.Log("Installed the pending Profile 1 editor-native codec from the previous Unity session.");
+                EditorApplication.delayCall += () => AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            }
+            catch (IOException exception)
+            {
+                Debug.LogWarning(
+                    "Could not install the pending Profile 1 editor-native codec. It will be retried on the next Unity launch.\n"
+                        + exception.Message
+                );
+            }
+        }
+
         [MenuItem(MenuPath, false, 609)]
         private static void Build()
         {
@@ -108,6 +135,7 @@ namespace Basis.ImageSandbox.Editor
 
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             string assetPath = GetPluginAssetPath();
+            bool restartRequired = Application.platform == RuntimePlatform.WindowsEditor && File.Exists(GetPendingPluginPath());
             if (assetPath == null || !(AssetImporter.GetAtPath(assetPath) is PluginImporter importer))
             {
                 Debug.LogError("Profile 1 editor-native codec built, but Unity did not import the plugin.\n" + output);
@@ -125,12 +153,44 @@ namespace Basis.ImageSandbox.Editor
             SetEditorPlatform(importer);
             importer.SaveAndReimport();
 
+            if (restartRequired)
+            {
+                Debug.Log(
+                    "Profile 1 editor-native codec rebuilt successfully. The previous Windows DLL is loaded, so the replacement is staged for the next Unity launch.\n"
+                        + output
+                );
+                EditorUtility.DisplayDialog(
+                    "JPEG XL Profile 1",
+                    "The native codec rebuilt successfully, but Windows has the previous DLL loaded. The replacement is staged and will be installed automatically the next time Unity starts.\n\nRestart Unity before rerunning the GIF benchmark.",
+                    "OK"
+                );
+                return;
+            }
+
             Debug.Log("Profile 1 editor-native codec is ready and restricted to the Unity Editor.\n" + output);
             EditorUtility.DisplayDialog(
                 "JPEG XL Profile 1",
                 "The pinned native libjxl codec was built and imported for the Unity Editor only. Player builds continue to use the Profile 1 WASM/Wasmtime path.",
                 "OK"
             );
+        }
+
+        internal static string GetPendingPluginPath()
+        {
+            string assetPath = GetPluginAssetPath();
+            if (assetPath == null)
+                return null;
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.GetFullPath(Path.Combine(projectRoot, assetPath + ".pending"));
+        }
+
+        internal static string GetPluginFilePath()
+        {
+            string assetPath = GetPluginAssetPath();
+            if (assetPath == null)
+                return null;
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.GetFullPath(Path.Combine(projectRoot, assetPath));
         }
 
         private static string GetPluginAssetPath()
