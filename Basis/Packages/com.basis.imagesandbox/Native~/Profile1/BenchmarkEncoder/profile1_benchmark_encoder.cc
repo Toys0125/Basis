@@ -64,19 +64,62 @@ bool Canonicalize(const std::vector<uint8_t>& encoded, std::vector<uint8_t>* out
       std::memcmp(encoded.data() + kSignature.size(), kFtyp.data(), kFtyp.size()) != 0) {
     return false;
   }
+
   const size_t first = kSignature.size() + kFtyp.size();
-  const uint32_t size = ReadBe32(encoded.data() + first);
-  if (size < 8 || first + size != encoded.size() ||
-      std::memcmp(encoded.data() + first + 4, "jxlc", 4) != 0 ||
-      size > std::numeric_limits<uint32_t>::max() - 4U) {
+  const uint32_t first_size = ReadBe32(encoded.data() + first);
+  if (first_size >= 8 &&
+      first + first_size == encoded.size() &&
+      std::memcmp(encoded.data() + first + 4, "jxlc", 4) == 0 &&
+      first_size <= std::numeric_limits<uint32_t>::max() - 4U) {
+    output->clear();
+    output->insert(output->end(), encoded.begin(), encoded.begin() + first);
+    AppendBe32(output, first_size + 4U);
+    output->insert(output->end(), {'j','x','l','p'});
+    AppendBe32(output, 0x80000000U);
+    output->insert(output->end(), encoded.begin() + first + 8, encoded.end());
+    return true;
+  }
+
+  size_t offset = first;
+  uint32_t expected_sequence = 0;
+  bool saw_final = false;
+  std::vector<uint8_t> codestream;
+  while (offset < encoded.size()) {
+    if (encoded.size() - offset < 12) return false;
+    const uint32_t box_size = ReadBe32(encoded.data() + offset);
+    if (box_size < 12 || offset + box_size > encoded.size() ||
+        std::memcmp(encoded.data() + offset + 4, "jxlp", 4) != 0) {
+      return false;
+    }
+
+    const uint32_t counter = ReadBe32(encoded.data() + offset + 8);
+    if ((counter & 0x7fffffffU) != expected_sequence) return false;
+    const bool is_final = (counter & 0x80000000U) != 0;
+    codestream.insert(
+        codestream.end(),
+        encoded.begin() + offset + 12,
+        encoded.begin() + offset + box_size);
+    offset += box_size;
+    ++expected_sequence;
+
+    if (is_final) {
+      saw_final = true;
+      if (offset != encoded.size()) return false;
+      break;
+    }
+  }
+
+  if (!saw_final || expected_sequence == 0 ||
+      codestream.size() > std::numeric_limits<uint32_t>::max() - 12U) {
     return false;
   }
+
   output->clear();
   output->insert(output->end(), encoded.begin(), encoded.begin() + first);
-  AppendBe32(output, size + 4U);
+  AppendBe32(output, static_cast<uint32_t>(codestream.size()) + 12U);
   output->insert(output->end(), {'j','x','l','p'});
   AppendBe32(output, 0x80000000U);
-  output->insert(output->end(), encoded.begin() + first + 8, encoded.end());
+  output->insert(output->end(), codestream.begin(), codestream.end());
   return true;
 }
 
