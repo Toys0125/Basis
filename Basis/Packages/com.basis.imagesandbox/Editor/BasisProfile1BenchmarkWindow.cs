@@ -425,7 +425,7 @@ namespace Basis.ImageSandbox.Editor
                 );
                 if (configuration.FixturePreparationErrors.TryGetValue(fixturePath, out string gifPreparationError))
                 {
-                    long originalPayloadBytes = configuration.FixtureOriginalPayloadBytes.TryGetValue(fixturePath, out long originalBytes)
+                    long failedOriginalPayloadBytes = configuration.FixtureOriginalPayloadBytes.TryGetValue(fixturePath, out long originalBytes)
                         ? originalBytes
                         : new FileInfo(fixturePath).Length;
                     foreach (ulong fuel in configuration.FuelSweep)
@@ -435,7 +435,7 @@ namespace Basis.ImageSandbox.Editor
                             result.Fixtures.Add(CreatePreparationFailure(
                                 configuration,
                                 fixturePath,
-                                originalPayloadBytes,
+                                failedOriginalPayloadBytes,
                                 fuel,
                                 concurrency,
                                 gifPreparationError
