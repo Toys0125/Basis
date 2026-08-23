@@ -67,29 +67,50 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
     private IEnumerator RunCapture(string resultPath, float bootWaitSeconds)
     {
         AudioListener[] existingListeners = FindObjectsByType<AudioListener>();
+        AudioListener activeListener = null;
+        int activeListenerCount = 0;
+        for (int i = 0; i < existingListeners.Length; i++)
+        {
+            AudioListener candidate = existingListeners[i];
+            if (candidate != null && candidate.enabled && candidate.gameObject.activeInHierarchy)
+            {
+                activeListener = candidate;
+                activeListenerCount++;
+            }
+        }
+
+        if (activeListenerCount != 1)
+        {
+            Fail(resultPath, $"Expected exactly one active Basis AudioListener after boot, found {activeListenerCount}.");
+            yield break;
+        }
+
         AudioSource[] existingSources = FindObjectsByType<AudioSource>();
-        bool[] listenerEnabled = CaptureEnabled(existingListeners);
         bool[] sourceEnabled = CaptureEnabled(existingSources);
         bool previousListenerPause = AudioListener.pause;
         float previousListenerVolume = AudioListener.volume;
 
-        var listenerObject = new GameObject("Voice A/B Listener");
         var sourceObject = new GameObject("Voice A/B Source");
+        sourceObject.transform.SetParent(activeListener.transform, false);
         AudioClip clip = null;
+        VoiceRolloffABListenerTap tap = null;
+        bool addedTap = false;
 
         try
         {
             status = "Preparing isolated listener capture...";
             Debug.Log($"[Voice Rolloff A/B] {status}");
 
-            SetEnabled(existingListeners, false);
             SetEnabled(existingSources, false);
             AudioListener.pause = false;
             AudioListener.volume = 1f;
 
-            listenerObject.transform.position = Vector3.zero;
-            listenerObject.AddComponent<AudioListener>();
-            VoiceRolloffABListenerTap tap = listenerObject.AddComponent<VoiceRolloffABListenerTap>();
+            tap = activeListener.GetComponent<VoiceRolloffABListenerTap>();
+            if (tap == null)
+            {
+                tap = activeListener.gameObject.AddComponent<VoiceRolloffABListenerTap>();
+                addedTap = true;
+            }
 
             AudioSource source = sourceObject.AddComponent<AudioSource>();
             source.playOnAwake = false;
@@ -147,6 +168,7 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             report.AppendLine($"Basis boot wait: {bootWaitSeconds:F2}s");
             report.AppendLine($"Post-boot settle: {postBootSettleSeconds:F2}s");
             report.AppendLine($"Output sample rate: {AudioSettings.outputSampleRate} Hz");
+            report.AppendLine($"Basis listener: {activeListener.name}");
             report.AppendLine($"Listener channels: {listenerChannels}");
             report.AppendLine($"2D validation frames: {twoDimensionalFrames}");
             report.AppendLine($"2D validation RMS: {twoDimensionalRms:F6}");
@@ -209,12 +231,11 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         {
             if (clip != null) Destroy(clip);
             Destroy(sourceObject);
-            Destroy(listenerObject);
+            if (addedTap && tap != null) Destroy(tap);
 
             AudioListener.pause = previousListenerPause;
             AudioListener.volume = previousListenerVolume;
             RestoreEnabled(existingSources, sourceEnabled);
-            RestoreEnabled(existingListeners, listenerEnabled);
         }
     }
 
@@ -228,7 +249,7 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         Action<string> error)
     {
         source.Stop();
-        source.transform.position = new Vector3(distance, 0f, 0f);
+        source.transform.localPosition = new Vector3(distance, 0f, 0f);
         source.timeSamples = 0;
         if (rolloff != null)
         {
