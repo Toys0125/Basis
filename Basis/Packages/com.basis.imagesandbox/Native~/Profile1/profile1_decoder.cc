@@ -43,7 +43,8 @@ enum ResultSlot : uint32_t {
     kSlotPreviewPixels = 15,
     kSlotDurationCount = 16,
     kSlotDurations = 17,
-    kResultSlotCount = kSlotDurations + kMaximumLogicalFrames,
+    kSlotDiagnosticReason = kSlotDurations + kMaximumLogicalFrames,
+    kResultSlotCount = kSlotDiagnosticReason + 1,
 };
 
 enum Status : uint32_t {
@@ -51,6 +52,32 @@ enum Status : uint32_t {
     kMalformed = 1,
     kUnsupportedProfile = 2,
     kSharedLimitExceeded = 3,
+};
+
+enum DiagnosticReason : uint32_t {
+    kReasonNone = 0,
+    kReasonDimensions = 1,
+    kReasonCanvasPixels = 2,
+    kReasonBitsPerSample = 3,
+    kReasonColorChannels = 4,
+    kReasonExtraChannels = 5,
+    kReasonAlpha = 6,
+    kReasonPremultipliedAlpha = 7,
+    kReasonOrientation = 8,
+    kReasonExtraChannel = 9,
+    kReasonMissingAnimation = 10,
+    kReasonTimebase = 11,
+    kReasonColorEncoding = 12,
+    kReasonLogicalFrames = 13,
+    kReasonFrameDuration = 14,
+    kReasonTimeline = 15,
+    kReasonSubmittedPixels = 16,
+    kReasonStructuralLayerPixels = 17,
+    kReasonStructuralLayerCount = 18,
+    kReasonReferenceSource = 19,
+    kReasonPreviewPixels = 20,
+    kReasonLogicalMismatch = 21,
+    kReasonDecoder = 22,
 };
 
 struct StructuralMetrics {
@@ -91,20 +118,44 @@ bool CheckedAdd(uint64_t left, uint64_t right, uint64_t* result) {
     return true;
 }
 
-Status ValidateBasicInfo(const JxlDecoder* decoder, const JxlBasicInfo& info, LogicalInfo* logical) {
+Status ValidateBasicInfo(
+    const JxlDecoder* decoder,
+    const JxlBasicInfo& info,
+    LogicalInfo* logical,
+    DiagnosticReason* reason) {
     if (info.xsize == 0 || info.ysize == 0 || info.xsize > kMaximumWidth || info.ysize > kMaximumHeight) {
+        *reason = kReasonDimensions;
         return kSharedLimitExceeded;
     }
 
     uint64_t canvas_pixels = 0;
     if (!CheckedMultiply(info.xsize, info.ysize, &canvas_pixels) || canvas_pixels > kMaximumCanvasPixels) {
+        *reason = kReasonCanvasPixels;
         return kSharedLimitExceeded;
     }
 
-    if (info.bits_per_sample != 8 || info.exponent_bits_per_sample != 0 ||
-        info.num_color_channels != 3 || info.num_extra_channels != 1 ||
-        info.alpha_bits != 8 || info.alpha_exponent_bits != 0 ||
-        info.alpha_premultiplied != JXL_FALSE || info.orientation != JXL_ORIENT_IDENTITY) {
+    if (info.bits_per_sample != 8 || info.exponent_bits_per_sample != 0) {
+        *reason = kReasonBitsPerSample;
+        return kUnsupportedProfile;
+    }
+    if (info.num_color_channels != 3) {
+        *reason = kReasonColorChannels;
+        return kUnsupportedProfile;
+    }
+    if (info.num_extra_channels != 1) {
+        *reason = kReasonExtraChannels;
+        return kUnsupportedProfile;
+    }
+    if (info.alpha_bits != 8 || info.alpha_exponent_bits != 0) {
+        *reason = kReasonAlpha;
+        return kUnsupportedProfile;
+    }
+    if (info.alpha_premultiplied != JXL_FALSE) {
+        *reason = kReasonPremultipliedAlpha;
+        return kUnsupportedProfile;
+    }
+    if (info.orientation != JXL_ORIENT_IDENTITY) {
+        *reason = kReasonOrientation;
         return kUnsupportedProfile;
     }
 
@@ -113,14 +164,19 @@ Status ValidateBasicInfo(const JxlDecoder* decoder, const JxlBasicInfo& info, Lo
         alpha.type != JXL_CHANNEL_ALPHA || alpha.bits_per_sample != 8 ||
         alpha.exponent_bits_per_sample != 0 || alpha.dim_shift != 0 ||
         alpha.alpha_premultiplied != JXL_FALSE) {
+        *reason = kReasonExtraChannel;
         return kUnsupportedProfile;
     }
 
     // A Profile 1 payload always carries animation timing, including the
     // canonical one-logical-frame case.
-    if (info.have_animation != JXL_TRUE ||
-        info.animation.tps_numerator != kTimebaseNumerator ||
+    if (info.have_animation != JXL_TRUE) {
+        *reason = kReasonMissingAnimation;
+        return kUnsupportedProfile;
+    }
+    if (info.animation.tps_numerator != kTimebaseNumerator ||
         info.animation.tps_denominator != kTimebaseDenominator) {
+        *reason = kReasonTimebase;
         return kUnsupportedProfile;
     }
 
@@ -129,18 +185,20 @@ Status ValidateBasicInfo(const JxlDecoder* decoder, const JxlBasicInfo& info, Lo
     logical->total_play_count = info.animation.num_loops;
     if (info.have_preview == JXL_TRUE) {
         if (!CheckedMultiply(info.preview.xsize, info.preview.ysize, &logical->preview_pixels)) {
+            *reason = kReasonPreviewPixels;
             return kSharedLimitExceeded;
         }
     }
     return kSuccess;
 }
 
-Status ValidateColorEncoding(const JxlDecoder* decoder) {
+Status ValidateColorEncoding(const JxlDecoder* decoder, DiagnosticReason* reason) {
     JxlColorEncoding color{};
     if (JxlDecoderGetColorAsEncodedProfile(
             decoder,
             JXL_COLOR_PROFILE_TARGET_ORIGINAL,
             &color) != JXL_DEC_SUCCESS) {
+        *reason = kReasonColorEncoding;
         return kUnsupportedProfile;
     }
 
@@ -148,6 +206,7 @@ Status ValidateColorEncoding(const JxlDecoder* decoder) {
         color.white_point != JXL_WHITE_POINT_D65 ||
         color.primaries != JXL_PRIMARIES_SRGB ||
         color.transfer_function != JXL_TRANSFER_FUNCTION_SRGB) {
+        *reason = kReasonColorEncoding;
         return kUnsupportedProfile;
     }
     return kSuccess;
@@ -157,14 +216,19 @@ bool BlendReadsReference(JxlBlendMode mode) {
     return mode != JXL_BLEND_REPLACE;
 }
 
-Status AccumulateStructure(const JxlFrameHeader& header, StructuralMetrics* metrics) {
+Status AccumulateStructure(
+    const JxlFrameHeader& header,
+    StructuralMetrics* metrics,
+    DiagnosticReason* reason) {
     const JxlLayerInfo& layer = header.layer_info;
     uint64_t pixels = 0;
     if (!CheckedMultiply(layer.xsize, layer.ysize, &pixels) ||
         !CheckedAdd(metrics->layer_pixels, pixels, &metrics->layer_pixels)) {
+        *reason = kReasonStructuralLayerPixels;
         return kSharedLimitExceeded;
     }
     if (metrics->layer_count == std::numeric_limits<uint64_t>::max()) {
+        *reason = kReasonStructuralLayerCount;
         return kSharedLimitExceeded;
     }
     ++metrics->layer_count;
@@ -176,6 +240,7 @@ Status AccumulateStructure(const JxlFrameHeader& header, StructuralMetrics* metr
     uint64_t chain_depth = 1;
     if (BlendReadsReference(layer.blend_info.blendmode)) {
         if (layer.blend_info.source >= 4) {
+            *reason = kReasonReferenceSource;
             return kMalformed;
         }
         ++metrics->reference_read_edges;
@@ -199,9 +264,14 @@ Status AccumulateStructure(const JxlFrameHeader& header, StructuralMetrics* metr
 
 void DiscardPixels(void*, size_t, size_t, size_t, const void*) {}
 
-Status RunStructurePass(const uint8_t* data, size_t size, StructuralMetrics* metrics) {
+Status RunStructurePass(
+    const uint8_t* data,
+    size_t size,
+    StructuralMetrics* metrics,
+    DiagnosticReason* reason) {
     JxlDecoder* decoder = JxlDecoderCreate(nullptr);
     if (decoder == nullptr) {
+        *reason = kReasonDecoder;
         return kMalformed;
     }
 
@@ -225,7 +295,7 @@ Status RunStructurePass(const uint8_t* data, size_t size, StructuralMetrics* met
                     result = kMalformed;
                     break;
                 }
-                result = AccumulateStructure(header, metrics);
+                result = AccumulateStructure(header, metrics, reason);
                 if (result != kSuccess) {
                     break;
                 }
@@ -260,9 +330,15 @@ Status RunStructurePass(const uint8_t* data, size_t size, StructuralMetrics* met
     return result;
 }
 
-Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bool skip_pixels) {
+Status RunLogicalPass(
+    const uint8_t* data,
+    size_t size,
+    LogicalInfo* logical,
+    bool skip_pixels,
+    DiagnosticReason* reason) {
     JxlDecoder* decoder = JxlDecoderCreate(nullptr);
     if (decoder == nullptr) {
+        *reason = kReasonDecoder;
         return kMalformed;
     }
 
@@ -289,7 +365,7 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bo
                     result = kMalformed;
                     break;
                 }
-                result = ValidateBasicInfo(decoder, info, logical);
+                result = ValidateBasicInfo(decoder, info, logical, reason);
                 if (result != kSuccess) {
                     break;
                 }
@@ -297,7 +373,7 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bo
                 continue;
             }
             if (status == JXL_DEC_COLOR_ENCODING) {
-                result = ValidateColorEncoding(decoder);
+                result = ValidateColorEncoding(decoder, reason);
                 if (result != kSuccess) {
                     break;
                 }
@@ -306,6 +382,7 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bo
             }
             if (status == JXL_DEC_FRAME) {
                 if (logical->frame_count >= kMaximumLogicalFrames) {
+                    *reason = kReasonLogicalFrames;
                     result = kSharedLimitExceeded;
                     break;
                 }
@@ -315,6 +392,7 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bo
                     break;
                 }
                 if (header.duration < kMinimumFrameDurationMicroseconds) {
+                    *reason = kReasonFrameDuration;
                     result = kSharedLimitExceeded;
                     break;
                 }
@@ -322,6 +400,7 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bo
                 uint64_t timeline = 0;
                 if (!CheckedAdd(logical->timeline_microseconds, header.duration, &timeline) ||
                     timeline > kMaximumBaseTimelineMicroseconds) {
+                    *reason = kReasonTimeline;
                     result = kSharedLimitExceeded;
                     break;
                 }
@@ -334,6 +413,7 @@ Status RunLogicalPass(const uint8_t* data, size_t size, LogicalInfo* logical, bo
                         logical->frame_count,
                         &submitted) ||
                     submitted > kMaximumSubmittedCanvasPixels) {
+                    *reason = kReasonSubmittedPixels;
                     result = kSharedLimitExceeded;
                     break;
                 }
@@ -403,11 +483,13 @@ void ClearResult(uint64_t* output) {
 
 void StoreResult(
     Status status,
+    DiagnosticReason reason,
     const LogicalInfo& logical,
     const StructuralMetrics& metrics,
     uint64_t* output) {
     ClearResult(output);
     output[kSlotStatus] = status;
+    output[kSlotDiagnosticReason] = reason;
     if (status != kSuccess) {
         return;
     }
@@ -430,6 +512,90 @@ void StoreResult(
     for (uint32_t i = 0; i < logical.frame_count; ++i) {
         output[kSlotDurations + i] = logical.durations[i];
     }
+}
+
+bool LoadLogicalResult(const uint64_t* output, LogicalInfo* logical) {
+    if (output == nullptr || logical == nullptr || output[kSlotAbiVersion] != kAbiVersion ||
+        output[kSlotStatus] != kSuccess || output[kSlotDurationCount] > kMaximumLogicalFrames) {
+        return false;
+    }
+    logical->width = static_cast<uint32_t>(output[kSlotWidth]);
+    logical->height = static_cast<uint32_t>(output[kSlotHeight]);
+    logical->frame_count = static_cast<uint32_t>(output[kSlotLogicalFrameCount]);
+    logical->total_play_count = static_cast<uint32_t>(output[kSlotTotalPlayCount]);
+    logical->submitted_pixels = output[kSlotSubmittedCanvasPixels];
+    logical->timeline_microseconds = output[kSlotBaseTimelineMicroseconds];
+    logical->preview_pixels = output[kSlotPreviewPixels];
+    if (logical->frame_count != output[kSlotDurationCount]) {
+        return false;
+    }
+    for (uint32_t i = 0; i < logical->frame_count; ++i) {
+        logical->durations[i] = output[kSlotDurations + i];
+    }
+    return true;
+}
+
+Status RunLogicalHeaderPreflight(const uint8_t* data, size_t size, uint64_t* output) {
+    ClearResult(output);
+    if (data == nullptr || output == nullptr || size == 0) {
+        if (output != nullptr) {
+            output[kSlotStatus] = kMalformed;
+            output[kSlotDiagnosticReason] = kReasonDecoder;
+        }
+        return kMalformed;
+    }
+
+    DiagnosticReason reason = kReasonNone;
+    LogicalInfo logical{};
+    StructuralMetrics metrics{};
+    Status status = RunLogicalPass(data, size, &logical, true, &reason);
+    StoreResult(status, reason, logical, metrics, output);
+    return status;
+}
+
+Status RunStructuralHeaderPreflight(const uint8_t* data, size_t size, uint64_t* output) {
+    if (data == nullptr || output == nullptr || size == 0) {
+        return kMalformed;
+    }
+    LogicalInfo logical{};
+    if (!LoadLogicalResult(output, &logical)) {
+        return static_cast<Status>(output[kSlotStatus]);
+    }
+
+    DiagnosticReason reason = kReasonNone;
+    StructuralMetrics metrics{};
+    Status status = RunStructurePass(data, size, &metrics, &reason);
+    StoreResult(status, reason, logical, metrics, output);
+    return status;
+}
+
+Status RunHeaderPreflight(const uint8_t* data, size_t size, uint64_t* output) {
+    Status status = RunLogicalHeaderPreflight(data, size, output);
+    if (status != kSuccess) {
+        return status;
+    }
+    return RunStructuralHeaderPreflight(data, size, output);
+}
+
+Status RunValidationPreflight(const uint8_t* data, size_t size, uint64_t* output) {
+    if (data == nullptr || output == nullptr || size == 0) {
+        return kMalformed;
+    }
+    LogicalInfo expected{};
+    if (!LoadLogicalResult(output, &expected)) {
+        return static_cast<Status>(output[kSlotStatus]);
+    }
+
+    DiagnosticReason reason = kReasonNone;
+    LogicalInfo decoded_logical{};
+    Status status = RunLogicalPass(data, size, &decoded_logical, false, &reason);
+    if (status == kSuccess && !LogicalInfoMatches(expected, decoded_logical)) {
+        reason = kReasonLogicalMismatch;
+        status = kMalformed;
+    }
+    output[kSlotStatus] = status;
+    output[kSlotDiagnosticReason] = reason;
+    return status;
 }
 
 struct DecodeSession {
@@ -472,39 +638,28 @@ void p1_free(void* pointer) {
     std::free(pointer);
 }
 
+uint32_t p1_preflight_logical_headers(const uint8_t* data, uint32_t size, uint64_t* output) {
+    return RunLogicalHeaderPreflight(data, size, output);
+}
+
+uint32_t p1_preflight_structural_headers(const uint8_t* data, uint32_t size, uint64_t* output) {
+    return RunStructuralHeaderPreflight(data, size, output);
+}
+
+uint32_t p1_preflight_headers(const uint8_t* data, uint32_t size, uint64_t* output) {
+    return RunHeaderPreflight(data, size, output);
+}
+
+uint32_t p1_preflight_validate(const uint8_t* data, uint32_t size, uint64_t* output) {
+    return RunValidationPreflight(data, size, output);
+}
+
 uint32_t p1_preflight(const uint8_t* data, uint32_t size, uint64_t* output) {
-    ClearResult(output);
-    if (data == nullptr || output == nullptr || size == 0) {
-        if (output != nullptr) {
-            output[kSlotStatus] = kMalformed;
-        }
-        return kMalformed;
+    Status status = RunHeaderPreflight(data, size, output);
+    if (status != kSuccess) {
+        return status;
     }
-
-    // Reject anything discoverable from public decoder metadata before paying for
-    // a full pixel decode. Coalescing stays enabled here so frame count, durations
-    // and submitted-pixel accounting use logical/displayed frames.
-    LogicalInfo header_logical{};
-    StructuralMetrics metrics{};
-    Status status = RunLogicalPass(data, size, &header_logical, true);
-    if (status == kSuccess) {
-        // Structural counters require non-coalesced regular-layer headers, but not
-        // their pixels. This pass can reject malformed structure cheaply too.
-        status = RunStructurePass(data, size, &metrics);
-    }
-
-    if (status == kSuccess) {
-        // Keep one complete coalesced decode before admission so malformed pixel
-        // data cannot pass a header-only preflight. It must agree with the header scan.
-        LogicalInfo decoded_logical{};
-        status = RunLogicalPass(data, size, &decoded_logical, false);
-        if (status == kSuccess && !LogicalInfoMatches(header_logical, decoded_logical)) {
-            status = kMalformed;
-        }
-    }
-
-    StoreResult(status, header_logical, metrics, output);
-    return status;
+    return RunValidationPreflight(data, size, output);
 }
 
 uint32_t p1_decode_open(const uint8_t* data, uint32_t size, uint32_t width, uint32_t height) {

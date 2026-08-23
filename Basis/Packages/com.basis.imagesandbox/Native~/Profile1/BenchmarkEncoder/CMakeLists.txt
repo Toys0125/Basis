@@ -16,9 +16,12 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 add_subdirectory("${LIBJXL_SOURCE_DIR}" libjxl EXCLUDE_FROM_ALL)
 
-add_library(basis_profile1_editor SHARED profile1_benchmark_encoder.cc)
+add_library(basis_profile1_editor SHARED
+  profile1_benchmark_encoder.cc
+  profile1_benchmark_tools.cc
+)
 target_compile_features(basis_profile1_editor PRIVATE cxx_std_17)
-target_link_libraries(basis_profile1_editor PRIVATE jxl)
+target_link_libraries(basis_profile1_editor PRIVATE jxl-internal)
 set_target_properties(basis_profile1_editor PROPERTIES
   OUTPUT_NAME "basis_profile1_editor"
   CXX_VISIBILITY_PRESET hidden

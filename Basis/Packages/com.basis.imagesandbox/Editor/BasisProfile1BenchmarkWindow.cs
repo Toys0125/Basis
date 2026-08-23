@@ -21,13 +21,31 @@ namespace Basis.ImageSandbox.Editor
         private const string MenuPath = "Basis/Debug/JPEG XL Profile 1/Benchmark";
         private const int MenuPriority = 609;
 
+        private enum BenchmarkPreset
+        {
+            Quick,
+            Analysis,
+            Limits,
+        }
+
+        private enum JxlHandling
+        {
+            LocalImportAndRawConformance,
+            LocalImportOnly,
+            RawConformanceOnly,
+        }
+
+        private BenchmarkPreset _preset = BenchmarkPreset.Analysis;
+        private JxlHandling _jxlHandling = JxlHandling.LocalImportAndRawConformance;
+        private bool _includeSyntheticFixtures = true;
+        private string _ffmpegPath = "ffmpeg";
         private string _fixtureDirectory = string.Empty;
         private string _outputDirectory = string.Empty;
         private int _warmupIterations = 1;
         private int _measuredIterations = 20;
         private string _concurrencySweep = "1,2,4";
         private int _maximumLinearMemoryMiB = 256;
-        private string _fuelSweep = "1000000000,4000000000,16000000000";
+        private string _fuelSweep = "96000000000";
         private float _timeoutSeconds = 30f;
         private bool _includeSubdirectories = true;
         private Vector2 _scroll;
@@ -41,6 +59,35 @@ namespace Basis.ImageSandbox.Editor
         private volatile int _benchmarkTotal;
         private volatile string _benchmarkProgress = string.Empty;
         private string _status = "Idle";
+
+        private static readonly SyntheticFixtureDefinition[] SyntheticFixtureDefinitions =
+        {
+            new SyntheticFixtureDefinition(0, "struct-crop.jxl", "synthetic/struct-crop.jxl"),
+            new SyntheticFixtureDefinition(1, "struct-blend-previous.jxl", "synthetic/struct-blend-previous.jxl"),
+            new SyntheticFixtureDefinition(2, "struct-saved-reference.jxl", "synthetic/struct-saved-reference.jxl"),
+            new SyntheticFixtureDefinition(3, "struct-reference-chain.jxl", "synthetic/struct-reference-chain.jxl"),
+            new SyntheticFixtureDefinition(4, "struct-zero-duration-layers.jxl", "synthetic/struct-zero-duration-layers.jxl"),
+            new SyntheticFixtureDefinition(5, "struct-crop-blend-reference.jxl", "synthetic/struct-crop-blend-reference.jxl"),
+            new SyntheticFixtureDefinition(6, "struct-stress-128-layers.jxl", "synthetic/struct-stress-128-layers.jxl"),
+            new SyntheticFixtureDefinition(7, "boundary-width-2047.jxl", "synthetic/boundary-width-2047.jxl"),
+            new SyntheticFixtureDefinition(8, "boundary-width-2048.jxl", "synthetic/boundary-width-2048.jxl"),
+            new SyntheticFixtureDefinition(9, "boundary-width-2049.jxl", "synthetic/boundary-width-2049.jxl"),
+            new SyntheticFixtureDefinition(10, "boundary-frames-511.jxl", "synthetic/boundary-frames-511.jxl"),
+            new SyntheticFixtureDefinition(11, "boundary-frames-512.jxl", "synthetic/boundary-frames-512.jxl"),
+            new SyntheticFixtureDefinition(12, "boundary-frames-513.jxl", "synthetic/boundary-frames-513.jxl"),
+            new SyntheticFixtureDefinition(13, "boundary-submitted-below.jxl", "synthetic/boundary-submitted-below.jxl"),
+            new SyntheticFixtureDefinition(14, "boundary-submitted-exact.jxl", "synthetic/boundary-submitted-exact.jxl"),
+            new SyntheticFixtureDefinition(15, "boundary-submitted-above.jxl", "synthetic/boundary-submitted-above.jxl"),
+            new SyntheticFixtureDefinition(16, "boundary-timeline-below.jxl", "synthetic/boundary-timeline-below.jxl"),
+            new SyntheticFixtureDefinition(17, "boundary-timeline-exact.jxl", "synthetic/boundary-timeline-exact.jxl"),
+            new SyntheticFixtureDefinition(18, "boundary-timeline-above.jxl", "synthetic/boundary-timeline-above.jxl"),
+            new SyntheticFixtureDefinition(19, "boundary-duration-below.jxl", "synthetic/boundary-duration-below.jxl"),
+            new SyntheticFixtureDefinition(20, "boundary-duration-exact.jxl", "synthetic/boundary-duration-exact.jxl"),
+            new SyntheticFixtureDefinition(21, "boundary-duration-above.jxl", "synthetic/boundary-duration-above.jxl"),
+            new SyntheticFixtureDefinition(22, "struct-preview.jxl", "synthetic/struct-preview.jxl"),
+            new SyntheticFixtureDefinition(23, "boundary-canvas-below.jxl", "synthetic/boundary-canvas-2048x2047.jxl"),
+            new SyntheticFixtureDefinition(24, "boundary-canvas-exact.jxl", "synthetic/boundary-canvas-2048x2048.jxl"),
+        };
 
         [MenuItem(MenuPath, false, MenuPriority)]
         private static void OpenWindow()
@@ -68,17 +115,26 @@ namespace Basis.ImageSandbox.Editor
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             EditorGUILayout.LabelField("JPEG XL Profile 1 Benchmark", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Accepts ordinary .jxl files and prepares them into the canonical Profile 1 container before timing. "
-                    + "Raw codestreams and standard jxlc/jxlp containers are rewrapped without decoding or re-encoding. "
-                    + "Results include Stage A, Stage B, full-decode timing, structural counters, module initialization, "
-                    + "working-set peak/delta, concurrency scaling, and actual Wasmtime fuel consumption. "
-                    + "A configurable fuel sweep distinguishes out-of-fuel from real wall-clock timeouts. Exact WASM "
-                    + "linear-memory high-water marks are still reported as unavailable.",
+                "One benchmark covers production-like local import (GIF, APNG, animated WebP, and JPEG XL), optional raw-JXL "
+                    + "conformance, generated Profile 1 structural/boundary fixtures, Stage A/B/decode timing, detailed rejection "
+                    + "reasons, header-vs-validation fuel, WASM linear-memory growth, conversion cost, compression effectiveness, "
+                    + "and concurrency scaling. Local non-Profile-1 sources are decoded and re-encoded before their runtime path "
+                    + "is measured; raw JXL can also be kept unchanged to exercise rejection behavior.",
                 MessageType.Info
             );
 
             using (new EditorGUI.DisabledScope(_runTask != null || _preparing))
             {
+                BenchmarkPreset newPreset = (BenchmarkPreset)EditorGUILayout.EnumPopup("Preset", _preset);
+                if (newPreset != _preset)
+                {
+                    _preset = newPreset;
+                    ApplyPreset(_preset);
+                }
+                _jxlHandling = (JxlHandling)EditorGUILayout.EnumPopup("JPEG XL handling", _jxlHandling);
+                _includeSyntheticFixtures = EditorGUILayout.Toggle("Include generated structural/limit fixtures", _includeSyntheticFixtures);
+                _ffmpegPath = EditorGUILayout.TextField("FFmpeg executable", _ffmpegPath);
+
                 DrawDirectoryField("Fixture directory", ref _fixtureDirectory, "Choose Profile 1 fixture directory");
                 _includeSubdirectories = EditorGUILayout.Toggle("Include subdirectories", _includeSubdirectories);
                 DrawDirectoryField("Output directory", ref _outputDirectory, "Choose benchmark output directory");
@@ -93,7 +149,7 @@ namespace Basis.ImageSandbox.Editor
 
                 EditorGUILayout.Space();
                 if (GUILayout.Button("Run Benchmark", GUILayout.Height(32)))
-                    StartBenchmark();
+                    StartBenchmarkComprehensive();
             }
 
             if ((_runTask != null || _preparing) && GUILayout.Button("Cancel", GUILayout.Height(26)))
@@ -127,9 +183,10 @@ namespace Basis.ImageSandbox.Editor
             }
             EditorGUILayout.Space();
             EditorGUILayout.HelpBox(
-                "Use representative real and synthetic JPEG XL files. Fixture preparation is excluded from timing and the "
-                    + "original format/size plus prepared Profile 1 size are recorded in CSV/JSON. Files whose codestream cannot "
-                    + "be extracted are reported as preparation failures rather than benchmarked.",
+                "Preparation failures are recorded per fixture and do not stop the run. APNG/WebP local-import conversion uses "
+                    + "the configured trusted-local FFmpeg executable; GIF uses BasisBurstGifDecoder and JXL uses the editor-native "
+                    + "libjxl codec. The Limits preset intentionally enables a fuel sweep; Quick and Analysis use a single 96B "
+                    + "ceiling so valid files normally run to completion while still reporting actual fuel consumed.",
                 MessageType.None
             );
             EditorGUILayout.EndScrollView();
@@ -148,7 +205,32 @@ namespace Basis.ImageSandbox.Editor
             EditorGUILayout.EndHorizontal();
         }
 
-        private async void StartBenchmark()
+        private void ApplyPreset(BenchmarkPreset preset)
+        {
+            switch (preset)
+            {
+                case BenchmarkPreset.Quick:
+                    _warmupIterations = 1;
+                    _measuredIterations = 3;
+                    _concurrencySweep = "1";
+                    _fuelSweep = "96000000000";
+                    break;
+                case BenchmarkPreset.Analysis:
+                    _warmupIterations = 1;
+                    _measuredIterations = 20;
+                    _concurrencySweep = "1,2,4";
+                    _fuelSweep = "96000000000";
+                    break;
+                case BenchmarkPreset.Limits:
+                    _warmupIterations = 1;
+                    _measuredIterations = 3;
+                    _concurrencySweep = "1";
+                    _fuelSweep = "8000000000,16000000000,32000000000,40000000000,96000000000";
+                    break;
+            }
+        }
+
+        private async void StartBenchmarkComprehensive()
         {
             if (!TryValidateSettings(out int[] concurrency, out ulong[] fuelSweep, out string error))
             {
@@ -172,94 +254,246 @@ namespace Basis.ImageSandbox.Editor
                 : SearchOption.TopDirectoryOnly;
             string[] jxlFixtures = Directory.GetFiles(_fixtureDirectory, "*.jxl", searchOption);
             string[] gifFixtures = Directory.GetFiles(_fixtureDirectory, "*.gif", searchOption);
+            string[] apngFixtures = Directory.GetFiles(_fixtureDirectory, "*.apng", searchOption);
+            string[] webpFixtures = Directory.GetFiles(_fixtureDirectory, "*.webp", searchOption);
+            string[] animatedPngFixtures = Directory.GetFiles(_fixtureDirectory, "*.png", searchOption)
+                .Where(BasisProfile1ExternalAnimationPreparation.IsApngFile)
+                .ToArray();
+            apngFixtures = apngFixtures.Concat(animatedPngFixtures)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             Array.Sort(jxlFixtures, StringComparer.OrdinalIgnoreCase);
             Array.Sort(gifFixtures, StringComparer.OrdinalIgnoreCase);
-            if (jxlFixtures.Length == 0 && gifFixtures.Length == 0)
+            Array.Sort(apngFixtures, StringComparer.OrdinalIgnoreCase);
+            Array.Sort(webpFixtures, StringComparer.OrdinalIgnoreCase);
+
+            if (jxlFixtures.Length == 0 && gifFixtures.Length == 0 && apngFixtures.Length == 0
+                && webpFixtures.Length == 0 && !_includeSyntheticFixtures)
             {
-                EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", "No .jxl or .gif fixtures were found.", "OK");
+                EditorUtility.DisplayDialog(
+                    "JPEG XL Profile 1 Benchmark",
+                    "No .jxl, .gif, APNG, or animated WebP fixtures were found and generated fixtures are disabled.",
+                    "OK"
+                );
                 return;
             }
 
             Directory.CreateDirectory(_outputDirectory);
-            var fixturePaths = new List<string>(jxlFixtures);
+            _cancellation = new CancellationTokenSource();
+            _preparing = true;
+            _preparationCompleted = 0;
+            int localJxlCount = _jxlHandling == JxlHandling.RawConformanceOnly ? 0 : jxlFixtures.Length;
+            int syntheticCount = _includeSyntheticFixtures ? SyntheticFixtureDefinitions.Length : 0;
+            _preparationTotal = gifFixtures.Length + localJxlCount + apngFixtures.Length + webpFixtures.Length + syntheticCount;
+            _preparationCurrent = "Starting";
+
+            var fixturePaths = new List<string>();
             var fixtureDisplayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixturePreparationPrefixes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixturePreparationErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixtureOriginalPayloadBytes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            foreach (string path in jxlFixtures)
-                fixtureDisplayNames[path] = Path.GetRelativePath(_fixtureDirectory, path).Replace('\\', '/');
-
-            if (gifFixtures.Length > 0)
+            var fixturePreparationMeasurements = new Dictionary<string, FixturePreparationMeasurement>(StringComparer.OrdinalIgnoreCase);
+            BasisProfile1SandboxDecoder preparationDecoder = null;
+            if (localJxlCount > 0 || syntheticCount > 0)
             {
-                _cancellation = new CancellationTokenSource();
-                _preparing = true;
-                _preparationCompleted = 0;
-                _preparationTotal = gifFixtures.Length;
-                _preparationCurrent = "Checking cache";
-                _status = $"Resolving {gifFixtures.Length} GIF fixture(s) from the Profile 1 cache...";
-                Repaint();
-                BasisProfile1GifBenchmarkPreparation.GifPreparationResult gifResult;
-                try
+                var preparationLimits = new BasisProfile1SandboxLimits(
+                    (long)_maximumLinearMemoryMiB * 1024L * 1024L,
+                    96_000_000_000UL,
+                    TimeSpan.FromSeconds(_timeoutSeconds)
+                );
+                preparationDecoder = new BasisProfile1SandboxDecoder((byte[])decoderAsset.bytes.Clone(), preparationLimits);
+            }
+
+            try
+            {
+                if (_jxlHandling != JxlHandling.LocalImportOnly)
                 {
-                    gifResult = await BasisProfile1GifBenchmarkPreparation.ConvertAsync(
-                        gifFixtures,
-                        _outputDirectory,
-                        (completed, total, fileName, phase) =>
+                    foreach (string path in jxlFixtures)
+                    {
+                        fixturePaths.Add(path);
+                        fixtureDisplayNames[path] = RelativeFixtureName(path) + " [raw-conformance]";
+                        fixturePreparationPrefixes[path] = "RawJxlConformance";
+                        fixtureOriginalPayloadBytes[path] = new FileInfo(path).Length;
+                        fixturePreparationMeasurements[path] = new FixturePreparationMeasurement
                         {
-                            _preparationCompleted = completed;
-                            _preparationTotal = total;
-                            _preparationCurrent = phase + " — " + fileName;
-                            _status = $"GIF preparation: {completed}/{total} — {phase}: {fileName}";
-                            Repaint();
-                        },
+                            Backend = "Raw JXL codestream/container preservation",
+                        };
+                    }
+                }
+
+                if (gifFixtures.Length > 0)
+                {
+                    _status = $"Preparing {gifFixtures.Length} GIF local-import fixture(s)...";
+                    Repaint();
+                    BasisProfile1GifBenchmarkPreparation.GifPreparationResult gifResult =
+                        await BasisProfile1GifBenchmarkPreparation.ConvertAsync(
+                            gifFixtures,
+                            _outputDirectory,
+                            (completed, total, fileName, phase) =>
+                            {
+                                _preparationCompleted = completed;
+                                _preparationCurrent = phase + " — " + fileName;
+                                _status = $"GIF preparation: {completed}/{total} — {phase}: {fileName}";
+                                Repaint();
+                            },
+                            _cancellation.Token
+                        );
+                    if (!gifResult.Ok)
+                        throw new InvalidOperationException(gifResult.Error);
+
+                    foreach (string gifPath in gifFixtures)
+                    {
+                        string displayName = RelativeFixtureName(gifPath) + " [local-import]";
+                        long originalBytes = new FileInfo(gifPath).Length;
+                        if (gifResult.ConvertedByOriginal.TryGetValue(gifPath, out string convertedPath))
+                        {
+                            fixturePaths.Add(convertedPath);
+                            fixtureDisplayNames[convertedPath] = displayName;
+                            fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
+                            fixtureOriginalPayloadBytes[convertedPath] = originalBytes;
+                            if (gifResult.MetricsByOriginal.TryGetValue(
+                                    gifPath,
+                                    out BasisProfile1GifBenchmarkPreparation.GifPreparationMetrics gifMetrics))
+                            {
+                                fixturePreparationMeasurements[convertedPath] = new FixturePreparationMeasurement
+                                {
+                                    Backend = gifMetrics.Backend,
+                                    CacheHit = gifMetrics.CacheHit,
+                                    WasReencoded = true,
+                                    DecodeMilliseconds = gifMetrics.DecodeMilliseconds,
+                                    EncodeMilliseconds = gifMetrics.EncodeMilliseconds,
+                                    TimelineBytes = gifMetrics.TimelineBytes,
+                                    TotalMilliseconds = gifMetrics.DecodeMilliseconds + gifMetrics.EncodeMilliseconds,
+                                    WorkingSetBeforeBytes = gifMetrics.WorkingSetBeforeBytes,
+                                    WorkingSetAfterBytes = gifMetrics.WorkingSetAfterBytes,
+                                    WorkingSetPeakBytes = gifMetrics.WorkingSetPeakBytes,
+                                    WorkingSetPeakDeltaBytes = gifMetrics.WorkingSetPeakDeltaBytes,
+                                };
+                            }
+                        }
+                        else if (gifResult.ErrorsByOriginal.TryGetValue(gifPath, out string gifError))
+                        {
+                            fixturePaths.Add(gifPath);
+                            fixtureDisplayNames[gifPath] = displayName;
+                            fixturePreparationErrors[gifPath] = gifError;
+                            fixtureOriginalPayloadBytes[gifPath] = originalBytes;
+                        }
+                    }
+                    _preparationCompleted = gifFixtures.Length;
+                }
+
+                if (_jxlHandling != JxlHandling.RawConformanceOnly && jxlFixtures.Length > 0)
+                {
+                    for (int i = 0; i < jxlFixtures.Length; i++)
+                    {
+                        string sourcePath = jxlFixtures[i];
+                        int completedBefore = gifFixtures.Length + i;
+                        UpdatePreparationProgress(completedBefore, "JXL local import", sourcePath);
+                        LocalPreparationResult prepared = await PrepareLocalJxlAsync(
+                            sourcePath,
+                            _outputDirectory,
+                            preparationDecoder,
+                            _cancellation.Token
+                        );
+                        RegisterLocalPreparation(
+                            sourcePath,
+                            RelativeFixtureName(sourcePath) + " [local-import]",
+                            prepared,
+                            fixturePaths,
+                            fixtureDisplayNames,
+                            fixturePreparationPrefixes,
+                            fixturePreparationErrors,
+                            fixtureOriginalPayloadBytes,
+                            fixturePreparationMeasurements
+                        );
+                        _preparationCompleted = completedBefore + 1;
+                    }
+                }
+
+                int externalBase = gifFixtures.Length + localJxlCount;
+                string[] externalFixtures = apngFixtures.Concat(webpFixtures).ToArray();
+                for (int i = 0; i < externalFixtures.Length; i++)
+                {
+                    string sourcePath = externalFixtures[i];
+                    UpdatePreparationProgress(externalBase + i, "APNG/WebP local import", sourcePath);
+                    LocalPreparationResult prepared = await PrepareExternalAnimationAsync(
+                        sourcePath,
+                        _outputDirectory,
+                        _ffmpegPath,
                         _cancellation.Token
                     );
-                }
-                catch (OperationCanceledException)
-                {
-                    _status = "GIF fixture preparation cancelled.";
-                    _preparing = false;
-                    _preparationCurrent = string.Empty;
-                    _cancellation.Dispose();
-                    _cancellation = null;
-                    Repaint();
-                    return;
-                }
-                finally
-                {
-                    _preparing = false;
-                    _preparationCurrent = string.Empty;
+                    RegisterLocalPreparation(
+                        sourcePath,
+                        RelativeFixtureName(sourcePath) + " [local-import]",
+                        prepared,
+                        fixturePaths,
+                        fixtureDisplayNames,
+                        fixturePreparationPrefixes,
+                        fixturePreparationErrors,
+                        fixtureOriginalPayloadBytes,
+                        fixturePreparationMeasurements
+                    );
+                    _preparationCompleted = externalBase + i + 1;
                 }
 
-                if (!gifResult.Ok)
+                if (_includeSyntheticFixtures)
                 {
-                    EditorUtility.DisplayDialog("JPEG XL Profile 1 Benchmark", gifResult.Error, "OK");
-                    _status = "GIF fixture preparation failed.";
-                    _cancellation.Dispose();
-                    _cancellation = null;
-                    Repaint();
-                    return;
-                }
-
-                foreach (string gifPath in gifFixtures)
-                {
-                    string displayName = Path.GetRelativePath(_fixtureDirectory, gifPath).Replace('\\', '/');
-                    long originalBytes = new FileInfo(gifPath).Length;
-                    if (gifResult.ConvertedByOriginal.TryGetValue(gifPath, out string convertedPath))
+                    int syntheticBase = externalBase + externalFixtures.Length;
+                    for (int i = 0; i < SyntheticFixtureDefinitions.Length; i++)
                     {
-                        fixturePaths.Add(convertedPath);
-                        fixtureDisplayNames[convertedPath] = displayName;
-                        fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
-                        fixtureOriginalPayloadBytes[convertedPath] = originalBytes;
-                    }
-                    else if (gifResult.ErrorsByOriginal.TryGetValue(gifPath, out string gifError))
-                    {
-                        fixturePaths.Add(gifPath);
-                        fixtureDisplayNames[gifPath] = displayName;
-                        fixturePreparationErrors[gifPath] = gifError;
-                        fixtureOriginalPayloadBytes[gifPath] = originalBytes;
+                        SyntheticFixtureDefinition definition = SyntheticFixtureDefinitions[i];
+                        UpdatePreparationProgress(
+                            syntheticBase + i,
+                            "Generating synthetic fixture",
+                            definition.DisplayName
+                        );
+                        LocalPreparationResult generated = await GenerateSyntheticFixtureAsync(
+                            definition,
+                            _outputDirectory,
+                            preparationDecoder,
+                            _cancellation.Token
+                        );
+                        string virtualSourcePath = Path.Combine(
+                            _outputDirectory,
+                            "synthetic-profile1-cache-v2",
+                            definition.FileName
+                        );
+                        RegisterLocalPreparation(
+                            virtualSourcePath,
+                            definition.DisplayName,
+                            generated,
+                            fixturePaths,
+                            fixtureDisplayNames,
+                            fixturePreparationPrefixes,
+                            fixturePreparationErrors,
+                            fixtureOriginalPayloadBytes,
+                            fixturePreparationMeasurements
+                        );
+                        _preparationCompleted = syntheticBase + i + 1;
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                _status = "Fixture preparation cancelled.";
+                _cancellation.Dispose();
+                _cancellation = null;
+                return;
+            }
+            catch (Exception exception)
+            {
+                _status = "Fixture preparation failed: " + exception.Message;
+                Debug.LogException(exception);
+                _cancellation.Dispose();
+                _cancellation = null;
+                return;
+            }
+            finally
+            {
+                preparationDecoder?.Dispose();
+                _preparing = false;
+                _preparationCurrent = string.Empty;
+                Repaint();
             }
 
             string[] fixtures = fixturePaths.ToArray();
@@ -267,6 +501,10 @@ namespace Basis.ImageSandbox.Editor
             {
                 FixtureDirectory = Path.GetFullPath(_fixtureDirectory),
                 OutputDirectory = Path.GetFullPath(_outputDirectory),
+                Preset = _preset.ToString(),
+                JxlHandling = _jxlHandling.ToString(),
+                IncludeSyntheticFixtures = _includeSyntheticFixtures,
+                FfmpegPath = _ffmpegPath,
                 WarmupIterations = _warmupIterations,
                 MeasuredIterations = _measuredIterations,
                 Concurrency = concurrency,
@@ -279,11 +517,10 @@ namespace Basis.ImageSandbox.Editor
                 FixturePreparationPrefixes = fixturePreparationPrefixes,
                 FixturePreparationErrors = fixturePreparationErrors,
                 FixtureOriginalPayloadBytes = fixtureOriginalPayloadBytes,
+                FixturePreparationMeasurements = fixturePreparationMeasurements,
                 Metadata = CaptureMetadata(),
             };
 
-            if (_cancellation == null)
-                _cancellation = new CancellationTokenSource();
             _benchmarkCompleted = 0;
             _benchmarkTotal = checked(fixtures.Length * concurrency.Length * fuelSweep.Length);
             _benchmarkProgress = $"Starting benchmark: {fixtures.Length} fixtures, concurrency {string.Join(",", concurrency)}, fuel {string.Join(",", fuelSweep)}...";
@@ -293,6 +530,524 @@ namespace Basis.ImageSandbox.Editor
                 _cancellation.Token
             );
             Repaint();
+        }
+
+        private string RelativeFixtureName(string path) =>
+            Path.GetRelativePath(_fixtureDirectory, path).Replace('\\', '/');
+
+        private void UpdatePreparationProgress(int completed, string phase, string pathOrName)
+        {
+            _preparationCompleted = completed;
+            string name = File.Exists(pathOrName) ? Path.GetFileName(pathOrName) : pathOrName;
+            _preparationCurrent = phase + " — " + name;
+            _status = $"Fixture preparation: {completed}/{_preparationTotal} — {phase}: {name}";
+            Repaint();
+        }
+
+        private static async Task<LocalPreparationResult> PrepareLocalJxlAsync(
+            string sourcePath,
+            string outputRoot,
+            BasisProfile1SandboxDecoder localDecoder,
+            CancellationToken cancellationToken)
+        {
+            byte[] source = await Task.Run(() => File.ReadAllBytes(sourcePath), cancellationToken);
+            long workingSetBefore = GetCurrentWorkingSetBytes();
+            using var sampler = new WorkingSetSampler();
+            sampler.Start();
+            var total = Stopwatch.StartNew();
+            var measurement = new FixturePreparationMeasurement
+            {
+                Backend = "editor-native libjxl local JXL import",
+            };
+            string cacheRoot = Path.Combine(outputRoot, "local-profile1-cache", "jxl");
+            Directory.CreateDirectory(cacheRoot);
+            string cachePath = Path.Combine(
+                cacheRoot,
+                "jxl-import-v1_" + ComputeSha256(source) + ".jxl"
+            );
+
+            try
+            {
+                bool alreadyProfile1 = false;
+                PreparedFixture direct = null;
+                if (TryPrepareCanonicalProfile1(source, out direct, out _))
+                {
+                    BasisProfile1SandboxPreflight preflight = await Task.Run(
+                        () => localDecoder.Preflight(direct.Payload, cancellationToken),
+                        cancellationToken
+                    );
+                    alreadyProfile1 = preflight.Status == BasisProfile1SandboxStatus.Success;
+                }
+                measurement.SourceAlreadyProfile1 = alreadyProfile1;
+                measurement.WasReencoded = !alreadyProfile1;
+
+                if (File.Exists(cachePath) && new FileInfo(cachePath).Length > 0)
+                {
+                    measurement.CacheHit = true;
+                    return FinishPreparationResult(
+                        true,
+                        cachePath,
+                        null,
+                        alreadyProfile1 ? "JxlAlreadyProfile1" : "JxlTranscodedToProfile1",
+                        source.LongLength,
+                        measurement,
+                        total,
+                        sampler,
+                        workingSetBefore
+                    );
+                }
+
+                byte[] profile1;
+                if (alreadyProfile1)
+                {
+                    profile1 = direct.Payload;
+                }
+                else
+                {
+                    var decodeStopwatch = Stopwatch.StartNew();
+                    NativeByteResult decoded = await Task.Run(() =>
+                    {
+                        bool ok = BasisProfile1EditorNative.TryDecodeJxlTimeline(source, out byte[] timeline, out string decodeError);
+                        return new NativeByteResult(ok, timeline, decodeError);
+                    }, cancellationToken);
+                    decodeStopwatch.Stop();
+                    measurement.DecodeMilliseconds = decodeStopwatch.Elapsed.TotalMilliseconds;
+                    if (!decoded.Ok)
+                    {
+                        return FinishPreparationResult(
+                            false,
+                            null,
+                            decoded.Error,
+                            "JxlTranscodedToProfile1",
+                            source.LongLength,
+                            measurement,
+                            total,
+                            sampler,
+                            workingSetBefore
+                        );
+                    }
+                    measurement.TimelineBytes = decoded.Bytes.LongLength;
+
+                    var encodeStopwatch = Stopwatch.StartNew();
+                    NativeByteResult encoded = await Task.Run(() =>
+                    {
+                        bool ok = BasisProfile1EditorNative.TryEncodeTimeline(decoded.Bytes, out byte[] bytes, out string encodeError);
+                        return new NativeByteResult(ok, bytes, encodeError);
+                    }, cancellationToken);
+                    encodeStopwatch.Stop();
+                    measurement.EncodeMilliseconds = encodeStopwatch.Elapsed.TotalMilliseconds;
+                    if (!encoded.Ok)
+                    {
+                        return FinishPreparationResult(
+                            false,
+                            null,
+                            encoded.Error,
+                            "JxlTranscodedToProfile1",
+                            source.LongLength,
+                            measurement,
+                            total,
+                            sampler,
+                            workingSetBefore
+                        );
+                    }
+                    profile1 = encoded.Bytes;
+                }
+
+                await WriteFileAtomicallyAsync(cachePath, profile1, cancellationToken);
+                return FinishPreparationResult(
+                    true,
+                    cachePath,
+                    null,
+                    alreadyProfile1 ? "JxlAlreadyProfile1" : "JxlTranscodedToProfile1",
+                    source.LongLength,
+                    measurement,
+                    total,
+                    sampler,
+                    workingSetBefore
+                );
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                return FinishPreparationResult(
+                    false,
+                    null,
+                    "JPEG XL local import failed: " + exception.Message,
+                    "JxlTranscodedToProfile1",
+                    source.LongLength,
+                    measurement,
+                    total,
+                    sampler,
+                    workingSetBefore
+                );
+            }
+        }
+
+        private static async Task<LocalPreparationResult> PrepareExternalAnimationAsync(
+            string sourcePath,
+            string outputRoot,
+            string ffmpegPath,
+            CancellationToken cancellationToken)
+        {
+            byte[] source = await Task.Run(() => File.ReadAllBytes(sourcePath), cancellationToken);
+            long workingSetBefore = GetCurrentWorkingSetBytes();
+            using var sampler = new WorkingSetSampler();
+            sampler.Start();
+            var total = Stopwatch.StartNew();
+            string extension = Path.GetExtension(sourcePath).TrimStart('.').ToLowerInvariant();
+            var measurement = new FixturePreparationMeasurement
+            {
+                Backend = "FFmpeg local RGBA decode + editor-native libjxl",
+                WasReencoded = true,
+            };
+            string cacheRoot = Path.Combine(outputRoot, "local-profile1-cache", extension);
+            Directory.CreateDirectory(cacheRoot);
+            string cachePath = Path.Combine(
+                cacheRoot,
+                extension + "-import-v1_" + ComputeSha256(source) + ".jxl"
+            );
+
+            try
+            {
+                if (File.Exists(cachePath) && new FileInfo(cachePath).Length > 0)
+                {
+                    measurement.CacheHit = true;
+                    return FinishPreparationResult(
+                        true,
+                        cachePath,
+                        null,
+                        extension.ToUpperInvariant() + "TranscodedToProfile1",
+                        source.LongLength,
+                        measurement,
+                        total,
+                        sampler,
+                        workingSetBefore
+                    );
+                }
+
+                BasisProfile1ExternalAnimationPreparation.DecodeResult decoded =
+                    await BasisProfile1ExternalAnimationPreparation.DecodeAsync(
+                        sourcePath,
+                        ffmpegPath,
+                        cancellationToken
+                    );
+                measurement.DecodeMilliseconds = decoded.DecodeMilliseconds;
+                measurement.Backend = decoded.Backend + " + editor-native libjxl";
+                if (!decoded.Ok)
+                {
+                    return FinishPreparationResult(
+                        false,
+                        null,
+                        decoded.Error,
+                        extension.ToUpperInvariant() + "TranscodedToProfile1",
+                        source.LongLength,
+                        measurement,
+                        total,
+                        sampler,
+                        workingSetBefore
+                    );
+                }
+                measurement.TimelineBytes = decoded.Timeline.LongLength;
+
+                var encodeStopwatch = Stopwatch.StartNew();
+                NativeByteResult encoded = await Task.Run(() =>
+                {
+                    bool ok = BasisProfile1EditorNative.TryEncodeTimeline(decoded.Timeline, out byte[] bytes, out string encodeError);
+                    return new NativeByteResult(ok, bytes, encodeError);
+                }, cancellationToken);
+                encodeStopwatch.Stop();
+                measurement.EncodeMilliseconds = encodeStopwatch.Elapsed.TotalMilliseconds;
+                if (!encoded.Ok)
+                {
+                    return FinishPreparationResult(
+                        false,
+                        null,
+                        encoded.Error,
+                        extension.ToUpperInvariant() + "TranscodedToProfile1",
+                        source.LongLength,
+                        measurement,
+                        total,
+                        sampler,
+                        workingSetBefore
+                    );
+                }
+
+                await WriteFileAtomicallyAsync(cachePath, encoded.Bytes, cancellationToken);
+                return FinishPreparationResult(
+                    true,
+                    cachePath,
+                    null,
+                    extension.ToUpperInvariant() + "TranscodedToProfile1",
+                    source.LongLength,
+                    measurement,
+                    total,
+                    sampler,
+                    workingSetBefore
+                );
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                return FinishPreparationResult(
+                    false,
+                    null,
+                    "Local animation import failed: " + exception.Message,
+                    extension.ToUpperInvariant() + "TranscodedToProfile1",
+                    source.LongLength,
+                    measurement,
+                    total,
+                    sampler,
+                    workingSetBefore
+                );
+            }
+        }
+
+        private static async Task<LocalPreparationResult> GenerateSyntheticFixtureAsync(
+            SyntheticFixtureDefinition definition,
+            string outputRoot,
+            BasisProfile1SandboxDecoder decoder,
+            CancellationToken cancellationToken)
+        {
+            string cacheRoot = Path.Combine(outputRoot, "synthetic-profile1-cache-v2");
+            Directory.CreateDirectory(cacheRoot);
+            string path = Path.Combine(cacheRoot, definition.FileName);
+            long workingSetBefore = GetCurrentWorkingSetBytes();
+            using var sampler = new WorkingSetSampler();
+            sampler.Start();
+            var total = Stopwatch.StartNew();
+            var measurement = new FixturePreparationMeasurement
+            {
+                Backend = "editor-native libjxl synthetic Profile 1 generator",
+                SourceAlreadyProfile1 = true,
+            };
+
+            byte[] generatedBytes = null;
+            if (File.Exists(path) && new FileInfo(path).Length > 0)
+            {
+                measurement.CacheHit = true;
+                generatedBytes = await Task.Run(() => File.ReadAllBytes(path), cancellationToken);
+            }
+
+            var encodeStopwatch = Stopwatch.StartNew();
+            NativeByteResult generated = generatedBytes != null
+                ? new NativeByteResult(true, generatedBytes, null)
+                : await Task.Run(() =>
+            {
+                bool ok = BasisProfile1EditorNative.TryGenerateSyntheticFixture(
+                    definition.Kind,
+                    out byte[] bytes,
+                    out string generateError
+                );
+                return new NativeByteResult(ok, bytes, generateError);
+            }, cancellationToken);
+            encodeStopwatch.Stop();
+            measurement.EncodeMilliseconds = generatedBytes == null ? encodeStopwatch.Elapsed.TotalMilliseconds : 0;
+            if (!generated.Ok)
+            {
+                return FinishPreparationResult(
+                    false,
+                    null,
+                    generated.Error,
+                    "SyntheticProfile1",
+                    0,
+                    measurement,
+                    total,
+                    sampler,
+                    workingSetBefore
+                );
+            }
+
+            if (!TryValidateSyntheticFixture(definition.Kind, generated.Bytes, decoder, out string validationError))
+            {
+                return FinishPreparationResult(
+                    false,
+                    null,
+                    validationError,
+                    "SyntheticProfile1",
+                    generated.Bytes.LongLength,
+                    measurement,
+                    total,
+                    sampler,
+                    workingSetBefore
+                );
+            }
+
+            if (!measurement.CacheHit)
+                await WriteFileAtomicallyAsync(path, generated.Bytes, cancellationToken);
+            return FinishPreparationResult(
+                true,
+                path,
+                null,
+                "SyntheticProfile1",
+                generated.Bytes.LongLength,
+                measurement,
+                total,
+                sampler,
+                workingSetBefore
+            );
+        }
+
+        private static bool TryValidateSyntheticFixture(
+            uint kind,
+            byte[] generated,
+            BasisProfile1SandboxDecoder decoder,
+            out string error)
+        {
+            error = null;
+            if (decoder == null || generated == null || generated.Length == 0)
+            {
+                error = "Synthetic fixture validation could not start.";
+                return false;
+            }
+            if (!TryPrepareCanonicalProfile1(generated, out PreparedFixture prepared, out string preparationError))
+            {
+                error = "Synthetic fixture could not be canonicalized: " + preparationError;
+                return false;
+            }
+
+            BasisProfile1SandboxPreflight preflight = decoder.Preflight(prepared.Payload);
+            BasisProfile1SandboxStatus expectedStatus = BasisProfile1SandboxStatus.Success;
+            BasisProfile1SandboxDiagnosticReason expectedReason = BasisProfile1SandboxDiagnosticReason.None;
+            switch (kind)
+            {
+                case 9:
+                    expectedStatus = BasisProfile1SandboxStatus.SharedLimitExceeded;
+                    expectedReason = BasisProfile1SandboxDiagnosticReason.Dimensions;
+                    break;
+                case 12:
+                    expectedStatus = BasisProfile1SandboxStatus.SharedLimitExceeded;
+                    expectedReason = BasisProfile1SandboxDiagnosticReason.LogicalFrames;
+                    break;
+                case 15:
+                    expectedStatus = BasisProfile1SandboxStatus.SharedLimitExceeded;
+                    expectedReason = BasisProfile1SandboxDiagnosticReason.SubmittedPixels;
+                    break;
+                case 18:
+                    expectedStatus = BasisProfile1SandboxStatus.SharedLimitExceeded;
+                    expectedReason = BasisProfile1SandboxDiagnosticReason.Timeline;
+                    break;
+                case 19:
+                    expectedStatus = BasisProfile1SandboxStatus.SharedLimitExceeded;
+                    expectedReason = BasisProfile1SandboxDiagnosticReason.FrameDuration;
+                    break;
+            }
+
+            if (preflight.Status != expectedStatus ||
+                (expectedReason != BasisProfile1SandboxDiagnosticReason.None && preflight.DiagnosticReason != expectedReason))
+            {
+                error = $"Synthetic fixture kind {kind} produced {preflight.Status}/{preflight.DiagnosticReason}, expected {expectedStatus}/{expectedReason}.";
+                return false;
+            }
+            if (preflight.Status != BasisProfile1SandboxStatus.Success)
+                return true;
+
+            bool structureOk = kind switch
+            {
+                0 => preflight.CroppedLayerCount > 0,
+                1 => preflight.BlendOperationCount > 0 && preflight.ReferenceReadEdges > 0,
+                2 => preflight.SavedReferenceCount > 0 && preflight.ReferenceReadEdges > 0,
+                3 => preflight.SavedReferenceCount >= 3 && preflight.ReferenceReadEdges >= 3 && preflight.MaximumReferenceChainDepth >= 3,
+                4 => preflight.PublicRegularLayerCount >= 9 && preflight.SavedReferenceCount > 0,
+                5 => preflight.CroppedLayerCount > 0 && preflight.BlendOperationCount > 0 &&
+                     preflight.SavedReferenceCount > 0 && preflight.ReferenceReadEdges > 0 &&
+                     preflight.MaximumReferenceChainDepth >= 2,
+                6 => preflight.PublicRegularLayerCount >= 129 && preflight.BlendOperationCount > 0 &&
+                     preflight.SavedReferenceCount > 0 && preflight.ReferenceReadEdges > 0,
+                7 => preflight.Width == 2047 && preflight.Height == 1,
+                8 => preflight.Width == 2048 && preflight.Height == 1,
+                10 => preflight.LogicalFrameCount == 511,
+                11 => preflight.LogicalFrameCount == 512,
+                13 => preflight.SubmittedCanvasPixels == 33_553_920UL,
+                14 => preflight.SubmittedCanvasPixels == 33_554_432UL,
+                16 => preflight.BaseTimelineMicroseconds == 299_999_999UL,
+                17 => preflight.BaseTimelineMicroseconds == 300_000_000UL,
+                20 => preflight.FrameDurationsMicroseconds.Length == 1 && preflight.FrameDurationsMicroseconds[0] == 33_334UL,
+                21 => preflight.FrameDurationsMicroseconds.Length == 1 && preflight.FrameDurationsMicroseconds[0] == 33_335UL,
+                22 => preflight.PreviewPixels == 4,
+                23 => preflight.Width == 2048 && preflight.Height == 2047,
+                24 => preflight.Width == 2048 && preflight.Height == 2048 &&
+                      (ulong)preflight.Width * preflight.Height == 4_194_304UL,
+                _ => true,
+            };
+            if (!structureOk)
+            {
+                error = $"Synthetic fixture kind {kind} was accepted, but libjxl did not preserve the structural features required by the benchmark.";
+                return false;
+            }
+            return true;
+        }
+
+        private static LocalPreparationResult FinishPreparationResult(
+            bool ok,
+            string preparedPath,
+            string error,
+            string preparationPrefix,
+            long originalBytes,
+            FixturePreparationMeasurement measurement,
+            Stopwatch total,
+            WorkingSetSampler sampler,
+            long workingSetBefore)
+        {
+            total.Stop();
+            sampler.Stop();
+            long workingSetAfter = GetCurrentWorkingSetBytes();
+            measurement.TotalMilliseconds = total.Elapsed.TotalMilliseconds;
+            measurement.WorkingSetBeforeBytes = workingSetBefore;
+            measurement.WorkingSetAfterBytes = workingSetAfter;
+            measurement.WorkingSetPeakBytes = sampler.PeakBytes;
+            measurement.WorkingSetPeakDeltaBytes = Math.Max(0, sampler.PeakBytes - workingSetBefore);
+            return new LocalPreparationResult(
+                ok,
+                preparedPath,
+                error,
+                preparationPrefix,
+                originalBytes,
+                measurement
+            );
+        }
+
+        private static async Task WriteFileAtomicallyAsync(
+            string path,
+            byte[] bytes,
+            CancellationToken cancellationToken)
+        {
+            string temporaryPath = path + ".tmp";
+            await Task.Run(() =>
+            {
+                if (File.Exists(temporaryPath))
+                    File.Delete(temporaryPath);
+                File.WriteAllBytes(temporaryPath, bytes);
+                if (File.Exists(path))
+                    File.Delete(path);
+                File.Move(temporaryPath, path);
+            }, cancellationToken);
+        }
+
+        private static void RegisterLocalPreparation(
+            string sourcePath,
+            string displayName,
+            LocalPreparationResult prepared,
+            List<string> fixturePaths,
+            Dictionary<string, string> fixtureDisplayNames,
+            Dictionary<string, string> fixturePreparationPrefixes,
+            Dictionary<string, string> fixturePreparationErrors,
+            Dictionary<string, long> fixtureOriginalPayloadBytes,
+            Dictionary<string, FixturePreparationMeasurement> fixturePreparationMeasurements)
+        {
+            string fixturePath = prepared.Ok ? prepared.PreparedPath : sourcePath;
+            fixturePaths.Add(fixturePath);
+            fixtureDisplayNames[fixturePath] = displayName;
+            fixturePreparationPrefixes[fixturePath] = prepared.PreparationPrefix;
+            fixtureOriginalPayloadBytes[fixturePath] = prepared.OriginalPayloadBytes;
+            fixturePreparationMeasurements[fixturePath] = prepared.Measurement;
+            if (!prepared.Ok)
+                fixturePreparationErrors[fixturePath] = prepared.Error;
         }
 
         private bool TryValidateSettings(out int[] concurrency, out ulong[] fuelSweep, out string error)
@@ -524,7 +1279,7 @@ namespace Basis.ImageSandbox.Editor
             string error
         )
         {
-            return new FixtureBenchmarkResult
+            var failure = new FixtureBenchmarkResult
             {
                 Fixture = GetFixtureDisplayName(configuration, fixturePath),
                 OriginalPayloadBytes = originalPayloadBytes,
@@ -538,6 +1293,8 @@ namespace Basis.ImageSandbox.Editor
                 FuelConsumedAvailable = false,
                 WasmPeakMemoryAvailable = false,
             };
+            ApplyPreparationMeasurement(configuration, fixturePath, failure);
+            return failure;
         }
 
         private static bool TryPrepareCanonicalProfile1(
@@ -800,6 +1557,32 @@ namespace Basis.ImageSandbox.Editor
             destination[offset + 3] = (byte)value;
         }
 
+        private static void ApplyPreparationMeasurement(
+            BenchmarkConfiguration configuration,
+            string fixturePath,
+            FixtureBenchmarkResult result)
+        {
+            if (configuration.FixturePreparationMeasurements == null
+                || !configuration.FixturePreparationMeasurements.TryGetValue(fixturePath, out FixturePreparationMeasurement measurement)
+                || measurement == null)
+            {
+                return;
+            }
+
+            result.PreparationBackend = measurement.Backend;
+            result.PreparationCacheHit = measurement.CacheHit;
+            result.WasReencoded = measurement.WasReencoded;
+            result.SourceAlreadyProfile1 = measurement.SourceAlreadyProfile1;
+            result.SourceDecodeMilliseconds = measurement.DecodeMilliseconds;
+            result.Profile1EncodeMilliseconds = measurement.EncodeMilliseconds;
+            result.PreparationTotalMilliseconds = measurement.TotalMilliseconds;
+            result.TimelineBytes = measurement.TimelineBytes;
+            result.PreparationWorkingSetBeforeBytes = measurement.WorkingSetBeforeBytes;
+            result.PreparationWorkingSetAfterBytes = measurement.WorkingSetAfterBytes;
+            result.PreparationWorkingSetPeakBytes = measurement.WorkingSetPeakBytes;
+            result.PreparationWorkingSetPeakDeltaBytes = measurement.WorkingSetPeakDeltaBytes;
+        }
+
         private static FixtureBenchmarkResult RunFixture(
             BenchmarkConfiguration configuration,
             string fixturePath,
@@ -822,6 +1605,7 @@ namespace Basis.ImageSandbox.Editor
                 FuelConsumedAvailable = true,
                 WasmPeakMemoryAvailable = false,
             };
+            ApplyPreparationMeasurement(configuration, fixturePath, aggregate);
 
             long workingSetBefore = GetCurrentWorkingSetBytes();
             using var sampler = new WorkingSetSampler();
@@ -936,17 +1720,29 @@ namespace Basis.ImageSandbox.Editor
             }
 
             stopwatch.Restart();
-            BasisProfile1SandboxPreflight preflight = decoder.Preflight(
+            BasisProfile1SandboxPreflight preflight = decoder.PreflightDetailed(
                 payload,
-                out ulong stageBFuelConsumed,
-                out bool stageBFuelConsumedAvailable,
+                out BasisProfile1SandboxPreflightMetrics stageBMetrics,
                 cancellationToken
             );
             stopwatch.Stop();
             sample.StageBMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
             sample.StageBStatus = preflight.Status.ToString();
-            sample.StageBFuelConsumed = stageBFuelConsumed;
-            sample.StageBFuelConsumedAvailable = stageBFuelConsumedAvailable;
+            sample.StageBDiagnosticReason = preflight.DiagnosticReason.ToString();
+            sample.StageBLogicalHeaderMilliseconds = stageBMetrics.LogicalHeaderMilliseconds;
+            sample.StageBStructuralHeaderMilliseconds = stageBMetrics.StructuralHeaderMilliseconds;
+            sample.StageBHeaderMilliseconds = stageBMetrics.HeaderMilliseconds;
+            sample.StageBValidationMilliseconds = stageBMetrics.ValidationMilliseconds;
+            sample.StageBLogicalHeaderFuelConsumed = stageBMetrics.LogicalHeaderFuelConsumed;
+            sample.StageBStructuralHeaderFuelConsumed = stageBMetrics.StructuralHeaderFuelConsumed;
+            sample.StageBHeaderFuelConsumed = stageBMetrics.HeaderFuelConsumed;
+            sample.StageBValidationFuelConsumed = stageBMetrics.ValidationFuelConsumed;
+            sample.StageBFuelConsumed = checked(stageBMetrics.HeaderFuelConsumed + stageBMetrics.ValidationFuelConsumed);
+            sample.StageBFuelConsumedAvailable = stageBMetrics.FuelConsumedAvailable;
+            sample.StageBInitialMemoryBytes = stageBMetrics.Execution.InitialMemoryBytes;
+            sample.StageBPeakMemoryBytes = stageBMetrics.Execution.PeakMemoryBytes;
+            sample.StageBFinalMemoryBytes = stageBMetrics.Execution.FinalMemoryBytes;
+            sample.StageBMemoryGrowthCount = stageBMetrics.Execution.MemoryGrowthCount;
             CopyPreflight(sample, preflight);
             if (preflight.Status != BasisProfile1SandboxStatus.Success)
                 return sample;
@@ -954,7 +1750,7 @@ namespace Basis.ImageSandbox.Editor
             int consumedFrames = 0;
             ulong checksum = 0;
             stopwatch.Restart();
-            BasisProfile1SandboxStatus decodeStatus = decoder.DecodeFrames(
+            BasisProfile1SandboxStatus decodeStatus = decoder.DecodeFramesDetailed(
                 payload,
                 preflight,
                 (frameIndex, rgba, duration) =>
@@ -970,6 +1766,7 @@ namespace Basis.ImageSandbox.Editor
                 },
                 out ulong decodeFuelConsumed,
                 out bool decodeFuelConsumedAvailable,
+                out BasisProfile1SandboxExecutionMetrics decodeMetrics,
                 cancellationToken
             );
             stopwatch.Stop();
@@ -977,12 +1774,31 @@ namespace Basis.ImageSandbox.Editor
             sample.DecodeStatus = decodeStatus.ToString();
             sample.DecodeFuelConsumed = decodeFuelConsumed;
             sample.DecodeFuelConsumedAvailable = decodeFuelConsumedAvailable;
+            sample.DecodeInitialMemoryBytes = decodeMetrics.InitialMemoryBytes;
+            sample.DecodePeakMemoryBytes = decodeMetrics.PeakMemoryBytes;
+            sample.DecodeFinalMemoryBytes = decodeMetrics.FinalMemoryBytes;
+            sample.DecodeMemoryGrowthCount = decodeMetrics.MemoryGrowthCount;
             sample.DecodedFrames = consumedFrames;
             sample.DecodeChecksum = checksum.ToString("x16", CultureInfo.InvariantCulture);
             if (preflight.SubmittedCanvasPixels > 0)
+            {
                 sample.DecodeMillisecondsPerSubmittedMegapixel = sample.DecodeMilliseconds / (preflight.SubmittedCanvasPixels / 1_000_000.0);
+                sample.DecodeFuelPerSubmittedPixel = decodeFuelConsumed / (double)preflight.SubmittedCanvasPixels;
+            }
             if (preflight.LogicalFrameCount > 0)
+            {
                 sample.DecodeMillisecondsPerFrame = sample.DecodeMilliseconds / preflight.LogicalFrameCount;
+                sample.DecodeFuelPerLogicalFrame = decodeFuelConsumed / (double)preflight.LogicalFrameCount;
+            }
+            ulong canvasPixels = (ulong)preflight.Width * preflight.Height;
+            if (canvasPixels > 0)
+                sample.DecodeFuelPerCanvasPixel = decodeFuelConsumed / (double)canvasPixels;
+            if (preflight.PublicRegularLayerPixels > 0)
+                sample.DecodeFuelPerPublicLayerPixel = decodeFuelConsumed / (double)preflight.PublicRegularLayerPixels;
+            if (preflight.BlendOperationCount > 0)
+                sample.DecodeFuelPerBlendOperation = decodeFuelConsumed / (double)preflight.BlendOperationCount;
+            if (preflight.ReferenceReadEdges > 0)
+                sample.DecodeFuelPerReferenceEdge = decodeFuelConsumed / (double)preflight.ReferenceReadEdges;
             return sample;
         }
 
@@ -1071,7 +1887,7 @@ namespace Basis.ImageSandbox.Editor
         private static string BuildCsv(BenchmarkRunResult run)
         {
             var csv = new StringBuilder();
-            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,fuel_limit,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_consumed_available,stage_b_fuel_mean,stage_b_fuel_max,decode_fuel_mean,decode_fuel_max,wasm_peak_memory_available");
+            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,preparation_backend,preparation_cache_hit,was_reencoded,source_already_profile1,source_decode_ms,profile1_encode_ms,preparation_total_ms,timeline_bytes,preparation_working_set_before_bytes,preparation_working_set_after_bytes,preparation_working_set_peak_bytes,preparation_working_set_peak_delta_bytes,prepared_to_original_size_ratio,prepared_bytes_per_submitted_mp,prepared_bytes_per_logical_frame,fuel_limit,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,stage_b_diagnostic_reason,stage_b_logical_header_mean_ms,stage_b_structural_header_mean_ms,stage_b_header_mean_ms,stage_b_validation_mean_ms,stage_b_logical_header_fuel_mean,stage_b_logical_header_fuel_max,stage_b_structural_header_fuel_mean,stage_b_structural_header_fuel_max,stage_b_header_fuel_mean,stage_b_header_fuel_max,stage_b_validation_fuel_mean,stage_b_validation_fuel_max,stage_b_peak_linear_memory_bytes,stage_b_memory_growth_count_max,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,decode_fuel_per_canvas_pixel_mean,decode_fuel_per_submitted_pixel_mean,decode_fuel_per_logical_frame_mean,decode_fuel_per_public_layer_pixel_mean,decode_fuel_per_blend_operation_mean,decode_fuel_per_reference_edge_mean,decode_peak_linear_memory_bytes,decode_memory_growth_count_max,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_consumed_available,stage_b_fuel_mean,stage_b_fuel_max,decode_fuel_mean,decode_fuel_max,wasm_peak_memory_available");
             foreach (FixtureBenchmarkResult item in run.Fixtures)
             {
                 csv.Append(Csv(item.Fixture)).Append(',')
@@ -1079,6 +1895,21 @@ namespace Basis.ImageSandbox.Editor
                     .Append(item.PayloadBytes).Append(',')
                     .Append(Csv(item.PreparationKind)).Append(',')
                     .Append(Csv(item.PreparationError)).Append(',')
+                    .Append(Csv(item.PreparationBackend)).Append(',')
+                    .Append(item.PreparationCacheHit ? "true" : "false").Append(',')
+                    .Append(item.WasReencoded ? "true" : "false").Append(',')
+                    .Append(item.SourceAlreadyProfile1 ? "true" : "false").Append(',')
+                    .Append(F(item.SourceDecodeMilliseconds)).Append(',')
+                    .Append(F(item.Profile1EncodeMilliseconds)).Append(',')
+                    .Append(F(item.PreparationTotalMilliseconds)).Append(',')
+                    .Append(item.TimelineBytes).Append(',')
+                    .Append(item.PreparationWorkingSetBeforeBytes).Append(',')
+                    .Append(item.PreparationWorkingSetAfterBytes).Append(',')
+                    .Append(item.PreparationWorkingSetPeakBytes).Append(',')
+                    .Append(item.PreparationWorkingSetPeakDeltaBytes).Append(',')
+                    .Append(F(item.PreparedToOriginalSizeRatio)).Append(',')
+                    .Append(F(item.PreparedBytesPerSubmittedMegapixel)).Append(',')
+                    .Append(F(item.PreparedBytesPerLogicalFrame)).Append(',')
                     .Append(item.FuelLimit).Append(',')
                     .Append(item.Concurrency).Append(',')
                     .Append(item.SampleCount).Append(',')
@@ -1101,6 +1932,21 @@ namespace Basis.ImageSandbox.Editor
                     .Append(F(item.StageBMeanMilliseconds)).Append(',')
                     .Append(F(item.StageBMedianMilliseconds)).Append(',')
                     .Append(F(item.StageBP95Milliseconds)).Append(',')
+                    .Append(Csv(item.StageBDiagnosticReason)).Append(',')
+                    .Append(F(item.StageBLogicalHeaderMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageBStructuralHeaderMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageBHeaderMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageBValidationMeanMilliseconds)).Append(',')
+                    .Append(F(item.StageBLogicalHeaderFuelMean)).Append(',')
+                    .Append(item.StageBLogicalHeaderFuelMax).Append(',')
+                    .Append(F(item.StageBStructuralHeaderFuelMean)).Append(',')
+                    .Append(item.StageBStructuralHeaderFuelMax).Append(',')
+                    .Append(F(item.StageBHeaderFuelMean)).Append(',')
+                    .Append(item.StageBHeaderFuelMax).Append(',')
+                    .Append(F(item.StageBValidationFuelMean)).Append(',')
+                    .Append(item.StageBValidationFuelMax).Append(',')
+                    .Append(item.StageBPeakLinearMemoryBytes).Append(',')
+                    .Append(item.StageBMemoryGrowthCountMax).Append(',')
                     .Append(F(item.DecodeMeanMilliseconds)).Append(',')
                     .Append(F(item.DecodeMedianMilliseconds)).Append(',')
                     .Append(F(item.DecodeP95Milliseconds)).Append(',')
@@ -1108,6 +1954,14 @@ namespace Basis.ImageSandbox.Editor
                     .Append(F(item.DecodeStdDevMilliseconds)).Append(',')
                     .Append(F(item.DecodeMeanMillisecondsPerSubmittedMegapixel)).Append(',')
                     .Append(F(item.DecodeMeanMillisecondsPerFrame)).Append(',')
+                    .Append(F(item.DecodeFuelPerCanvasPixelMean)).Append(',')
+                    .Append(F(item.DecodeFuelPerSubmittedPixelMean)).Append(',')
+                    .Append(F(item.DecodeFuelPerLogicalFrameMean)).Append(',')
+                    .Append(F(item.DecodeFuelPerPublicLayerPixelMean)).Append(',')
+                    .Append(F(item.DecodeFuelPerBlendOperationMean)).Append(',')
+                    .Append(F(item.DecodeFuelPerReferenceEdgeMean)).Append(',')
+                    .Append(item.DecodePeakLinearMemoryBytes).Append(',')
+                    .Append(item.DecodeMemoryGrowthCountMax).Append(',')
                     .Append(F(item.GroupWallMilliseconds)).Append(',')
                     .Append(F(item.AggregateDecodedFramesPerSecond)).Append(',')
                     .Append(item.WorkingSetBeforeBytes).Append(',')
@@ -1143,6 +1997,77 @@ namespace Basis.ImageSandbox.Editor
             return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty).ToLowerInvariant();
         }
 
+        private readonly struct SyntheticFixtureDefinition
+        {
+            public readonly uint Kind;
+            public readonly string FileName;
+            public readonly string DisplayName;
+
+            public SyntheticFixtureDefinition(uint kind, string fileName, string displayName)
+            {
+                Kind = kind;
+                FileName = fileName;
+                DisplayName = displayName;
+            }
+        }
+
+        private readonly struct NativeByteResult
+        {
+            public readonly bool Ok;
+            public readonly byte[] Bytes;
+            public readonly string Error;
+
+            public NativeByteResult(bool ok, byte[] bytes, string error)
+            {
+                Ok = ok;
+                Bytes = bytes;
+                Error = error;
+            }
+        }
+
+        private sealed class LocalPreparationResult
+        {
+            public readonly bool Ok;
+            public readonly string PreparedPath;
+            public readonly string Error;
+            public readonly string PreparationPrefix;
+            public readonly long OriginalPayloadBytes;
+            public readonly FixturePreparationMeasurement Measurement;
+
+            public LocalPreparationResult(
+                bool ok,
+                string preparedPath,
+                string error,
+                string preparationPrefix,
+                long originalPayloadBytes,
+                FixturePreparationMeasurement measurement)
+            {
+                Ok = ok;
+                PreparedPath = preparedPath;
+                Error = error;
+                PreparationPrefix = preparationPrefix;
+                OriginalPayloadBytes = originalPayloadBytes;
+                Measurement = measurement;
+            }
+        }
+
+        [Serializable]
+        private sealed class FixturePreparationMeasurement
+        {
+            public string Backend;
+            public bool CacheHit;
+            public bool WasReencoded;
+            public bool SourceAlreadyProfile1;
+            public double DecodeMilliseconds;
+            public double EncodeMilliseconds;
+            public double TotalMilliseconds;
+            public long TimelineBytes;
+            public long WorkingSetBeforeBytes;
+            public long WorkingSetAfterBytes;
+            public long WorkingSetPeakBytes;
+            public long WorkingSetPeakDeltaBytes;
+        }
+
         [Serializable]
         private sealed class BenchmarkMetadata
         {
@@ -1164,6 +2089,10 @@ namespace Basis.ImageSandbox.Editor
         {
             public string FixtureDirectory;
             public string OutputDirectory;
+            public string Preset;
+            public string JxlHandling;
+            public bool IncludeSyntheticFixtures;
+            public string FfmpegPath;
             public int WarmupIterations;
             public int MeasuredIterations;
             public int[] Concurrency;
@@ -1176,6 +2105,7 @@ namespace Basis.ImageSandbox.Editor
             public Dictionary<string, string> FixturePreparationPrefixes;
             public Dictionary<string, string> FixturePreparationErrors;
             public Dictionary<string, long> FixtureOriginalPayloadBytes;
+            public Dictionary<string, FixturePreparationMeasurement> FixturePreparationMeasurements;
             public BenchmarkMetadata Metadata;
         }
 
@@ -1183,6 +2113,10 @@ namespace Basis.ImageSandbox.Editor
         private sealed class SerializableConfiguration
         {
             public string FixtureDirectory;
+            public string Preset;
+            public string JxlHandling;
+            public bool IncludeSyntheticFixtures;
+            public string FfmpegPath;
             public int WarmupIterations;
             public int MeasuredIterations;
             public int[] Concurrency;
@@ -1193,6 +2127,10 @@ namespace Basis.ImageSandbox.Editor
             public SerializableConfiguration(BenchmarkConfiguration source)
             {
                 FixtureDirectory = source.FixtureDirectory;
+                Preset = source.Preset;
+                JxlHandling = source.JxlHandling;
+                IncludeSyntheticFixtures = source.IncludeSyntheticFixtures;
+                FfmpegPath = source.FfmpegPath;
                 WarmupIterations = source.WarmupIterations;
                 MeasuredIterations = source.MeasuredIterations;
                 Concurrency = source.Concurrency;
@@ -1241,6 +2179,21 @@ namespace Basis.ImageSandbox.Editor
             public long PayloadBytes;
             public string PreparationKind;
             public string PreparationError;
+            public string PreparationBackend;
+            public bool PreparationCacheHit;
+            public bool WasReencoded;
+            public bool SourceAlreadyProfile1;
+            public double SourceDecodeMilliseconds;
+            public double Profile1EncodeMilliseconds;
+            public double PreparationTotalMilliseconds;
+            public long TimelineBytes;
+            public long PreparationWorkingSetBeforeBytes;
+            public long PreparationWorkingSetAfterBytes;
+            public long PreparationWorkingSetPeakBytes;
+            public long PreparationWorkingSetPeakDeltaBytes;
+            public double PreparedToOriginalSizeRatio;
+            public double PreparedBytesPerSubmittedMegapixel;
+            public double PreparedBytesPerLogicalFrame;
             public ulong FuelLimit;
             public int Concurrency;
             public int SampleCount;
@@ -1264,6 +2217,21 @@ namespace Basis.ImageSandbox.Editor
             public double StageBMeanMilliseconds;
             public double StageBMedianMilliseconds;
             public double StageBP95Milliseconds;
+            public string StageBDiagnosticReason;
+            public double StageBLogicalHeaderMeanMilliseconds;
+            public double StageBStructuralHeaderMeanMilliseconds;
+            public double StageBHeaderMeanMilliseconds;
+            public double StageBValidationMeanMilliseconds;
+            public double StageBLogicalHeaderFuelMean;
+            public ulong StageBLogicalHeaderFuelMax;
+            public double StageBStructuralHeaderFuelMean;
+            public ulong StageBStructuralHeaderFuelMax;
+            public double StageBHeaderFuelMean;
+            public ulong StageBHeaderFuelMax;
+            public double StageBValidationFuelMean;
+            public ulong StageBValidationFuelMax;
+            public ulong StageBPeakLinearMemoryBytes;
+            public int StageBMemoryGrowthCountMax;
             public double DecodeMeanMilliseconds;
             public double DecodeMedianMilliseconds;
             public double DecodeP95Milliseconds;
@@ -1271,6 +2239,14 @@ namespace Basis.ImageSandbox.Editor
             public double DecodeStdDevMilliseconds;
             public double DecodeMeanMillisecondsPerSubmittedMegapixel;
             public double DecodeMeanMillisecondsPerFrame;
+            public double DecodeFuelPerCanvasPixelMean;
+            public double DecodeFuelPerSubmittedPixelMean;
+            public double DecodeFuelPerLogicalFrameMean;
+            public double DecodeFuelPerPublicLayerPixelMean;
+            public double DecodeFuelPerBlendOperationMean;
+            public double DecodeFuelPerReferenceEdgeMean;
+            public ulong DecodePeakLinearMemoryBytes;
+            public int DecodeMemoryGrowthCountMax;
             public double GroupWallMilliseconds;
             public double AggregateDecodedFramesPerSecond;
             public long WorkingSetBeforeBytes;
@@ -1305,7 +2281,18 @@ namespace Basis.ImageSandbox.Editor
                     BlendOperationCount = firstSuccess.BlendOperationCount;
                     MaximumReferenceChainDepth = firstSuccess.MaximumReferenceChainDepth;
                     PreviewPixels = firstSuccess.PreviewPixels;
+                    if (SubmittedCanvasPixels > 0)
+                        PreparedBytesPerSubmittedMegapixel = PayloadBytes / (SubmittedCanvasPixels / 1_000_000.0);
+                    if (LogicalFrames > 0)
+                        PreparedBytesPerLogicalFrame = PayloadBytes / (double)LogicalFrames;
                 }
+                PreparedToOriginalSizeRatio = OriginalPayloadBytes > 0
+                    ? PayloadBytes / (double)OriginalPayloadBytes
+                    : 0;
+                StageBDiagnosticReason = Samples
+                    .Select(sample => sample.StageBDiagnosticReason)
+                    .FirstOrDefault(reason => !string.IsNullOrEmpty(reason) && reason != BasisProfile1SandboxDiagnosticReason.None.ToString())
+                    ?? BasisProfile1SandboxDiagnosticReason.None.ToString();
 
                 SuccessCount = Samples.Count(sample => sample.DecodeStatus == BasisProfile1SandboxStatus.Success.ToString());
                 FailureCount = SampleCount - SuccessCount;
@@ -1329,6 +2316,24 @@ namespace Basis.ImageSandbox.Editor
                 StageBMeanMilliseconds = Stats.Mean(Samples.Where(sample => sample.StageBMilliseconds > 0).Select(sample => sample.StageBMilliseconds));
                 StageBMedianMilliseconds = Stats.Percentile(Samples.Where(sample => sample.StageBMilliseconds > 0).Select(sample => sample.StageBMilliseconds), 0.50);
                 StageBP95Milliseconds = Stats.Percentile(Samples.Where(sample => sample.StageBMilliseconds > 0).Select(sample => sample.StageBMilliseconds), 0.95);
+                StageBLogicalHeaderMeanMilliseconds = Stats.Mean(Samples.Where(sample => sample.StageBLogicalHeaderMilliseconds > 0).Select(sample => sample.StageBLogicalHeaderMilliseconds));
+                StageBStructuralHeaderMeanMilliseconds = Stats.Mean(Samples.Where(sample => sample.StageBStructuralHeaderMilliseconds > 0).Select(sample => sample.StageBStructuralHeaderMilliseconds));
+                StageBHeaderMeanMilliseconds = Stats.Mean(Samples.Where(sample => sample.StageBHeaderMilliseconds > 0).Select(sample => sample.StageBHeaderMilliseconds));
+                StageBValidationMeanMilliseconds = Stats.Mean(Samples.Where(sample => sample.StageBValidationMilliseconds > 0).Select(sample => sample.StageBValidationMilliseconds));
+                ulong[] logicalHeaderFuel = Samples.Where(sample => sample.StageBLogicalHeaderFuelConsumed > 0).Select(sample => sample.StageBLogicalHeaderFuelConsumed).ToArray();
+                ulong[] structuralHeaderFuel = Samples.Where(sample => sample.StageBStructuralHeaderFuelConsumed > 0).Select(sample => sample.StageBStructuralHeaderFuelConsumed).ToArray();
+                ulong[] headerFuel = Samples.Where(sample => sample.StageBHeaderFuelConsumed > 0).Select(sample => sample.StageBHeaderFuelConsumed).ToArray();
+                ulong[] validationFuel = Samples.Where(sample => sample.StageBValidationFuelConsumed > 0).Select(sample => sample.StageBValidationFuelConsumed).ToArray();
+                StageBLogicalHeaderFuelMean = logicalHeaderFuel.Length == 0 ? 0 : logicalHeaderFuel.Average(value => (double)value);
+                StageBLogicalHeaderFuelMax = logicalHeaderFuel.Length == 0 ? 0 : logicalHeaderFuel.Max();
+                StageBStructuralHeaderFuelMean = structuralHeaderFuel.Length == 0 ? 0 : structuralHeaderFuel.Average(value => (double)value);
+                StageBStructuralHeaderFuelMax = structuralHeaderFuel.Length == 0 ? 0 : structuralHeaderFuel.Max();
+                StageBHeaderFuelMean = headerFuel.Length == 0 ? 0 : headerFuel.Average(value => (double)value);
+                StageBHeaderFuelMax = headerFuel.Length == 0 ? 0 : headerFuel.Max();
+                StageBValidationFuelMean = validationFuel.Length == 0 ? 0 : validationFuel.Average(value => (double)value);
+                StageBValidationFuelMax = validationFuel.Length == 0 ? 0 : validationFuel.Max();
+                StageBPeakLinearMemoryBytes = Samples.Count == 0 ? 0 : Samples.Max(sample => sample.StageBPeakMemoryBytes);
+                StageBMemoryGrowthCountMax = Samples.Count == 0 ? 0 : Samples.Max(sample => sample.StageBMemoryGrowthCount);
 
                 double[] decode = Samples.Where(sample => sample.DecodeMilliseconds > 0).Select(sample => sample.DecodeMilliseconds).ToArray();
                 DecodeMeanMilliseconds = Stats.Mean(decode);
@@ -1338,6 +2343,15 @@ namespace Basis.ImageSandbox.Editor
                 DecodeStdDevMilliseconds = Stats.StandardDeviation(decode);
                 DecodeMeanMillisecondsPerSubmittedMegapixel = Stats.Mean(Samples.Where(sample => sample.DecodeMillisecondsPerSubmittedMegapixel > 0).Select(sample => sample.DecodeMillisecondsPerSubmittedMegapixel));
                 DecodeMeanMillisecondsPerFrame = Stats.Mean(Samples.Where(sample => sample.DecodeMillisecondsPerFrame > 0).Select(sample => sample.DecodeMillisecondsPerFrame));
+                DecodeFuelPerCanvasPixelMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerCanvasPixel > 0).Select(sample => sample.DecodeFuelPerCanvasPixel));
+                DecodeFuelPerSubmittedPixelMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerSubmittedPixel > 0).Select(sample => sample.DecodeFuelPerSubmittedPixel));
+                DecodeFuelPerLogicalFrameMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerLogicalFrame > 0).Select(sample => sample.DecodeFuelPerLogicalFrame));
+                DecodeFuelPerPublicLayerPixelMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerPublicLayerPixel > 0).Select(sample => sample.DecodeFuelPerPublicLayerPixel));
+                DecodeFuelPerBlendOperationMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerBlendOperation > 0).Select(sample => sample.DecodeFuelPerBlendOperation));
+                DecodeFuelPerReferenceEdgeMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerReferenceEdge > 0).Select(sample => sample.DecodeFuelPerReferenceEdge));
+                DecodePeakLinearMemoryBytes = Samples.Count == 0 ? 0 : Samples.Max(sample => sample.DecodePeakMemoryBytes);
+                DecodeMemoryGrowthCountMax = Samples.Count == 0 ? 0 : Samples.Max(sample => sample.DecodeMemoryGrowthCount);
+                WasmPeakMemoryAvailable = StageBPeakLinearMemoryBytes > 0 || DecodePeakLinearMemoryBytes > 0;
             }
         }
 
@@ -1351,14 +2365,37 @@ namespace Basis.ImageSandbox.Editor
             public long ConcatenatedCodestreamBytes;
             public double StageBMilliseconds;
             public string StageBStatus;
+            public string StageBDiagnosticReason;
+            public double StageBLogicalHeaderMilliseconds;
+            public double StageBStructuralHeaderMilliseconds;
+            public double StageBHeaderMilliseconds;
+            public double StageBValidationMilliseconds;
+            public ulong StageBLogicalHeaderFuelConsumed;
+            public ulong StageBStructuralHeaderFuelConsumed;
+            public ulong StageBHeaderFuelConsumed;
+            public ulong StageBValidationFuelConsumed;
             public ulong StageBFuelConsumed;
             public bool StageBFuelConsumedAvailable;
+            public ulong StageBInitialMemoryBytes;
+            public ulong StageBPeakMemoryBytes;
+            public ulong StageBFinalMemoryBytes;
+            public int StageBMemoryGrowthCount;
             public double DecodeMilliseconds;
             public string DecodeStatus;
             public ulong DecodeFuelConsumed;
             public bool DecodeFuelConsumedAvailable;
+            public ulong DecodeInitialMemoryBytes;
+            public ulong DecodePeakMemoryBytes;
+            public ulong DecodeFinalMemoryBytes;
+            public int DecodeMemoryGrowthCount;
             public double DecodeMillisecondsPerSubmittedMegapixel;
             public double DecodeMillisecondsPerFrame;
+            public double DecodeFuelPerCanvasPixel;
+            public double DecodeFuelPerSubmittedPixel;
+            public double DecodeFuelPerLogicalFrame;
+            public double DecodeFuelPerPublicLayerPixel;
+            public double DecodeFuelPerBlendOperation;
+            public double DecodeFuelPerReferenceEdge;
             public int DecodedFrames;
             public string DecodeChecksum;
             public uint Width;

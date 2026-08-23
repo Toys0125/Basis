@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -24,8 +25,9 @@ namespace Basis.ImageSandbox.Editor
         {
             var convertedByOriginal = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var errorsByOriginal = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var metricsByOriginal = new Dictionary<string, GifPreparationMetrics>(StringComparer.OrdinalIgnoreCase);
             if (gifPaths == null || gifPaths.Length == 0)
-                return GifPreparationResult.Success(convertedByOriginal, errorsByOriginal);
+                return GifPreparationResult.Success(convertedByOriginal, errorsByOriginal, metricsByOriginal);
 
             string cacheRoot = Path.Combine(outputRoot, "gif-profile1-cache");
             Directory.CreateDirectory(cacheRoot);
@@ -36,6 +38,9 @@ namespace Basis.ImageSandbox.Editor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     string gifPath = gifPaths[i];
+                    long workingSetBefore = GetCurrentWorkingSetBytes();
+                    using var memorySampler = new WorkingSetSampler();
+                    memorySampler.Start();
                     try
                     {
                         progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Checking cache");
@@ -45,14 +50,29 @@ namespace Basis.ImageSandbox.Editor
                         if (File.Exists(jxlPath) && new FileInfo(jxlPath).Length > 0)
                         {
                             convertedByOriginal[gifPath] = jxlPath;
+                            memorySampler.Stop();
+                            long workingSetAfter = GetCurrentWorkingSetBytes();
+                            metricsByOriginal[gifPath] = new GifPreparationMetrics(
+                                true,
+                                0,
+                                0,
+                                0,
+                                "BasisBurstGifDecoder + editor-native libjxl",
+                                workingSetBefore,
+                                workingSetAfter,
+                                memorySampler.PeakBytes,
+                                Math.Max(0, memorySampler.PeakBytes - workingSetBefore)
+                            );
                             progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Cache hit");
                             continue;
                         }
 
                         byte[] source = await Task.Run(() => File.ReadAllBytes(gifPath), cancellationToken);
                         progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Decoding GIF");
+                        var decodeStopwatch = Stopwatch.StartNew();
                         using var request = BasisBurstGifDecoder.Schedule(source);
                         using BasisBurstGifDecodeResult result = await WaitForDecodeAsync(request, cancellationToken);
+                        decodeStopwatch.Stop();
                         if (result == null || !result.Ok || result.Animation == null)
                         {
                             string decodeError = result?.Error ?? "unknown error";
@@ -69,10 +89,12 @@ namespace Basis.ImageSandbox.Editor
                         }
 
                         progress?.Invoke(i, gifPaths.Length, Path.GetFileName(gifPath), "Encoding JPEG XL");
+                        var encodeStopwatch = Stopwatch.StartNew();
                         EncodeResult encoded = await Task.Run(
                             () => EncodeTimeline(timeline),
                             cancellationToken
                         );
+                        encodeStopwatch.Stop();
                         if (!encoded.Ok)
                         {
                             errorsByOriginal[gifPath] = "GIF Profile 1 encode failed: " + encoded.Error;
@@ -89,6 +111,19 @@ namespace Basis.ImageSandbox.Editor
                             File.Move(temporaryPath, jxlPath);
                         }, cancellationToken);
                         convertedByOriginal[gifPath] = jxlPath;
+                        memorySampler.Stop();
+                        long workingSetAfter = GetCurrentWorkingSetBytes();
+                        metricsByOriginal[gifPath] = new GifPreparationMetrics(
+                            false,
+                            decodeStopwatch.Elapsed.TotalMilliseconds,
+                            encodeStopwatch.Elapsed.TotalMilliseconds,
+                            timeline.LongLength,
+                            "BasisBurstGifDecoder + editor-native libjxl",
+                            workingSetBefore,
+                            workingSetAfter,
+                            memorySampler.PeakBytes,
+                            Math.Max(0, memorySampler.PeakBytes - workingSetBefore)
+                        );
                         progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Cached");
                     }
                     catch (OperationCanceledException)
@@ -101,7 +136,7 @@ namespace Basis.ImageSandbox.Editor
                         progress?.Invoke(i + 1, gifPaths.Length, Path.GetFileName(gifPath), "Failed");
                     }
                 }
-                return GifPreparationResult.Success(convertedByOriginal, errorsByOriginal);
+                return GifPreparationResult.Success(convertedByOriginal, errorsByOriginal, metricsByOriginal);
             }
             catch (OperationCanceledException)
             {
@@ -346,36 +381,134 @@ namespace Basis.ImageSandbox.Editor
             }
         }
 
+        internal readonly struct GifPreparationMetrics
+        {
+            public readonly bool CacheHit;
+            public readonly double DecodeMilliseconds;
+            public readonly double EncodeMilliseconds;
+            public readonly long TimelineBytes;
+            public readonly string Backend;
+            public readonly long WorkingSetBeforeBytes;
+            public readonly long WorkingSetAfterBytes;
+            public readonly long WorkingSetPeakBytes;
+            public readonly long WorkingSetPeakDeltaBytes;
+
+            public GifPreparationMetrics(
+                bool cacheHit,
+                double decodeMilliseconds,
+                double encodeMilliseconds,
+                long timelineBytes,
+                string backend,
+                long workingSetBeforeBytes,
+                long workingSetAfterBytes,
+                long workingSetPeakBytes,
+                long workingSetPeakDeltaBytes)
+            {
+                CacheHit = cacheHit;
+                DecodeMilliseconds = decodeMilliseconds;
+                EncodeMilliseconds = encodeMilliseconds;
+                TimelineBytes = timelineBytes;
+                Backend = backend;
+                WorkingSetBeforeBytes = workingSetBeforeBytes;
+                WorkingSetAfterBytes = workingSetAfterBytes;
+                WorkingSetPeakBytes = workingSetPeakBytes;
+                WorkingSetPeakDeltaBytes = workingSetPeakDeltaBytes;
+            }
+        }
+
+        private static long GetCurrentWorkingSetBytes()
+        {
+            try
+            {
+                using Process process = Process.GetCurrentProcess();
+                process.Refresh();
+                return process.WorkingSet64;
+            }
+            catch
+            {
+                return Environment.WorkingSet;
+            }
+        }
+
+        private sealed class WorkingSetSampler : IDisposable
+        {
+            private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+            private Task _task;
+            public long PeakBytes { get; private set; }
+
+            public void Start()
+            {
+                PeakBytes = GetCurrentWorkingSetBytes();
+                _task = Task.Run(async () =>
+                {
+                    while (!_stop.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            long current = GetCurrentWorkingSetBytes();
+                            if (current > PeakBytes)
+                                PeakBytes = current;
+                            await Task.Delay(10, _stop.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            public void Stop()
+            {
+                if (_task == null)
+                    return;
+                _stop.Cancel();
+                try { _task.Wait(); } catch (AggregateException) { }
+                _task = null;
+            }
+
+            public void Dispose()
+            {
+                Stop();
+                _stop.Dispose();
+            }
+        }
+
         internal sealed class GifPreparationResult
         {
             public readonly bool Ok;
             public readonly Dictionary<string, string> ConvertedByOriginal;
             public readonly Dictionary<string, string> ErrorsByOriginal;
+            public readonly Dictionary<string, GifPreparationMetrics> MetricsByOriginal;
             public readonly string Error;
 
             private GifPreparationResult(
                 bool ok,
                 Dictionary<string, string> convertedByOriginal,
                 Dictionary<string, string> errorsByOriginal,
+                Dictionary<string, GifPreparationMetrics> metricsByOriginal,
                 string error
             )
             {
                 Ok = ok;
                 ConvertedByOriginal = convertedByOriginal;
                 ErrorsByOriginal = errorsByOriginal;
+                MetricsByOriginal = metricsByOriginal;
                 Error = error;
             }
 
             public static GifPreparationResult Success(
                 Dictionary<string, string> converted,
-                Dictionary<string, string> errors
-            ) => new GifPreparationResult(true, converted, errors, null);
+                Dictionary<string, string> errors,
+                Dictionary<string, GifPreparationMetrics> metrics
+            ) => new GifPreparationResult(true, converted, errors, metrics, null);
 
             public static GifPreparationResult Failure(string error) =>
                 new GifPreparationResult(
                     false,
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                    new Dictionary<string, GifPreparationMetrics>(StringComparer.OrdinalIgnoreCase),
                     error
                 );
         }

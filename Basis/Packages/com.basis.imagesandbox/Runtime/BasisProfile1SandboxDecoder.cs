@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -15,6 +16,88 @@ namespace Basis.ImageSandbox
         Cancelled = 7,
         OutOfFuel = 8,
         SandboxFailure = 255,
+    }
+
+    public enum BasisProfile1SandboxDiagnosticReason : byte
+    {
+        None = 0,
+        Dimensions = 1,
+        CanvasPixels = 2,
+        BitsPerSample = 3,
+        ColorChannels = 4,
+        ExtraChannels = 5,
+        Alpha = 6,
+        PremultipliedAlpha = 7,
+        Orientation = 8,
+        ExtraChannel = 9,
+        MissingAnimation = 10,
+        Timebase = 11,
+        ColorEncoding = 12,
+        LogicalFrames = 13,
+        FrameDuration = 14,
+        Timeline = 15,
+        SubmittedPixels = 16,
+        StructuralLayerPixels = 17,
+        StructuralLayerCount = 18,
+        ReferenceSource = 19,
+        PreviewPixels = 20,
+        LogicalMismatch = 21,
+        Decoder = 22,
+    }
+
+    public readonly struct BasisProfile1SandboxExecutionMetrics
+    {
+        public readonly ulong InitialMemoryBytes;
+        public readonly ulong PeakMemoryBytes;
+        public readonly ulong FinalMemoryBytes;
+        public readonly int MemoryGrowthCount;
+
+        internal BasisProfile1SandboxExecutionMetrics(
+            ulong initialMemoryBytes,
+            ulong peakMemoryBytes,
+            ulong finalMemoryBytes,
+            int memoryGrowthCount)
+        {
+            InitialMemoryBytes = initialMemoryBytes;
+            PeakMemoryBytes = peakMemoryBytes;
+            FinalMemoryBytes = finalMemoryBytes;
+            MemoryGrowthCount = memoryGrowthCount;
+        }
+    }
+
+    public readonly struct BasisProfile1SandboxPreflightMetrics
+    {
+        public readonly double LogicalHeaderMilliseconds;
+        public readonly double StructuralHeaderMilliseconds;
+        public readonly double ValidationMilliseconds;
+        public readonly ulong LogicalHeaderFuelConsumed;
+        public readonly ulong StructuralHeaderFuelConsumed;
+        public readonly ulong ValidationFuelConsumed;
+        public readonly bool FuelConsumedAvailable;
+        public readonly BasisProfile1SandboxExecutionMetrics Execution;
+
+        public double HeaderMilliseconds => LogicalHeaderMilliseconds + StructuralHeaderMilliseconds;
+        public ulong HeaderFuelConsumed => LogicalHeaderFuelConsumed + StructuralHeaderFuelConsumed;
+
+        internal BasisProfile1SandboxPreflightMetrics(
+            double logicalHeaderMilliseconds,
+            double structuralHeaderMilliseconds,
+            double validationMilliseconds,
+            ulong logicalHeaderFuelConsumed,
+            ulong structuralHeaderFuelConsumed,
+            ulong validationFuelConsumed,
+            bool fuelConsumedAvailable,
+            BasisProfile1SandboxExecutionMetrics execution)
+        {
+            LogicalHeaderMilliseconds = logicalHeaderMilliseconds;
+            StructuralHeaderMilliseconds = structuralHeaderMilliseconds;
+            ValidationMilliseconds = validationMilliseconds;
+            LogicalHeaderFuelConsumed = logicalHeaderFuelConsumed;
+            StructuralHeaderFuelConsumed = structuralHeaderFuelConsumed;
+            ValidationFuelConsumed = validationFuelConsumed;
+            FuelConsumedAvailable = fuelConsumedAvailable;
+            Execution = execution;
+        }
     }
 
     public readonly struct BasisProfile1SandboxLimits
@@ -45,6 +128,7 @@ namespace Basis.ImageSandbox
     public readonly struct BasisProfile1SandboxPreflight
     {
         public readonly BasisProfile1SandboxStatus Status;
+        public readonly BasisProfile1SandboxDiagnosticReason DiagnosticReason;
         public readonly uint Width;
         public readonly uint Height;
         public readonly uint LogicalFrameCount;
@@ -63,6 +147,7 @@ namespace Basis.ImageSandbox
 
         internal BasisProfile1SandboxPreflight(
             BasisProfile1SandboxStatus status,
+            BasisProfile1SandboxDiagnosticReason diagnosticReason = BasisProfile1SandboxDiagnosticReason.None,
             uint width = 0,
             uint height = 0,
             uint logicalFrameCount = 0,
@@ -81,6 +166,7 @@ namespace Basis.ImageSandbox
         )
         {
             Status = status;
+            DiagnosticReason = diagnosticReason;
             Width = width;
             Height = height;
             LogicalFrameCount = logicalFrameCount;
@@ -123,7 +209,8 @@ namespace Basis.ImageSandbox
         private const uint DecoderAbiVersion = 1;
         private const int MaximumFrames = 512;
         private const int ResultHeaderSlots = 17;
-        private const int ExpectedResultSlots = ResultHeaderSlots + MaximumFrames;
+        private const int DiagnosticReasonSlot = ResultHeaderSlots + MaximumFrames;
+        private const int ExpectedResultSlots = DiagnosticReasonSlot + 1;
         private const uint DecodeEndOfStream = 4;
 
         private static readonly WasmtimeNative.HostFunctionCallback MemoryGrowthCallback =
@@ -239,16 +326,198 @@ namespace Basis.ImageSandbox
                         return new BasisProfile1SandboxPreflight(ResolveInterruptedStatus(callStatus, cancellationToken, timeout));
 
                     var status = MapDecoderStatus((uint)nativeStatus);
-                    if (status != BasisProfile1SandboxStatus.Success)
-                        return new BasisProfile1SandboxPreflight(status);
-
                     if (!TryReadResult(instance, resultPointer, out BasisProfile1SandboxPreflight result))
-                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
-                    return result;
+                        return new BasisProfile1SandboxPreflight(status == BasisProfile1SandboxStatus.Success
+                            ? BasisProfile1SandboxStatus.SandboxFailure
+                            : status);
+                    return result.Status == status
+                        ? result
+                        : new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
                 }
                 finally
                 {
                     fuelConsumedAvailable = TryGetFuelConsumed(instance, out fuelConsumed);
+                    if (resultPointer != 0)
+                        CallVoidBestEffort(instance, "p1_free", WasmtimeNative.WasmtimeValue.I32(resultPointer));
+                    if (inputPointer != 0)
+                        CallVoidBestEffort(instance, "p1_free", WasmtimeNative.WasmtimeValue.I32(inputPointer));
+                }
+            }
+        }
+
+        public BasisProfile1SandboxPreflight PreflightDetailed(
+            byte[] canonicalProfile1Container,
+            out BasisProfile1SandboxPreflightMetrics metrics,
+            CancellationToken cancellationToken = default
+        )
+        {
+            metrics = default;
+            if (canonicalProfile1Container == null || canonicalProfile1Container.Length == 0)
+                return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.Malformed);
+
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                using var timeout = CreateTimeout(cancellationToken);
+                CancellationToken effectiveToken = timeout.Token;
+                if (effectiveToken.IsCancellationRequested)
+                    return new BasisProfile1SandboxPreflight(ResolveCancellationStatus(cancellationToken));
+
+                using var epochRegistration = effectiveToken.Register(
+                    static state => WasmtimeNative.wasmtime_engine_increment_epoch((IntPtr)state),
+                    _engine
+                );
+                using var instance = CreateInstance();
+                if (!instance.IsValid)
+                    return new BasisProfile1SandboxPreflight(instance.FailureStatus);
+
+                int inputPointer = 0;
+                int resultPointer = 0;
+                double logicalHeaderMilliseconds = 0;
+                double structuralHeaderMilliseconds = 0;
+                double validationMilliseconds = 0;
+                ulong logicalHeaderFuel = 0;
+                ulong structuralHeaderFuel = 0;
+                ulong validationFuel = 0;
+                bool logicalHeaderFuelAvailable = false;
+                bool structuralHeaderFuelAvailable = false;
+                bool validationFuelAvailable = false;
+                ulong initialMemory = GetMemorySizeBytes(instance);
+                ulong peakMemory = initialMemory;
+                try
+                {
+                    if (!TryAllocateAndCopy(
+                            instance,
+                            canonicalProfile1Container,
+                            out inputPointer,
+                            out BasisProfile1SandboxStatus allocationStatus))
+                    {
+                        return new BasisProfile1SandboxPreflight(
+                            ResolveInterruptedStatus(allocationStatus, cancellationToken, timeout));
+                    }
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
+
+                    if (!TryCallI32(instance, "p1_result_u64_count", null, out int resultSlots, out BasisProfile1SandboxStatus callStatus))
+                        return new BasisProfile1SandboxPreflight(callStatus);
+                    if (resultSlots != ExpectedResultSlots)
+                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+
+                    if (!TryAllocate(instance, checked(resultSlots * sizeof(ulong)), out resultPointer, out allocationStatus))
+                    {
+                        return new BasisProfile1SandboxPreflight(
+                            ResolveInterruptedStatus(allocationStatus, cancellationToken, timeout));
+                    }
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
+
+                    var args = new[]
+                    {
+                        WasmtimeNative.WasmtimeValue.I32(inputPointer),
+                        WasmtimeNative.WasmtimeValue.I32(canonicalProfile1Container.Length),
+                        WasmtimeNative.WasmtimeValue.I32(resultPointer),
+                    };
+
+                    bool hadLogicalFuel = TryGetFuelRemaining(instance, out ulong beforeLogicalFuel);
+                    var stopwatch = Stopwatch.StartNew();
+                    bool logicalCallOk = TryCallI32(
+                        instance,
+                        "p1_preflight_logical_headers",
+                        args,
+                        out int logicalNativeStatus,
+                        out callStatus
+                    );
+                    stopwatch.Stop();
+                    logicalHeaderMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
+                    bool hasLogicalAfterFuel = TryGetFuelRemaining(instance, out ulong afterLogicalFuel);
+                    logicalHeaderFuelAvailable = hadLogicalFuel && hasLogicalAfterFuel && beforeLogicalFuel >= afterLogicalFuel;
+                    if (logicalHeaderFuelAvailable)
+                        logicalHeaderFuel = beforeLogicalFuel - afterLogicalFuel;
+                    if (!logicalCallOk)
+                        return new BasisProfile1SandboxPreflight(
+                            ResolveInterruptedStatus(callStatus, cancellationToken, timeout));
+
+                    BasisProfile1SandboxStatus logicalStatus = MapDecoderStatus((uint)logicalNativeStatus);
+                    if (!TryReadResult(instance, resultPointer, out BasisProfile1SandboxPreflight logicalResult))
+                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+                    if (logicalResult.Status != logicalStatus)
+                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+                    if (logicalStatus != BasisProfile1SandboxStatus.Success)
+                        return logicalResult;
+
+                    bool hadStructuralFuel = TryGetFuelRemaining(instance, out ulong beforeStructuralFuel);
+                    stopwatch.Restart();
+                    bool structuralCallOk = TryCallI32(
+                        instance,
+                        "p1_preflight_structural_headers",
+                        args,
+                        out int structuralNativeStatus,
+                        out callStatus
+                    );
+                    stopwatch.Stop();
+                    structuralHeaderMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
+                    bool hasStructuralAfterFuel = TryGetFuelRemaining(instance, out ulong afterStructuralFuel);
+                    structuralHeaderFuelAvailable = hadStructuralFuel && hasStructuralAfterFuel && beforeStructuralFuel >= afterStructuralFuel;
+                    if (structuralHeaderFuelAvailable)
+                        structuralHeaderFuel = beforeStructuralFuel - afterStructuralFuel;
+                    if (!structuralCallOk)
+                        return new BasisProfile1SandboxPreflight(
+                            ResolveInterruptedStatus(callStatus, cancellationToken, timeout));
+
+                    BasisProfile1SandboxStatus structuralStatus = MapDecoderStatus((uint)structuralNativeStatus);
+                    if (!TryReadResult(instance, resultPointer, out BasisProfile1SandboxPreflight structuralResult))
+                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+                    if (structuralResult.Status != structuralStatus)
+                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+                    if (structuralStatus != BasisProfile1SandboxStatus.Success)
+                        return structuralResult;
+
+                    bool hadValidationFuel = TryGetFuelRemaining(instance, out ulong beforeValidationFuel);
+                    stopwatch.Restart();
+                    bool validationCallOk = TryCallI32(
+                        instance,
+                        "p1_preflight_validate",
+                        args,
+                        out int validationNativeStatus,
+                        out callStatus
+                    );
+                    stopwatch.Stop();
+                    validationMilliseconds = stopwatch.Elapsed.TotalMilliseconds;
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
+                    bool hasValidationAfterFuel = TryGetFuelRemaining(instance, out ulong afterValidationFuel);
+                    validationFuelAvailable = hadValidationFuel && hasValidationAfterFuel && beforeValidationFuel >= afterValidationFuel;
+                    if (validationFuelAvailable)
+                        validationFuel = beforeValidationFuel - afterValidationFuel;
+                    if (!validationCallOk)
+                        return new BasisProfile1SandboxPreflight(
+                            ResolveInterruptedStatus(callStatus, cancellationToken, timeout));
+
+                    BasisProfile1SandboxStatus validationStatus = MapDecoderStatus((uint)validationNativeStatus);
+                    if (!TryReadResult(instance, resultPointer, out BasisProfile1SandboxPreflight result))
+                        return new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+                    return result.Status == validationStatus
+                        ? result
+                        : new BasisProfile1SandboxPreflight(BasisProfile1SandboxStatus.SandboxFailure);
+                }
+                finally
+                {
+                    ulong finalMemory = GetMemorySizeBytes(instance);
+                    peakMemory = Math.Max(peakMemory, finalMemory);
+                    metrics = new BasisProfile1SandboxPreflightMetrics(
+                        logicalHeaderMilliseconds,
+                        structuralHeaderMilliseconds,
+                        validationMilliseconds,
+                        logicalHeaderFuel,
+                        structuralHeaderFuel,
+                        validationFuel,
+                        logicalHeaderFuelAvailable || structuralHeaderFuelAvailable || validationFuelAvailable,
+                        new BasisProfile1SandboxExecutionMetrics(
+                            initialMemory,
+                            peakMemory,
+                            finalMemory,
+                            instance.MemoryGrowthCount
+                        )
+                    );
                     if (resultPointer != 0)
                         CallVoidBestEffort(instance, "p1_free", WasmtimeNative.WasmtimeValue.I32(resultPointer));
                     if (inputPointer != 0)
@@ -266,10 +535,11 @@ namespace Basis.ImageSandbox
             BasisProfile1SandboxPreflight preflight,
             BasisProfile1DecodedFrameConsumer consumer,
             CancellationToken cancellationToken = default
-        ) => DecodeFrames(
+        ) => DecodeFramesCore(
             canonicalProfile1Container,
             preflight,
             consumer,
+            out _,
             out _,
             out _,
             cancellationToken
@@ -282,10 +552,47 @@ namespace Basis.ImageSandbox
             out ulong fuelConsumed,
             out bool fuelConsumedAvailable,
             CancellationToken cancellationToken = default
+        ) => DecodeFramesCore(
+            canonicalProfile1Container,
+            preflight,
+            consumer,
+            out fuelConsumed,
+            out fuelConsumedAvailable,
+            out _,
+            cancellationToken
+        );
+
+        public BasisProfile1SandboxStatus DecodeFramesDetailed(
+            byte[] canonicalProfile1Container,
+            BasisProfile1SandboxPreflight preflight,
+            BasisProfile1DecodedFrameConsumer consumer,
+            out ulong fuelConsumed,
+            out bool fuelConsumedAvailable,
+            out BasisProfile1SandboxExecutionMetrics executionMetrics,
+            CancellationToken cancellationToken = default
+        ) => DecodeFramesCore(
+            canonicalProfile1Container,
+            preflight,
+            consumer,
+            out fuelConsumed,
+            out fuelConsumedAvailable,
+            out executionMetrics,
+            cancellationToken
+        );
+
+        private BasisProfile1SandboxStatus DecodeFramesCore(
+            byte[] canonicalProfile1Container,
+            BasisProfile1SandboxPreflight preflight,
+            BasisProfile1DecodedFrameConsumer consumer,
+            out ulong fuelConsumed,
+            out bool fuelConsumedAvailable,
+            out BasisProfile1SandboxExecutionMetrics executionMetrics,
+            CancellationToken cancellationToken
         )
         {
             fuelConsumed = 0;
             fuelConsumedAvailable = false;
+            executionMetrics = default;
             if (
                 canonicalProfile1Container == null
                 || canonicalProfile1Container.Length == 0
@@ -321,6 +628,8 @@ namespace Basis.ImageSandbox
                 int outputPointer = 0;
                 int durationPointer = 0;
                 bool sessionOpen = false;
+                ulong initialMemory = GetMemorySizeBytes(instance);
+                ulong peakMemory = initialMemory;
                 try
                 {
                     if (
@@ -338,6 +647,7 @@ namespace Basis.ImageSandbox
                             timeout
                         );
                     }
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
 
                     int outputBytes = checked((int)(preflight.Width * preflight.Height * 4UL));
                     if (
@@ -355,6 +665,7 @@ namespace Basis.ImageSandbox
                             timeout
                         );
                     }
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
                     if (
                         !TryAllocate(
                             instance,
@@ -370,6 +681,7 @@ namespace Basis.ImageSandbox
                             timeout
                         );
                     }
+                    peakMemory = Math.Max(peakMemory, GetMemorySizeBytes(instance));
 
                     var openArgs = new[]
                     {
@@ -430,6 +742,14 @@ namespace Basis.ImageSandbox
                 finally
                 {
                     fuelConsumedAvailable = TryGetFuelConsumed(instance, out fuelConsumed);
+                    ulong finalMemory = GetMemorySizeBytes(instance);
+                    peakMemory = Math.Max(peakMemory, finalMemory);
+                    executionMetrics = new BasisProfile1SandboxExecutionMetrics(
+                        initialMemory,
+                        peakMemory,
+                        finalMemory,
+                        instance.MemoryGrowthCount
+                    );
                     if (sessionOpen)
                         CallVoidBestEffort(instance, "p1_decode_close");
                     if (durationPointer != 0)
@@ -569,7 +889,7 @@ namespace Basis.ImageSandbox
                     context,
                     functionType,
                     MemoryGrowthCallback,
-                    IntPtr.Zero,
+                    instance.MemoryGrowthEnvironment,
                     IntPtr.Zero,
                     out WasmtimeNative.WasmtimeFunc memoryGrowthFunction
                 );
@@ -841,8 +1161,16 @@ namespace Basis.ImageSandbox
 
             ulong abi = ReadSlot(memory, 0);
             ulong statusRaw = ReadSlot(memory, 1);
-            if (abi != DecoderAbiVersion || statusRaw != 0)
+            if (abi != DecoderAbiVersion || statusRaw > uint.MaxValue)
                 return false;
+
+            BasisProfile1SandboxStatus status = MapDecoderStatus((uint)statusRaw);
+            BasisProfile1SandboxDiagnosticReason diagnosticReason = MapDiagnosticReason(ReadSlot(memory, DiagnosticReasonSlot));
+            if (status != BasisProfile1SandboxStatus.Success)
+            {
+                result = new BasisProfile1SandboxPreflight(status, diagnosticReason);
+                return true;
+            }
 
             ulong durationCount = ReadSlot(memory, 16);
             if (durationCount == 0 || durationCount > MaximumFrames)
@@ -857,6 +1185,7 @@ namespace Basis.ImageSandbox
 
             result = new BasisProfile1SandboxPreflight(
                 BasisProfile1SandboxStatus.Success,
+                BasisProfile1SandboxDiagnosticReason.None,
                 checked((uint)ReadSlot(memory, 2)),
                 checked((uint)ReadSlot(memory, 3)),
                 checked((uint)logicalFrameCount),
@@ -906,19 +1235,34 @@ namespace Basis.ImageSandbox
             return true;
         }
 
+        private static ulong GetMemorySizeBytes(SandboxInstance instance)
+        {
+            if (instance == null || !instance.IsValid)
+                return 0;
+            return WasmtimeNative.wasmtime_memory_data_size(
+                instance.Context,
+                ref instance.Memory
+            ).ToUInt64();
+        }
+
+        private static bool TryGetFuelRemaining(SandboxInstance instance, out ulong remaining)
+        {
+            remaining = 0;
+            if (instance == null || !instance.IsValid)
+                return false;
+            IntPtr error = WasmtimeNative.wasmtime_context_get_fuel(instance.Context, out remaining);
+            if (error == IntPtr.Zero)
+                return true;
+            WasmtimeNative.wasmtime_error_delete(error);
+            remaining = 0;
+            return false;
+        }
+
         private bool TryGetFuelConsumed(SandboxInstance instance, out ulong fuelConsumed)
         {
             fuelConsumed = 0;
-            if (instance == null || !instance.IsValid)
+            if (!TryGetFuelRemaining(instance, out ulong remaining))
                 return false;
-
-            IntPtr error = WasmtimeNative.wasmtime_context_get_fuel(instance.Context, out ulong remaining);
-            if (error != IntPtr.Zero)
-            {
-                WasmtimeNative.wasmtime_error_delete(error);
-                return false;
-            }
-
             fuelConsumed = remaining <= _limits.Fuel ? _limits.Fuel - remaining : 0;
             return true;
         }
@@ -969,6 +1313,11 @@ namespace Basis.ImageSandbox
                 _ => BasisProfile1SandboxStatus.SandboxFailure,
             };
 
+        private static BasisProfile1SandboxDiagnosticReason MapDiagnosticReason(ulong reason) =>
+            reason <= (ulong)BasisProfile1SandboxDiagnosticReason.Decoder
+                ? (BasisProfile1SandboxDiagnosticReason)reason
+                : BasisProfile1SandboxDiagnosticReason.None;
+
         private static string ReadWasmName(IntPtr namePointer)
         {
             if (namePointer == IntPtr.Zero)
@@ -989,12 +1338,32 @@ namespace Basis.ImageSandbox
             UIntPtr argumentCount,
             IntPtr results,
             UIntPtr resultCount
-        ) => IntPtr.Zero;
+        )
+        {
+            if (environment != IntPtr.Zero)
+            {
+                try
+                {
+                    GCHandle handle = GCHandle.FromIntPtr(environment);
+                    if (handle.Target is MemoryGrowthTracker tracker)
+                        Interlocked.Increment(ref tracker.Count);
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
+            return IntPtr.Zero;
+        }
 
         private void ThrowIfDisposed()
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(BasisProfile1SandboxDecoder));
+        }
+
+        private sealed class MemoryGrowthTracker
+        {
+            public int Count;
         }
 
         private sealed class SandboxInstance : IDisposable
@@ -1005,12 +1374,21 @@ namespace Basis.ImageSandbox
             public WasmtimeNative.WasmtimeMemory Memory;
             public BasisProfile1SandboxStatus FailureStatus;
             public bool IsValid => Store != IntPtr.Zero;
+            public IntPtr MemoryGrowthEnvironment => _memoryGrowthHandle.IsAllocated
+                ? GCHandle.ToIntPtr(_memoryGrowthHandle)
+                : IntPtr.Zero;
+            public int MemoryGrowthCount => _memoryGrowthTracker?.Count ?? 0;
+
+            private MemoryGrowthTracker _memoryGrowthTracker;
+            private GCHandle _memoryGrowthHandle;
 
             public SandboxInstance(IntPtr store)
             {
                 Store = store;
                 Context = WasmtimeNative.wasmtime_store_context(store);
                 FailureStatus = BasisProfile1SandboxStatus.Success;
+                _memoryGrowthTracker = new MemoryGrowthTracker();
+                _memoryGrowthHandle = GCHandle.Alloc(_memoryGrowthTracker);
             }
 
             private SandboxInstance(BasisProfile1SandboxStatus failureStatus)
@@ -1029,6 +1407,9 @@ namespace Basis.ImageSandbox
                     Store = IntPtr.Zero;
                     Context = IntPtr.Zero;
                 }
+                if (_memoryGrowthHandle.IsAllocated)
+                    _memoryGrowthHandle.Free();
+                _memoryGrowthTracker = null;
             }
         }
 
