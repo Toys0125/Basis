@@ -12,6 +12,7 @@
 #include "lib/jxl/enc_fields.h"
 #include "lib/jxl/enc_frame.h"
 #include "lib/jxl/enc_icc_codec.h"
+#include "lib/jxl/memory_manager_internal.h"
 #include "lib/jxl/padded_bytes.h"
 
 #include <algorithm>
@@ -357,6 +358,7 @@ bool EncodeInternalPreviewFixture(std::vector<uint8_t>* output) {
   if (output == nullptr) return false;
 
   JxlMemoryManager memory_manager{};
+  if (!jxl::MemoryManagerInit(&memory_manager, nullptr)) return false;
   jxl::CodecInOut io(&memory_manager);
   if (!io.SetSize(8, 8)) return false;
   io.metadata.m.SetUintSamples(8);
