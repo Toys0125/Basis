@@ -443,6 +443,7 @@ bool EncodeInternalPreviewFixture(std::vector<uint8_t>* output) {
     }
   }
 
+  jxl::BitWriter preview_writer(&memory_manager);
   jxl::AuxOut preview_aux;
   jxl::FrameInfo preview_info;
   preview_info.is_preview = true;
@@ -454,9 +455,14 @@ bool EncodeInternalPreviewFixture(std::vector<uint8_t>* output) {
           io.preview_frame,
           *cms,
           nullptr,
-          &writer,
+          &preview_writer,
           &preview_aux)) {
     return false;
+  }
+  preview_writer.ZeroPadToByte();
+  if (preview_writer.BitsWritten() != 0) {
+    writer.ZeroPadToByte();
+    if (!writer.AppendByteAligned(preview_writer.GetSpan())) return false;
   }
   writer.ZeroPadToByte();
 
