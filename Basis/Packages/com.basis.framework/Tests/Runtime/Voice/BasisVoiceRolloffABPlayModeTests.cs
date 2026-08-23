@@ -28,9 +28,14 @@ namespace Basis.Tests.Voice
             var listenerObject = new GameObject("Voice A/B Listener");
             var sourceObject = new GameObject("Voice A/B Source");
             AudioClip clip = null;
+            AudioListener[] existingListeners = UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None);
 
             try
             {
+                foreach (AudioListener listener in existingListeners)
+                {
+                    listener.enabled = false;
+                }
                 listenerObject.AddComponent<AudioListener>();
                 AudioSource source = sourceObject.AddComponent<AudioSource>();
                 source.playOnAwake = false;
@@ -88,6 +93,10 @@ namespace Basis.Tests.Voice
                 if (clip != null) UnityEngine.Object.DestroyImmediate(clip);
                 UnityEngine.Object.DestroyImmediate(sourceObject);
                 UnityEngine.Object.DestroyImmediate(listenerObject);
+                foreach (AudioListener listener in existingListeners)
+                {
+                    if (listener != null) listener.enabled = true;
+                }
             }
         }
 
