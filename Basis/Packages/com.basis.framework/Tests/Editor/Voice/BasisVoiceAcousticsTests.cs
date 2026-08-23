@@ -31,8 +31,10 @@ namespace Basis.Tests.Voice
         [Test]
         public void RemoteAudioDefaults_NaturalUsesThreeMetreReferenceDistance()
         {
-            Assert.AreEqual("natural", BasisSettingsDefaults.RARolloffCurvePreset.DefaultValue.GetDefault());
-            Assert.AreEqual(3f, BasisSettingsDefaults.RAMinDistance.DefaultValue.GetDefault());
+            // EditMode tests do not load the persisted settings file, so RawValue is the
+            // static-init value a fresh install receives.
+            Assert.AreEqual("natural", BasisSettingsDefaults.RARolloffCurvePreset.RawValue);
+            Assert.AreEqual(3f, BasisSettingsDefaults.RAMinDistance.RawValue);
             Assert.AreEqual("ra_mindistance_v2", BasisSettingsDefaults.RAMinDistance.BindingKey);
         }
 
