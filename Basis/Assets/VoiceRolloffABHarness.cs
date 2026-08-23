@@ -6,7 +6,6 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Text;
-using Unity.Collections;
 using UnityEngine;
 
 public sealed class VoiceRolloffABHarness : MonoBehaviour
@@ -14,10 +13,9 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
     private const int SampleRate = 48000;
     private const float MinDistance = 0.5f;
     private const float MaxDistance = 25f;
-    private const int CaptureFramerate = 60;
-    private const int WarmupCaptureFrames = 4;
+    private const int WarmupCallbacks = 4;
     private const int MinimumCaptureSampleFrames = SampleRate / 4;
-    private const int MaximumEmptyCaptureFrames = 120;
+    private const float CaptureTimeoutSeconds = 5f;
 
     [SerializeField] private float bootTimeoutSeconds = 180f;
     [SerializeField] private float postBootSettleSeconds = 5f;
@@ -50,11 +48,10 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         {
             if (Time.realtimeSinceStartup - waitStarted > bootTimeoutSeconds)
             {
-                string message =
+                Fail(resultPath,
                     $"Timed out waiting for Basis boot after {bootTimeoutSeconds:F0}s. " +
                     $"Device={BasisDeviceManagement.OnInitializationComplete}, " +
-                    $"Player={BasisLocalPlayer.PlayerReady}, Network={BasisNetworkManagement.IsInitialized}.";
-                Fail(resultPath, message);
+                    $"Player={BasisLocalPlayer.PlayerReady}, Network={BasisNetworkManagement.IsInitialized}.");
                 yield break;
             }
             yield return null;
@@ -75,26 +72,24 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         bool[] sourceEnabled = CaptureEnabled(existingSources);
         bool previousListenerPause = AudioListener.pause;
         float previousListenerVolume = AudioListener.volume;
-        int previousCaptureFramerate = Time.captureFramerate;
 
         var listenerObject = new GameObject("Voice A/B Listener");
         var sourceObject = new GameObject("Voice A/B Source");
         AudioClip clip = null;
-        bool rendererStarted = false;
 
         try
         {
-            status = "Preparing isolated audio capture...";
+            status = "Preparing isolated listener capture...";
             Debug.Log($"[Voice Rolloff A/B] {status}");
 
             SetEnabled(existingListeners, false);
             SetEnabled(existingSources, false);
             AudioListener.pause = false;
             AudioListener.volume = 1f;
-            Time.captureFramerate = CaptureFramerate;
 
             listenerObject.transform.position = Vector3.zero;
             listenerObject.AddComponent<AudioListener>();
+            VoiceRolloffABListenerTap tap = listenerObject.AddComponent<VoiceRolloffABListenerTap>();
 
             AudioSource source = sourceObject.AddComponent<AudioSource>();
             source.playOnAwake = false;
@@ -107,7 +102,7 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             source.maxDistance = MaxDistance;
             source.spatialize = false;
             source.bypassEffects = true;
-            source.bypassListenerEffects = true;
+            source.bypassListenerEffects = false;
             source.bypassReverbZones = true;
 
             if (!TryBuildToneClip(out clip, out string clipError))
@@ -117,27 +112,21 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             }
             source.clip = clip;
 
-            int channelCount = SpeakerChannelCount(AudioSettings.speakerMode);
-            if (channelCount <= 0)
-            {
-                Fail(resultPath, $"Unsupported speaker mode {AudioSettings.speakerMode}.");
-                yield break;
-            }
-
-            rendererStarted = AudioRenderer.Start();
-            if (!rendererStarted)
-            {
-                Fail(resultPath, "AudioRenderer was already recording.");
-                yield break;
-            }
-
             status = "Recording 2D control...";
             Debug.Log($"[Voice Rolloff A/B] {status}");
             float twoDimensionalRms = 0f;
+            long twoDimensionalFrames = 0;
+            int listenerChannels = 0;
             string captureError = null;
             source.spatialBlend = 0f;
-            yield return MeasureRenderedOutput(source, "2D control", 0f, null, channelCount,
-                rms => twoDimensionalRms = rms, error => captureError = error);
+            yield return MeasureListenerOutput(source, tap, "2D control", 0f, null,
+                (rms, frames, channels) =>
+                {
+                    twoDimensionalRms = rms;
+                    twoDimensionalFrames = frames;
+                    listenerChannels = channels;
+                },
+                error => captureError = error);
             if (captureError != null)
             {
                 Fail(resultPath, captureError);
@@ -146,20 +135,20 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             if (twoDimensionalRms <= 1e-5f)
             {
                 Fail(resultPath,
-                    $"AudioRenderer captured silence for the 2D control signal (RMS {twoDimensionalRms:F8}).");
+                    $"AudioListener tap captured silence for the 2D control signal (RMS {twoDimensionalRms:F8}).");
                 yield break;
             }
             source.spatialBlend = 1f;
 
             AnimationCurve naturalRolloff = BasisVoiceAcoustics.BuildRolloffCurve(MinDistance, MaxDistance);
             var report = new StringBuilder();
-            report.AppendLine("Basis Voice Rolloff A/B - normal Play Mode AudioRenderer capture");
+            report.AppendLine("Basis Voice Rolloff A/B - normal Play Mode AudioListener OnAudioFilterRead capture");
             report.AppendLine($"UTC: {DateTime.UtcNow:O}");
             report.AppendLine($"Basis boot wait: {bootWaitSeconds:F2}s");
             report.AppendLine($"Post-boot settle: {postBootSettleSeconds:F2}s");
-            report.AppendLine($"Speaker mode: {AudioSettings.speakerMode} ({channelCount} channels)");
             report.AppendLine($"Output sample rate: {AudioSettings.outputSampleRate} Hz");
-            report.AppendLine($"Capture framerate: {CaptureFramerate} fps");
+            report.AppendLine($"Listener channels: {listenerChannels}");
+            report.AppendLine($"2D validation frames: {twoDimensionalFrames}");
             report.AppendLine($"2D validation RMS: {twoDimensionalRms:F6}");
             report.AppendLine();
             report.AppendLine("distance | legacy RMS | natural RMS | natural/legacy dB");
@@ -172,8 +161,10 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                 status = $"Recording Legacy at {distance:F1} m...";
                 Debug.Log($"[Voice Rolloff A/B] {status}");
                 captureError = null;
-                yield return MeasureRenderedOutput(source, $"Legacy {distance:F1} m", distance,
-                    LegacyRolloff, channelCount, rms => legacyRms = rms, error => captureError = error);
+                yield return MeasureListenerOutput(source, tap, $"Legacy {distance:F1} m", distance,
+                    LegacyRolloff,
+                    (rms, _, __) => legacyRms = rms,
+                    error => captureError = error);
                 if (captureError != null)
                 {
                     Fail(resultPath, captureError);
@@ -183,8 +174,10 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                 status = $"Recording Natural at {distance:F1} m...";
                 Debug.Log($"[Voice Rolloff A/B] {status}");
                 captureError = null;
-                yield return MeasureRenderedOutput(source, $"Natural {distance:F1} m", distance,
-                    naturalRolloff, channelCount, rms => naturalRms = rms, error => captureError = error);
+                yield return MeasureListenerOutput(source, tap, $"Natural {distance:F1} m", distance,
+                    naturalRolloff,
+                    (rms, _, __) => naturalRms = rms,
+                    error => captureError = error);
                 if (captureError != null)
                 {
                     Fail(resultPath, captureError);
@@ -208,21 +201,16 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                 Fail(resultPath, writeError);
                 yield break;
             }
+
             status = $"Finished. Results: {resultPath}";
             Debug.Log($"[Voice Rolloff A/B]\n{text}\nResults saved to: {resultPath}");
         }
         finally
         {
-            if (rendererStarted)
-            {
-                AudioRenderer.Stop();
-            }
-
             if (clip != null) Destroy(clip);
             Destroy(sourceObject);
             Destroy(listenerObject);
 
-            Time.captureFramerate = previousCaptureFramerate;
             AudioListener.pause = previousListenerPause;
             AudioListener.volume = previousListenerVolume;
             RestoreEnabled(existingSources, sourceEnabled);
@@ -230,13 +218,13 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         }
     }
 
-    private static IEnumerator MeasureRenderedOutput(
+    private static IEnumerator MeasureListenerOutput(
         AudioSource source,
+        VoiceRolloffABListenerTap tap,
         string label,
         float distance,
         AnimationCurve rolloff,
-        int channelCount,
-        Action<float> result,
+        Action<float, long, int> result,
         Action<string> error)
     {
         source.Stop();
@@ -247,73 +235,41 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             source.SetCustomCurve(AudioSourceCurveType.CustomRolloff, rolloff);
         }
 
+        tap.BeginCapture();
         source.Play();
 
-        int warmupFrames = 0;
-        int emptyFrames = 0;
-        while (warmupFrames < WarmupCaptureFrames)
+        float timeoutAt = Time.realtimeSinceStartup + CaptureTimeoutSeconds;
+        while (tap.CallbackCount < WarmupCallbacks)
         {
-            yield return new WaitForEndOfFrame();
-            int sampleFrames = AudioRenderer.GetSampleCountForCaptureFrame();
-            if (sampleFrames <= 0)
+            if (Time.realtimeSinceStartup >= timeoutAt)
             {
-                if (++emptyFrames >= MaximumEmptyCaptureFrames)
-                {
-                    error($"AudioRenderer never produced samples during warmup for {label}.");
-                    source.Stop();
-                    yield break;
-                }
-                continue;
-            }
-
-            using var discard = new NativeArray<float>(sampleFrames * channelCount, Allocator.Temp);
-            if (!AudioRenderer.Render(discard))
-            {
-                error($"AudioRenderer failed during warmup for {label}.");
+                tap.EndCapture(out _, out _, out _);
                 source.Stop();
+                error($"AudioListener OnAudioFilterRead never received warmup audio for {label}.");
                 yield break;
             }
-            warmupFrames++;
+            yield return null;
         }
 
-        double sumSquares = 0.0;
-        long capturedSamples = 0;
-        emptyFrames = 0;
-        long targetSamples = (long)MinimumCaptureSampleFrames * channelCount;
-
-        while (capturedSamples < targetSamples)
+        tap.BeginCapture();
+        timeoutAt = Time.realtimeSinceStartup + CaptureTimeoutSeconds;
+        while (tap.SampleFrames < MinimumCaptureSampleFrames)
         {
-            yield return new WaitForEndOfFrame();
-            int sampleFrames = AudioRenderer.GetSampleCountForCaptureFrame();
-            if (sampleFrames <= 0)
+            if (Time.realtimeSinceStartup >= timeoutAt)
             {
-                if (++emptyFrames >= MaximumEmptyCaptureFrames)
-                {
-                    error($"AudioRenderer stopped producing samples during measurement for {label}.");
-                    source.Stop();
-                    yield break;
-                }
-                continue;
-            }
-
-            using var buffer = new NativeArray<float>(sampleFrames * channelCount, Allocator.Temp);
-            if (!AudioRenderer.Render(buffer))
-            {
-                error($"AudioRenderer failed during measurement for {label}.");
+                tap.EndCapture(out long timedOutFrames, out int timedOutChannels, out int callbacks);
                 source.Stop();
+                error(
+                    $"AudioListener capture timed out for {label}: " +
+                    $"frames={timedOutFrames}, channels={timedOutChannels}, callbacks={callbacks}.");
                 yield break;
             }
-
-            for (int i = 0; i < buffer.Length; i++)
-            {
-                float sample = buffer[i];
-                sumSquares += (double)sample * sample;
-            }
-            capturedSamples += buffer.Length;
+            yield return null;
         }
 
-        result(capturedSamples > 0 ? (float)Math.Sqrt(sumSquares / capturedSamples) : 0f);
+        float rms = tap.EndCapture(out long capturedFrames, out int capturedChannels, out _);
         source.Stop();
+        result(rms, capturedFrames, capturedChannels);
     }
 
     private static bool TryBuildToneClip(out AudioClip clip, out string error)
@@ -354,21 +310,6 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         {
             error = $"Could not write results to {path}: {ex}";
             return false;
-        }
-    }
-
-    private static int SpeakerChannelCount(AudioSpeakerMode mode)
-    {
-        switch (mode)
-        {
-            case AudioSpeakerMode.Mono: return 1;
-            case AudioSpeakerMode.Stereo: return 2;
-            case AudioSpeakerMode.Quad: return 4;
-            case AudioSpeakerMode.Surround: return 5;
-            case AudioSpeakerMode.Mode5point1: return 6;
-            case AudioSpeakerMode.Mode7point1: return 8;
-            case AudioSpeakerMode.Prologic: return 2;
-            default: return 0;
         }
     }
 
