@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "projectPath": "Basis",
+  "profiles": {
+    "voice-ab": {
+      "compile": true,
+      "playModeTests": true
+    }
+  }
+}
