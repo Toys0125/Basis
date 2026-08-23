@@ -51,7 +51,7 @@ namespace Basis.ImageSandbox.Editor
                         {
                             convertedByOriginal[gifPath] = jxlPath;
                             memorySampler.Stop();
-                            long workingSetAfter = GetCurrentWorkingSetBytes();
+                            long cacheWorkingSetAfter = GetCurrentWorkingSetBytes();
                             metricsByOriginal[gifPath] = new GifPreparationMetrics(
                                 true,
                                 0,
@@ -59,7 +59,7 @@ namespace Basis.ImageSandbox.Editor
                                 0,
                                 "BasisBurstGifDecoder + editor-native libjxl",
                                 workingSetBefore,
-                                workingSetAfter,
+                                cacheWorkingSetAfter,
                                 memorySampler.PeakBytes,
                                 Math.Max(0, memorySampler.PeakBytes - workingSetBefore)
                             );
