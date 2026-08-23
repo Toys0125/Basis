@@ -14,6 +14,7 @@ namespace Basis.Tests.Voice
         private const int SampleRate = 48000;
         private const float MinDistance = 0.5f;
         private const float MaxDistance = 25f;
+        private const int CaptureFramerate = 60;
         private const int WarmupCaptureFrames = 4;
         private const int MinimumCaptureSampleFrames = SampleRate / 4;
         private const int MaximumEmptyCaptureFrames = 120;
@@ -28,12 +29,13 @@ namespace Basis.Tests.Voice
         [UnityTest]
         public IEnumerator NaturalVsLegacy_FixedDistanceAudioOutputAB()
         {
-            AudioListener[] existingListeners = UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None);
-            AudioSource[] existingSources = UnityEngine.Object.FindObjectsByType<AudioSource>(FindObjectsSortMode.None);
+            AudioListener[] existingListeners = UnityEngine.Object.FindObjectsByType<AudioListener>();
+            AudioSource[] existingSources = UnityEngine.Object.FindObjectsByType<AudioSource>();
             bool[] listenerEnabled = CaptureEnabled(existingListeners);
             bool[] sourceEnabled = CaptureEnabled(existingSources);
             bool previousListenerPause = AudioListener.pause;
             float previousListenerVolume = AudioListener.volume;
+            int previousCaptureFramerate = Time.captureFramerate;
 
             var listenerObject = new GameObject("Voice A/B Listener");
             var sourceObject = new GameObject("Voice A/B Source");
@@ -46,6 +48,7 @@ namespace Basis.Tests.Voice
                 SetEnabled(existingSources, false);
                 AudioListener.pause = false;
                 AudioListener.volume = 1f;
+                Time.captureFramerate = CaptureFramerate;
 
                 listenerObject.transform.position = Vector3.zero;
                 listenerObject.AddComponent<AudioListener>();
@@ -85,6 +88,7 @@ namespace Basis.Tests.Voice
                 var report = new StringBuilder();
                 report.AppendLine("Fixed-distance Unity main-output A/B (AudioRenderer)");
                 report.AppendLine($"Speaker mode: {AudioSettings.speakerMode} ({channelCount} channels)");
+                report.AppendLine($"Capture framerate: {CaptureFramerate} fps");
                 report.AppendLine($"2D validation RMS: {twoDimensionalRms:F6}");
                 report.AppendLine("distance | legacy RMS | natural RMS | natural/legacy dB");
 
@@ -125,6 +129,7 @@ namespace Basis.Tests.Voice
                 UnityEngine.Object.DestroyImmediate(sourceObject);
                 UnityEngine.Object.DestroyImmediate(listenerObject);
 
+                Time.captureFramerate = previousCaptureFramerate;
                 AudioListener.pause = previousListenerPause;
                 AudioListener.volume = previousListenerVolume;
                 RestoreEnabled(existingSources, sourceEnabled);
