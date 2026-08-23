@@ -110,19 +110,25 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             source.bypassListenerEffects = true;
             source.bypassReverbZones = true;
 
-            clip = BuildToneClip();
+            if (!TryBuildToneClip(out clip, out string clipError))
+            {
+                Fail(resultPath, clipError);
+                yield break;
+            }
             source.clip = clip;
 
             int channelCount = SpeakerChannelCount(AudioSettings.speakerMode);
             if (channelCount <= 0)
             {
-                throw new InvalidOperationException($"Unsupported speaker mode {AudioSettings.speakerMode}.");
+                Fail(resultPath, $"Unsupported speaker mode {AudioSettings.speakerMode}.");
+                yield break;
             }
 
             rendererStarted = AudioRenderer.Start();
             if (!rendererStarted)
             {
-                throw new InvalidOperationException("AudioRenderer was already recording.");
+                Fail(resultPath, "AudioRenderer was already recording.");
+                yield break;
             }
 
             status = "Recording 2D control...";
@@ -134,12 +140,14 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                 rms => twoDimensionalRms = rms, error => captureError = error);
             if (captureError != null)
             {
-                throw new InvalidOperationException(captureError);
+                Fail(resultPath, captureError);
+                yield break;
             }
             if (twoDimensionalRms <= 1e-5f)
             {
-                throw new InvalidOperationException(
+                Fail(resultPath,
                     $"AudioRenderer captured silence for the 2D control signal (RMS {twoDimensionalRms:F8}).");
+                yield break;
             }
             source.spatialBlend = 1f;
 
@@ -168,7 +176,8 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                     LegacyRolloff, channelCount, rms => legacyRms = rms, error => captureError = error);
                 if (captureError != null)
                 {
-                    throw new InvalidOperationException(captureError);
+                    Fail(resultPath, captureError);
+                    yield break;
                 }
 
                 status = $"Recording Natural at {distance:F1} m...";
@@ -178,12 +187,14 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                     naturalRolloff, channelCount, rms => naturalRms = rms, error => captureError = error);
                 if (captureError != null)
                 {
-                    throw new InvalidOperationException(captureError);
+                    Fail(resultPath, captureError);
+                    yield break;
                 }
 
                 if (legacyRms <= 1e-7f)
                 {
-                    throw new InvalidOperationException($"Legacy output was silent at {distance:F1} m.");
+                    Fail(resultPath, $"Legacy output was silent at {distance:F1} m.");
+                    yield break;
                 }
 
                 float differenceDb = Db(naturalRms / legacyRms);
@@ -192,13 +203,13 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
             }
 
             string text = report.ToString();
-            File.WriteAllText(resultPath, text);
+            if (!TryWriteText(resultPath, text, out string writeError))
+            {
+                Fail(resultPath, writeError);
+                yield break;
+            }
             status = $"Finished. Results: {resultPath}";
             Debug.Log($"[Voice Rolloff A/B]\n{text}\nResults saved to: {resultPath}");
-        }
-        catch (Exception ex)
-        {
-            Fail(resultPath, ex.ToString());
         }
         finally
         {
@@ -305,7 +316,7 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
         source.Stop();
     }
 
-    private static AudioClip BuildToneClip()
+    private static bool TryBuildToneClip(out AudioClip clip, out string error)
     {
         const int frames = SampleRate * 2;
         var samples = new float[frames];
@@ -318,13 +329,32 @@ public sealed class VoiceRolloffABHarness : MonoBehaviour
                 0.10 * Math.Sin(2.0 * Math.PI * 4000.0 * t + 1.1));
         }
 
-        AudioClip clip = AudioClip.Create("Voice A/B deterministic signal", frames, 1, SampleRate, false);
+        clip = AudioClip.Create("Voice A/B deterministic signal", frames, 1, SampleRate, false);
         if (!clip.SetData(samples, 0))
         {
             Destroy(clip);
-            throw new InvalidOperationException("Failed to load the deterministic A/B signal into the AudioClip.");
+            clip = null;
+            error = "Failed to load the deterministic A/B signal into the AudioClip.";
+            return false;
         }
-        return clip;
+
+        error = null;
+        return true;
+    }
+
+    private static bool TryWriteText(string path, string text, out string error)
+    {
+        try
+        {
+            File.WriteAllText(path, text);
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not write results to {path}: {ex}";
+            return false;
+        }
     }
 
     private static int SpeakerChannelCount(AudioSpeakerMode mode)
