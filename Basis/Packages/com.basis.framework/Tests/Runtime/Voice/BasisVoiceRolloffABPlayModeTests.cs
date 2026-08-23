@@ -79,7 +79,7 @@ namespace Basis.Tests.Voice
 
                 float twoDimensionalRms = 0f;
                 source.spatialBlend = 0f;
-                yield return MeasureRenderedOutput(source, 0f, null, channelCount, rms => twoDimensionalRms = rms);
+                yield return MeasureRenderedOutput(source, "2D control", 0f, null, channelCount, rms => twoDimensionalRms = rms);
                 Assert.Greater(twoDimensionalRms, 1e-5f,
                     "AudioRenderer captured silence for the 2D control signal; the A/B would be invalid.");
                 source.spatialBlend = 1f;
@@ -97,8 +97,8 @@ namespace Basis.Tests.Voice
                     float legacyRms = 0f;
                     float naturalRms = 0f;
 
-                    yield return MeasureRenderedOutput(source, distance, LegacyRolloff, channelCount, rms => legacyRms = rms);
-                    yield return MeasureRenderedOutput(source, distance, naturalRolloff, channelCount, rms => naturalRms = rms);
+                    yield return MeasureRenderedOutput(source, $"Legacy {distance:F1} m", distance, LegacyRolloff, channelCount, rms => legacyRms = rms);
+                    yield return MeasureRenderedOutput(source, $"Natural {distance:F1} m", distance, naturalRolloff, channelCount, rms => naturalRms = rms);
 
                     Assert.Greater(legacyRms, 1e-7f, $"Legacy output was silent at {distance:F1} m.");
                     float differenceDb = Db(naturalRms / legacyRms);
@@ -139,6 +139,7 @@ namespace Basis.Tests.Voice
 
         private static IEnumerator MeasureRenderedOutput(
             AudioSource source,
+            string label,
             float distance,
             AnimationCurve rolloff,
             int channelCount,
@@ -158,12 +159,12 @@ namespace Basis.Tests.Voice
             int emptyFrames = 0;
             while (warmupFrames < WarmupCaptureFrames)
             {
-                yield return null;
+                yield return new WaitForEndOfFrame();
                 int sampleFrames = AudioRenderer.GetSampleCountForCaptureFrame();
                 if (sampleFrames <= 0)
                 {
                     Assert.Less(++emptyFrames, MaximumEmptyCaptureFrames,
-                        "AudioRenderer never produced samples during warmup.");
+                        $"AudioRenderer never produced samples during warmup for {label}.");
                     continue;
                 }
 
@@ -179,12 +180,12 @@ namespace Basis.Tests.Voice
 
             while (capturedSamples < targetSamples)
             {
-                yield return null;
+                yield return new WaitForEndOfFrame();
                 int sampleFrames = AudioRenderer.GetSampleCountForCaptureFrame();
                 if (sampleFrames <= 0)
                 {
                     Assert.Less(++emptyFrames, MaximumEmptyCaptureFrames,
-                        "AudioRenderer stopped producing samples during measurement.");
+                        $"AudioRenderer stopped producing samples during measurement for {label}.");
                     continue;
                 }
 
