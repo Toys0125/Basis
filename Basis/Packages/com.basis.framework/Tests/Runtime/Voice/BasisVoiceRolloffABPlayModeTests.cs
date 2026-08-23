@@ -29,6 +29,11 @@ namespace Basis.Tests.Voice
         [UnityTest]
         public IEnumerator NaturalVsLegacy_FixedDistanceAudioOutputAB()
         {
+            if (Application.isBatchMode)
+            {
+                Assert.Ignore("AudioRenderer end-of-frame capture requires an interactive Unity player loop; run this A/B from the Editor Test Runner.");
+            }
+
             AudioListener[] existingListeners = UnityEngine.Object.FindObjectsByType<AudioListener>();
             AudioSource[] existingSources = UnityEngine.Object.FindObjectsByType<AudioSource>();
             bool[] listenerEnabled = CaptureEnabled(existingListeners);
