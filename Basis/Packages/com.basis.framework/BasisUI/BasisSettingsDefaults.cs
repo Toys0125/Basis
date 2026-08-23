@@ -1346,7 +1346,11 @@ namespace Basis.BasisUI
 
         // ---------------- REMOTE PLAYER AUDIO ----------------
         // AudioSource
-        public static BasisSettingsBinding<float> RAMinDistance = new("ra_mindistance", new BasisPlatformDefault<float>(0.5f));
+        // Natural rolloff uses inverse-distance attenuation, so the old 0.5 m reference distance
+        // made normal conversation distances much quieter than the previous Legacy curve. 3 m
+        // closely matches the Legacy loudness through the common 1-10 m social range while
+        // retaining Natural's smoother model. Bump the key so the retune reaches existing installs.
+        public static BasisSettingsBinding<float> RAMinDistance = new("ra_mindistance_v2", new BasisPlatformDefault<float>(3f));
         public static BasisSettingsBinding<float> RASpread = new("ra_spread", new BasisPlatformDefault<float>(70f));
         // Per-source doppler scale. Whether any pitch shift actually happens is
         // decided globally by Doppler Factor in AudioManager.asset, which the project

@@ -27,6 +27,14 @@ namespace Basis.Tests.Voice
         private static float Gain(float d) =>
             BasisVoiceAcoustics.DistanceGain(d, MinDistance, MaxDistance);
 
+        [Test]
+        public void RemoteAudioDefaults_NaturalUsesThreeMetreReferenceDistance()
+        {
+            Assert.AreEqual("natural", BasisSettingsDefaults.RARolloffCurvePreset.DefaultValue.GetDefault());
+            Assert.AreEqual(3f, BasisSettingsDefaults.RAMinDistance.DefaultValue.GetDefault());
+            Assert.AreEqual("ra_mindistance_v2", BasisSettingsDefaults.RAMinDistance.BindingKey);
+        }
+
         // ─────────────────────────── distance ───────────────────────────
 
         [TestCase(0.25f, 1.000000f)]
