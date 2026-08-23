@@ -3,6 +3,7 @@ using NUnit.Framework;
 using System;
 using System.Collections;
 using System.Text;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.TestTools;
 
@@ -13,7 +14,9 @@ namespace Basis.Tests.Voice
         private const int SampleRate = 48000;
         private const float MinDistance = 0.5f;
         private const float MaxDistance = 25f;
-        private const int CaptureSamples = 4096;
+        private const int WarmupCaptureFrames = 4;
+        private const int MinimumCaptureSampleFrames = SampleRate / 4;
+        private const int MaximumEmptyCaptureFrames = 120;
 
         private static readonly AnimationCurve LegacyRolloff = new AnimationCurve(
             new Keyframe(0.036f, 1f, -2.214f, -2.214f),
@@ -25,18 +28,28 @@ namespace Basis.Tests.Voice
         [UnityTest]
         public IEnumerator NaturalVsLegacy_FixedDistanceAudioOutputAB()
         {
+            AudioListener[] existingListeners = UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None);
+            AudioSource[] existingSources = UnityEngine.Object.FindObjectsByType<AudioSource>(FindObjectsSortMode.None);
+            bool[] listenerEnabled = CaptureEnabled(existingListeners);
+            bool[] sourceEnabled = CaptureEnabled(existingSources);
+            bool previousListenerPause = AudioListener.pause;
+            float previousListenerVolume = AudioListener.volume;
+
             var listenerObject = new GameObject("Voice A/B Listener");
             var sourceObject = new GameObject("Voice A/B Source");
             AudioClip clip = null;
-            AudioListener[] existingListeners = UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None);
+            bool rendererStarted = false;
 
             try
             {
-                foreach (AudioListener listener in existingListeners)
-                {
-                    listener.enabled = false;
-                }
+                SetEnabled(existingListeners, false);
+                SetEnabled(existingSources, false);
+                AudioListener.pause = false;
+                AudioListener.volume = 1f;
+
+                listenerObject.transform.position = Vector3.zero;
                 listenerObject.AddComponent<AudioListener>();
+
                 AudioSource source = sourceObject.AddComponent<AudioSource>();
                 source.playOnAwake = false;
                 source.loop = true;
@@ -46,19 +59,32 @@ namespace Basis.Tests.Voice
                 source.rolloffMode = AudioRolloffMode.Custom;
                 source.minDistance = MinDistance;
                 source.maxDistance = MaxDistance;
+                source.spatialize = false;
+                source.bypassEffects = true;
+                source.bypassListenerEffects = true;
+                source.bypassReverbZones = true;
 
                 clip = BuildToneClip();
                 source.clip = clip;
 
+                int channelCount = SpeakerChannelCount(AudioSettings.speakerMode);
+                Assert.Greater(channelCount, 0, $"Unsupported speaker mode {AudioSettings.speakerMode}.");
+
+                rendererStarted = AudioRenderer.Start();
+                Assert.IsTrue(rendererStarted,
+                    "AudioRenderer was already recording; the A/B requires exclusive main-output capture.");
+
                 float twoDimensionalRms = 0f;
                 source.spatialBlend = 0f;
-                yield return MeasureOutput(source, 0f, null, rms => twoDimensionalRms = rms);
+                yield return MeasureRenderedOutput(source, 0f, null, channelCount, rms => twoDimensionalRms = rms);
                 Assert.Greater(twoDimensionalRms, 1e-5f,
-                    "Unity audio output is unavailable in this PlayMode environment; the A/B would be invalid.");
+                    "AudioRenderer captured silence for the 2D control signal; the A/B would be invalid.");
                 source.spatialBlend = 1f;
 
+                var naturalRolloff = BasisVoiceAcoustics.BuildRolloffCurve(MinDistance, MaxDistance);
                 var report = new StringBuilder();
-                report.AppendLine("Fixed-distance Unity audio-output A/B");
+                report.AppendLine("Fixed-distance Unity main-output A/B (AudioRenderer)");
+                report.AppendLine($"Speaker mode: {AudioSettings.speakerMode} ({channelCount} channels)");
                 report.AppendLine($"2D validation RMS: {twoDimensionalRms:F6}");
                 report.AppendLine("distance | legacy RMS | natural RMS | natural/legacy dB");
 
@@ -67,17 +93,15 @@ namespace Basis.Tests.Voice
                     float legacyRms = 0f;
                     float naturalRms = 0f;
 
-                    yield return MeasureOutput(source, distance, LegacyRolloff, rms => legacyRms = rms);
-                    yield return MeasureOutput(source, distance,
-                        BasisVoiceAcoustics.BuildRolloffCurve(MinDistance, MaxDistance),
-                        rms => naturalRms = rms);
+                    yield return MeasureRenderedOutput(source, distance, LegacyRolloff, channelCount, rms => legacyRms = rms);
+                    yield return MeasureRenderedOutput(source, distance, naturalRolloff, channelCount, rms => naturalRms = rms);
 
                     Assert.Greater(legacyRms, 1e-7f, $"Legacy output was silent at {distance:F1} m.");
                     float differenceDb = Db(naturalRms / legacyRms);
                     report.AppendLine($"{distance,8:F1} | {legacyRms,10:F6} | {naturalRms,11:F6} | {differenceDb,17:F2}");
 
                     Assert.Less(naturalRms, legacyRms,
-                        $"Natural should be quieter than Legacy at {distance:F1} m in actual Unity output.");
+                        $"Natural should be quieter than Legacy at {distance:F1} m in Unity main output.");
 
                     if (Mathf.Approximately(distance, 5f))
                     {
@@ -86,41 +110,91 @@ namespace Basis.Tests.Voice
                     }
                 }
 
-                TestContext.Progress.WriteLine(report.ToString());
+                string text = report.ToString();
+                TestContext.Progress.WriteLine(text);
+                Debug.Log(text);
             }
             finally
             {
+                if (rendererStarted)
+                {
+                    AudioRenderer.Stop();
+                }
+
                 if (clip != null) UnityEngine.Object.DestroyImmediate(clip);
                 UnityEngine.Object.DestroyImmediate(sourceObject);
                 UnityEngine.Object.DestroyImmediate(listenerObject);
-                foreach (AudioListener listener in existingListeners)
-                {
-                    if (listener != null) listener.enabled = true;
-                }
+
+                AudioListener.pause = previousListenerPause;
+                AudioListener.volume = previousListenerVolume;
+                RestoreEnabled(existingSources, sourceEnabled);
+                RestoreEnabled(existingListeners, listenerEnabled);
             }
         }
 
-        private static IEnumerator MeasureOutput(
+        private static IEnumerator MeasureRenderedOutput(
             AudioSource source,
             float distance,
             AnimationCurve rolloff,
+            int channelCount,
             Action<float> result)
         {
             source.Stop();
             source.transform.position = new Vector3(distance, 0f, 0f);
+            source.timeSamples = 0;
             if (rolloff != null)
             {
                 source.SetCustomCurve(AudioSourceCurveType.CustomRolloff, rolloff);
             }
 
             source.Play();
-            yield return new WaitForSecondsRealtime(0.25f);
 
-            var samples = new float[CaptureSamples];
-            AudioListener.GetOutputData(samples, 0);
-            result(Rms(samples));
+            int warmupFrames = 0;
+            int emptyFrames = 0;
+            while (warmupFrames < WarmupCaptureFrames)
+            {
+                yield return null;
+                int sampleFrames = AudioRenderer.GetSampleCountForCaptureFrame();
+                if (sampleFrames <= 0)
+                {
+                    Assert.Less(++emptyFrames, MaximumEmptyCaptureFrames,
+                        "AudioRenderer never produced samples during warmup.");
+                    continue;
+                }
+
+                using var discard = new NativeArray<float>(sampleFrames * channelCount, Allocator.Temp);
+                Assert.IsTrue(AudioRenderer.Render(discard), "AudioRenderer failed during warmup.");
+                warmupFrames++;
+            }
+
+            double sumSquares = 0.0;
+            long capturedSamples = 0;
+            emptyFrames = 0;
+            long targetSamples = (long)MinimumCaptureSampleFrames * channelCount;
+
+            while (capturedSamples < targetSamples)
+            {
+                yield return null;
+                int sampleFrames = AudioRenderer.GetSampleCountForCaptureFrame();
+                if (sampleFrames <= 0)
+                {
+                    Assert.Less(++emptyFrames, MaximumEmptyCaptureFrames,
+                        "AudioRenderer stopped producing samples during measurement.");
+                    continue;
+                }
+
+                using var buffer = new NativeArray<float>(sampleFrames * channelCount, Allocator.Temp);
+                Assert.IsTrue(AudioRenderer.Render(buffer), "AudioRenderer failed during measurement.");
+                for (int i = 0; i < buffer.Length; i++)
+                {
+                    float sample = buffer[i];
+                    sumSquares += (double)sample * sample;
+                }
+                capturedSamples += buffer.Length;
+            }
+
+            result(capturedSamples > 0 ? (float)Math.Sqrt(sumSquares / capturedSamples) : 0f);
             source.Stop();
-            yield return null;
         }
 
         private static AudioClip BuildToneClip()
@@ -141,14 +215,46 @@ namespace Basis.Tests.Voice
             return clip;
         }
 
-        private static float Rms(float[] samples)
+        private static int SpeakerChannelCount(AudioSpeakerMode mode)
         {
-            double sum = 0.0;
-            for (int i = 0; i < samples.Length; i++)
+            switch (mode)
             {
-                sum += (double)samples[i] * samples[i];
+                case AudioSpeakerMode.Mono: return 1;
+                case AudioSpeakerMode.Stereo: return 2;
+                case AudioSpeakerMode.Quad: return 4;
+                case AudioSpeakerMode.Surround: return 5;
+                case AudioSpeakerMode.Mode5point1: return 6;
+                case AudioSpeakerMode.Mode7point1: return 8;
+                case AudioSpeakerMode.Prologic: return 2;
+                default: return 0;
             }
-            return samples.Length > 0 ? (float)Math.Sqrt(sum / samples.Length) : 0f;
+        }
+
+        private static bool[] CaptureEnabled<T>(T[] components) where T : Behaviour
+        {
+            var states = new bool[components.Length];
+            for (int i = 0; i < components.Length; i++)
+            {
+                states[i] = components[i] != null && components[i].enabled;
+            }
+            return states;
+        }
+
+        private static void SetEnabled<T>(T[] components, bool enabled) where T : Behaviour
+        {
+            for (int i = 0; i < components.Length; i++)
+            {
+                if (components[i] != null) components[i].enabled = enabled;
+            }
+        }
+
+        private static void RestoreEnabled<T>(T[] components, bool[] states) where T : Behaviour
+        {
+            int count = Math.Min(components.Length, states.Length);
+            for (int i = 0; i < count; i++)
+            {
+                if (components[i] != null) components[i].enabled = states[i];
+            }
         }
 
         private static float Db(float linear)
