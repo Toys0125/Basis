@@ -264,6 +264,41 @@ Status AccumulateStructure(
 
 void DiscardPixels(void*, size_t, size_t, size_t, const void*) {}
 
+Status AccumulateLogicalDisplayedFrame(
+    uint32_t duration,
+    LogicalInfo* logical,
+    DiagnosticReason* reason) {
+    if (logical->frame_count >= kMaximumLogicalFrames) {
+        *reason = kReasonLogicalFrames;
+        return kSharedLimitExceeded;
+    }
+    if (duration < kMinimumFrameDurationMicroseconds) {
+        *reason = kReasonFrameDuration;
+        return kSharedLimitExceeded;
+    }
+
+    uint64_t timeline = 0;
+    if (!CheckedAdd(logical->timeline_microseconds, duration, &timeline) ||
+        timeline > kMaximumBaseTimelineMicroseconds) {
+        *reason = kReasonTimeline;
+        return kSharedLimitExceeded;
+    }
+    logical->timeline_microseconds = timeline;
+    logical->durations[logical->frame_count++] = duration;
+
+    uint64_t submitted = 0;
+    if (!CheckedMultiply(
+            static_cast<uint64_t>(logical->width) * logical->height,
+            logical->frame_count,
+            &submitted) ||
+        submitted > kMaximumSubmittedCanvasPixels) {
+        *reason = kReasonSubmittedPixels;
+        return kSharedLimitExceeded;
+    }
+    logical->submitted_pixels = submitted;
+    return kSuccess;
+}
+
 Status RunStructurePass(
     const uint8_t* data,
     size_t size,
@@ -330,11 +365,114 @@ Status RunStructurePass(
     return result;
 }
 
-Status RunLogicalPass(
+Status RunLogicalHeaderPass(
     const uint8_t* data,
     size_t size,
     LogicalInfo* logical,
-    bool skip_pixels,
+    DiagnosticReason* reason) {
+    JxlDecoder* decoder = JxlDecoderCreate(nullptr);
+    if (decoder == nullptr) {
+        *reason = kReasonDecoder;
+        return kMalformed;
+    }
+
+    Status result = kMalformed;
+    do {
+        // Coalescing would force libjxl to perform blend/reference work merely to
+        // discover animation durations. With coalescing disabled, public
+        // JxlFrameHeader events expose each regular layer. Non-zero durations are
+        // displayed animation frames; a zero-duration last frame is also a
+        // displayed frame and is rejected by Profile 1's minimum-duration rule.
+        // The later coalesced validation pass remains the semantic backstop.
+        if (JxlDecoderSetKeepOrientation(decoder, JXL_TRUE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSetCoalescing(decoder, JXL_FALSE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSubscribeEvents(
+                decoder,
+                JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FRAME |
+                    JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
+            JxlDecoderSetInput(decoder, data, size) != JXL_DEC_SUCCESS) {
+            break;
+        }
+        JxlDecoderCloseInput(decoder);
+
+        bool saw_basic = false;
+        bool saw_color = false;
+        while (true) {
+            const JxlDecoderStatus status = JxlDecoderProcessInput(decoder);
+            if (status == JXL_DEC_BASIC_INFO) {
+                JxlBasicInfo info{};
+                if (JxlDecoderGetBasicInfo(decoder, &info) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                result = ValidateBasicInfo(decoder, info, logical, reason);
+                if (result != kSuccess) {
+                    break;
+                }
+                saw_basic = true;
+                continue;
+            }
+            if (status == JXL_DEC_COLOR_ENCODING) {
+                result = ValidateColorEncoding(decoder, reason);
+                if (result != kSuccess) {
+                    break;
+                }
+                saw_color = true;
+                continue;
+            }
+            if (status == JXL_DEC_FRAME) {
+                JxlFrameHeader header{};
+                if (JxlDecoderGetFrameHeader(decoder, &header) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                if (header.duration == 0) {
+                    if (header.is_last == JXL_TRUE) {
+                        *reason = kReasonFrameDuration;
+                        result = kSharedLimitExceeded;
+                        break;
+                    }
+                    continue;
+                }
+                result = AccumulateLogicalDisplayedFrame(header.duration, logical, reason);
+                if (result != kSuccess) {
+                    break;
+                }
+                continue;
+            }
+            if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
+                if (JxlDecoderSkipCurrentFrame(decoder) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
+                }
+                continue;
+            }
+            if (status == JXL_DEC_FULL_IMAGE) {
+                continue;
+            }
+            if (status == JXL_DEC_SUCCESS) {
+                const size_t remaining = JxlDecoderReleaseInput(decoder);
+                result = saw_basic && saw_color && logical->frame_count > 0 && remaining == 0
+                    ? kSuccess
+                    : kMalformed;
+                break;
+            }
+            if (status == JXL_DEC_NEED_MORE_INPUT || status == JXL_DEC_ERROR ||
+                status == JXL_DEC_NEED_IMAGE_OUT_BUFFER || status == JXL_DEC_NEED_PREVIEW_OUT_BUFFER) {
+                result = kMalformed;
+                break;
+            }
+        }
+    } while (false);
+
+    JxlDecoderDestroy(decoder);
+    return result;
+}
+
+Status RunLogicalValidationPass(
+    const uint8_t* data,
+    size_t size,
+    LogicalInfo* logical,
     DiagnosticReason* reason) {
     JxlDecoder* decoder = JxlDecoderCreate(nullptr);
     if (decoder == nullptr) {
@@ -381,57 +519,22 @@ Status RunLogicalPass(
                 continue;
             }
             if (status == JXL_DEC_FRAME) {
-                if (logical->frame_count >= kMaximumLogicalFrames) {
-                    *reason = kReasonLogicalFrames;
-                    result = kSharedLimitExceeded;
-                    break;
-                }
                 JxlFrameHeader header{};
                 if (JxlDecoderGetFrameHeader(decoder, &header) != JXL_DEC_SUCCESS) {
                     result = kMalformed;
                     break;
                 }
-                if (header.duration < kMinimumFrameDurationMicroseconds) {
-                    *reason = kReasonFrameDuration;
-                    result = kSharedLimitExceeded;
+                result = AccumulateLogicalDisplayedFrame(header.duration, logical, reason);
+                if (result != kSuccess) {
                     break;
                 }
-
-                uint64_t timeline = 0;
-                if (!CheckedAdd(logical->timeline_microseconds, header.duration, &timeline) ||
-                    timeline > kMaximumBaseTimelineMicroseconds) {
-                    *reason = kReasonTimeline;
-                    result = kSharedLimitExceeded;
-                    break;
-                }
-                logical->timeline_microseconds = timeline;
-                logical->durations[logical->frame_count++] = header.duration;
-
-                uint64_t submitted = 0;
-                if (!CheckedMultiply(
-                        static_cast<uint64_t>(logical->width) * logical->height,
-                        logical->frame_count,
-                        &submitted) ||
-                    submitted > kMaximumSubmittedCanvasPixels) {
-                    *reason = kReasonSubmittedPixels;
-                    result = kSharedLimitExceeded;
-                    break;
-                }
-                logical->submitted_pixels = submitted;
                 continue;
             }
             if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
-                if (skip_pixels) {
-                    if (JxlDecoderSkipCurrentFrame(decoder) != JXL_DEC_SUCCESS) {
-                        result = kMalformed;
-                        break;
-                    }
-                } else {
-                    const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
-                    if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
-                        result = kMalformed;
-                        break;
-                    }
+                const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+                if (JxlDecoderSetImageOutCallback(decoder, &format, DiscardPixels, nullptr) != JXL_DEC_SUCCESS) {
+                    result = kMalformed;
+                    break;
                 }
                 continue;
             }
@@ -548,7 +651,7 @@ Status RunLogicalHeaderPreflight(const uint8_t* data, size_t size, uint64_t* out
     DiagnosticReason reason = kReasonNone;
     LogicalInfo logical{};
     StructuralMetrics metrics{};
-    Status status = RunLogicalPass(data, size, &logical, true, &reason);
+    Status status = RunLogicalHeaderPass(data, size, &logical, &reason);
     StoreResult(status, reason, logical, metrics, output);
     return status;
 }
@@ -588,7 +691,7 @@ Status RunValidationPreflight(const uint8_t* data, size_t size, uint64_t* output
 
     DiagnosticReason reason = kReasonNone;
     LogicalInfo decoded_logical{};
-    Status status = RunLogicalPass(data, size, &decoded_logical, false, &reason);
+    Status status = RunLogicalValidationPass(data, size, &decoded_logical, &reason);
     if (status == kSuccess && !LogicalInfoMatches(expected, decoded_logical)) {
         reason = kReasonLogicalMismatch;
         status = kMalformed;
