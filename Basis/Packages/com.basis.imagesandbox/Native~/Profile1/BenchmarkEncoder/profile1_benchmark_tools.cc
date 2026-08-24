@@ -654,10 +654,21 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
         ok = AddRepeatedFrames(encoder, width, height, 1, 33'335U);
         break;
       case kSyntheticWorstCaseSubmittedStructural: {
+        for (uint32_t i = 0; i < 128 && ok; ++i) {
+          FrameSpec layer{};
+          layer.duration = 0;
+          layer.save_reference = i % 3U;
+          layer.value = static_cast<uint8_t>(i);
+          if (i != 0) {
+            layer.blend = JXL_BLEND_BLEND;
+            layer.source = (i - 1U) % 3U;
+          }
+          ok = AddSyntheticFrame(encoder, width, height, layer);
+        }
         FrameSpec first{};
         first.duration = kMinimumDurationUs;
         first.value = 1;
-        ok = AddSyntheticFrame(encoder, width, height, first);
+        ok = ok && AddSyntheticFrame(encoder, width, height, first);
         for (uint32_t i = 1; i < 512 && ok; ++i) {
           FrameSpec frame{};
           frame.duration = kMinimumDurationUs;

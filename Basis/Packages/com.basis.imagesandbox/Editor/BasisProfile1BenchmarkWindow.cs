@@ -987,11 +987,12 @@ namespace Basis.ImageSandbox.Editor
                 25 => preflight.Width == 256 && preflight.Height == 256 &&
                       preflight.LogicalFrameCount == 512 &&
                       preflight.SubmittedCanvasPixels == 33_554_432UL &&
+                      preflight.PublicRegularLayerCount >= 640 &&
                       preflight.CroppedLayerCount >= 511 &&
-                      preflight.ReferenceReadEdges >= 511 &&
-                      preflight.SavedReferenceCount >= 340 &&
-                      preflight.BlendOperationCount >= 511 &&
-                      preflight.MaximumReferenceChainDepth >= 512,
+                      preflight.ReferenceReadEdges >= 638 &&
+                      preflight.SavedReferenceCount >= 425 &&
+                      preflight.BlendOperationCount >= 638 &&
+                      preflight.MaximumReferenceChainDepth >= 129,
                 _ => true,
             };
             if (!structureOk)
