@@ -71,6 +71,7 @@ enum SyntheticFixtureKind : uint32_t {
   kSyntheticPreview = 22,
   kSyntheticCanvasBelow = 23,
   kSyntheticCanvasExact = 24,
+  kSyntheticWorstCaseSubmittedStructural = 25,
 };
 
 void AppendLe32(std::vector<uint8_t>* output, uint32_t value) {
@@ -509,6 +510,7 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
     case kSyntheticSubmittedAbove: width = 257; height = 256; break;
     case kSyntheticCanvasBelow: width = 2048; height = 2047; break;
     case kSyntheticCanvasExact: width = 2048; height = 2048; break;
+    case kSyntheticWorstCaseSubmittedStructural: width = 256; height = 256; break;
     default: break;
   }
 
@@ -651,6 +653,28 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
       case kSyntheticDurationAbove:
         ok = AddRepeatedFrames(encoder, width, height, 1, 33'335U);
         break;
+      case kSyntheticWorstCaseSubmittedStructural: {
+        FrameSpec first{};
+        first.duration = kMinimumDurationUs;
+        first.save_reference = 1;
+        first.value = 1;
+        ok = AddSyntheticFrame(encoder, width, height, first);
+        for (uint32_t i = 1; i < 512 && ok; ++i) {
+          FrameSpec frame{};
+          frame.duration = kMinimumDurationUs;
+          frame.crop = true;
+          frame.x = static_cast<int32_t>(i & 1U);
+          frame.y = 0;
+          frame.width = 255;
+          frame.height = 256;
+          frame.blend = JXL_BLEND_BLEND;
+          frame.source = 1U + ((i - 1U) % 3U);
+          frame.save_reference = 1U + (i % 3U);
+          frame.value = static_cast<uint8_t>(i);
+          ok = AddSyntheticFrame(encoder, width, height, frame);
+        }
+        break;
+      }
       default:
         ok = false;
         break;

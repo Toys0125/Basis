@@ -87,6 +87,7 @@ namespace Basis.ImageSandbox.Editor
             new SyntheticFixtureDefinition(22, "struct-preview.jxl", "synthetic/struct-preview.jxl"),
             new SyntheticFixtureDefinition(23, "boundary-canvas-below.jxl", "synthetic/boundary-canvas-2048x2047.jxl"),
             new SyntheticFixtureDefinition(24, "boundary-canvas-exact.jxl", "synthetic/boundary-canvas-2048x2048.jxl"),
+            new SyntheticFixtureDefinition(25, "worst-case-submitted-structural.jxl", "synthetic/worst-case-submitted-structural.jxl"),
         };
 
         [MenuItem(MenuPath, false, MenuPriority)]
@@ -288,6 +289,7 @@ namespace Basis.ImageSandbox.Editor
             _preparationCurrent = "Starting";
 
             var fixturePaths = new List<string>();
+            var fixturePayloadPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixtureDisplayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixturePreparationPrefixes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fixturePreparationErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -310,11 +312,13 @@ namespace Basis.ImageSandbox.Editor
                 {
                     foreach (string path in jxlFixtures)
                     {
-                        fixturePaths.Add(path);
-                        fixtureDisplayNames[path] = RelativeFixtureName(path) + " [raw-conformance]";
-                        fixturePreparationPrefixes[path] = "RawJxlConformance";
-                        fixtureOriginalPayloadBytes[path] = new FileInfo(path).Length;
-                        fixturePreparationMeasurements[path] = new FixturePreparationMeasurement
+                        string fixtureKey = CreateFixtureKey(path, "raw-conformance");
+                        fixturePaths.Add(fixtureKey);
+                        fixturePayloadPaths[fixtureKey] = path;
+                        fixtureDisplayNames[fixtureKey] = RelativeFixtureName(path) + " [raw-conformance]";
+                        fixturePreparationPrefixes[fixtureKey] = "RawJxlConformance";
+                        fixtureOriginalPayloadBytes[fixtureKey] = new FileInfo(path).Length;
+                        fixturePreparationMeasurements[fixtureKey] = new FixturePreparationMeasurement
                         {
                             Backend = "Raw JXL codestream/container preservation",
                         };
@@ -345,17 +349,19 @@ namespace Basis.ImageSandbox.Editor
                     {
                         string displayName = RelativeFixtureName(gifPath) + " [local-import]";
                         long originalBytes = new FileInfo(gifPath).Length;
+                        string fixtureKey = CreateFixtureKey(gifPath, "local-import");
                         if (gifResult.ConvertedByOriginal.TryGetValue(gifPath, out string convertedPath))
                         {
-                            fixturePaths.Add(convertedPath);
-                            fixtureDisplayNames[convertedPath] = displayName;
-                            fixturePreparationPrefixes[convertedPath] = "GifLosslessFullCanvas";
-                            fixtureOriginalPayloadBytes[convertedPath] = originalBytes;
+                            fixturePaths.Add(fixtureKey);
+                            fixturePayloadPaths[fixtureKey] = convertedPath;
+                            fixtureDisplayNames[fixtureKey] = displayName;
+                            fixturePreparationPrefixes[fixtureKey] = "GifLosslessFullCanvas";
+                            fixtureOriginalPayloadBytes[fixtureKey] = originalBytes;
                             if (gifResult.MetricsByOriginal.TryGetValue(
                                     gifPath,
                                     out BasisProfile1GifBenchmarkPreparation.GifPreparationMetrics gifMetrics))
                             {
-                                fixturePreparationMeasurements[convertedPath] = new FixturePreparationMeasurement
+                                fixturePreparationMeasurements[fixtureKey] = new FixturePreparationMeasurement
                                 {
                                     Backend = gifMetrics.Backend,
                                     CacheHit = gifMetrics.CacheHit,
@@ -373,10 +379,11 @@ namespace Basis.ImageSandbox.Editor
                         }
                         else if (gifResult.ErrorsByOriginal.TryGetValue(gifPath, out string gifError))
                         {
-                            fixturePaths.Add(gifPath);
-                            fixtureDisplayNames[gifPath] = displayName;
-                            fixturePreparationErrors[gifPath] = gifError;
-                            fixtureOriginalPayloadBytes[gifPath] = originalBytes;
+                            fixturePaths.Add(fixtureKey);
+                            fixturePayloadPaths[fixtureKey] = gifPath;
+                            fixtureDisplayNames[fixtureKey] = displayName;
+                            fixturePreparationErrors[fixtureKey] = gifError;
+                            fixtureOriginalPayloadBytes[fixtureKey] = originalBytes;
                         }
                     }
                     _preparationCompleted = gifFixtures.Length;
@@ -400,6 +407,7 @@ namespace Basis.ImageSandbox.Editor
                             RelativeFixtureName(sourcePath) + " [local-import]",
                             prepared,
                             fixturePaths,
+                            fixturePayloadPaths,
                             fixtureDisplayNames,
                             fixturePreparationPrefixes,
                             fixturePreparationErrors,
@@ -427,6 +435,7 @@ namespace Basis.ImageSandbox.Editor
                         RelativeFixtureName(sourcePath) + " [local-import]",
                         prepared,
                         fixturePaths,
+                        fixturePayloadPaths,
                         fixtureDisplayNames,
                         fixturePreparationPrefixes,
                         fixturePreparationErrors,
@@ -463,6 +472,7 @@ namespace Basis.ImageSandbox.Editor
                             definition.DisplayName,
                             generated,
                             fixturePaths,
+                            fixturePayloadPaths,
                             fixtureDisplayNames,
                             fixturePreparationPrefixes,
                             fixturePreparationErrors,
@@ -513,6 +523,7 @@ namespace Basis.ImageSandbox.Editor
                 TimeoutSeconds = _timeoutSeconds,
                 DecoderBytes = (byte[])decoderAsset.bytes.Clone(),
                 Fixtures = fixtures,
+                FixturePayloadPaths = fixturePayloadPaths,
                 FixtureDisplayNames = fixtureDisplayNames,
                 FixturePreparationPrefixes = fixturePreparationPrefixes,
                 FixturePreparationErrors = fixturePreparationErrors,
@@ -973,6 +984,14 @@ namespace Basis.ImageSandbox.Editor
                 23 => preflight.Width == 2048 && preflight.Height == 2047,
                 24 => preflight.Width == 2048 && preflight.Height == 2048 &&
                       (ulong)preflight.Width * preflight.Height == 4_194_304UL,
+                25 => preflight.Width == 256 && preflight.Height == 256 &&
+                      preflight.LogicalFrameCount == 512 &&
+                      preflight.SubmittedCanvasPixels == 33_554_432UL &&
+                      preflight.CroppedLayerCount >= 511 &&
+                      preflight.ReferenceReadEdges >= 511 &&
+                      preflight.SavedReferenceCount >= 512 &&
+                      preflight.BlendOperationCount >= 511 &&
+                      preflight.MaximumReferenceChainDepth >= 512,
                 _ => true,
             };
             if (!structureOk)
@@ -1034,21 +1053,26 @@ namespace Basis.ImageSandbox.Editor
             string displayName,
             LocalPreparationResult prepared,
             List<string> fixturePaths,
+            Dictionary<string, string> fixturePayloadPaths,
             Dictionary<string, string> fixtureDisplayNames,
             Dictionary<string, string> fixturePreparationPrefixes,
             Dictionary<string, string> fixturePreparationErrors,
             Dictionary<string, long> fixtureOriginalPayloadBytes,
             Dictionary<string, FixturePreparationMeasurement> fixturePreparationMeasurements)
         {
-            string fixturePath = prepared.Ok ? prepared.PreparedPath : sourcePath;
-            fixturePaths.Add(fixturePath);
-            fixtureDisplayNames[fixturePath] = displayName;
-            fixturePreparationPrefixes[fixturePath] = prepared.PreparationPrefix;
-            fixtureOriginalPayloadBytes[fixturePath] = prepared.OriginalPayloadBytes;
-            fixturePreparationMeasurements[fixturePath] = prepared.Measurement;
+            string fixtureKey = CreateFixtureKey(sourcePath, "local-import");
+            string payloadPath = prepared.Ok ? prepared.PreparedPath : sourcePath;
+            fixturePaths.Add(fixtureKey);
+            fixturePayloadPaths[fixtureKey] = payloadPath;
+            fixtureDisplayNames[fixtureKey] = displayName;
+            fixturePreparationPrefixes[fixtureKey] = prepared.PreparationPrefix;
+            fixtureOriginalPayloadBytes[fixtureKey] = prepared.OriginalPayloadBytes;
+            fixturePreparationMeasurements[fixtureKey] = prepared.Measurement;
             if (!prepared.Ok)
-                fixturePreparationErrors[fixturePath] = prepared.Error;
+                fixturePreparationErrors[fixtureKey] = prepared.Error;
         }
+
+        private static string CreateFixtureKey(string sourcePath, string mode) => sourcePath + "\u001f" + mode;
 
         private bool TryValidateSettings(out int[] concurrency, out ulong[] fuelSweep, out string error)
         {
@@ -1170,17 +1194,18 @@ namespace Basis.ImageSandbox.Editor
             );
             for (int fixtureIndex = 0; fixtureIndex < configuration.Fixtures.Length; fixtureIndex++)
             {
-                string fixturePath = configuration.Fixtures[fixtureIndex];
+                string fixtureKey = configuration.Fixtures[fixtureIndex];
+                string fixturePath = GetFixturePayloadPath(configuration, fixtureKey);
                 cancellationToken.ThrowIfCancellationRequested();
-                string fixtureName = GetFixtureDisplayName(configuration, fixturePath);
+                string fixtureName = GetFixtureDisplayName(configuration, fixtureKey);
                 reportProgress?.Invoke(
                     completedGroups,
                     totalGroups,
                     $"Fixture {fixtureIndex + 1}/{configuration.Fixtures.Length}: {fixtureName}\nPreparing canonical Profile 1 payload..."
                 );
-                if (configuration.FixturePreparationErrors.TryGetValue(fixturePath, out string gifPreparationError))
+                if (configuration.FixturePreparationErrors.TryGetValue(fixtureKey, out string gifPreparationError))
                 {
-                    long failedOriginalPayloadBytes = configuration.FixtureOriginalPayloadBytes.TryGetValue(fixturePath, out long originalBytes)
+                    long failedOriginalPayloadBytes = configuration.FixtureOriginalPayloadBytes.TryGetValue(fixtureKey, out long originalBytes)
                         ? originalBytes
                         : new FileInfo(fixturePath).Length;
                     foreach (ulong fuel in configuration.FuelSweep)
@@ -1189,7 +1214,7 @@ namespace Basis.ImageSandbox.Editor
                         {
                             result.Fixtures.Add(CreatePreparationFailure(
                                 configuration,
-                                fixturePath,
+                                fixtureKey,
                                 failedOriginalPayloadBytes,
                                 fuel,
                                 concurrency,
@@ -1215,7 +1240,7 @@ namespace Basis.ImageSandbox.Editor
                         {
                             result.Fixtures.Add(CreatePreparationFailure(
                                 configuration,
-                                fixturePath,
+                                fixtureKey,
                                 sourcePayload.LongLength,
                                 fuel,
                                 concurrency,
@@ -1233,9 +1258,9 @@ namespace Basis.ImageSandbox.Editor
                 }
 
                 long originalPayloadBytes = prepared.OriginalPayloadBytes;
-                if (configuration.FixtureOriginalPayloadBytes.TryGetValue(fixturePath, out long originalOverride))
+                if (configuration.FixtureOriginalPayloadBytes.TryGetValue(fixtureKey, out long originalOverride))
                     originalPayloadBytes = originalOverride;
-                if (configuration.FixturePreparationPrefixes.TryGetValue(fixturePath, out string prefix))
+                if (configuration.FixturePreparationPrefixes.TryGetValue(fixtureKey, out string prefix))
                     prepared = new PreparedFixture(prepared.Payload, originalPayloadBytes, prefix + "+" + prepared.PreparationKind);
                 else if (originalPayloadBytes != prepared.OriginalPayloadBytes)
                     prepared = new PreparedFixture(prepared.Payload, originalPayloadBytes, prepared.PreparationKind);
@@ -1254,7 +1279,7 @@ namespace Basis.ImageSandbox.Editor
                                 + $"Fuel {fuelIndex + 1}/{configuration.FuelSweep.Length}: {fuel:N0}  |  "
                                 + $"Concurrency {concurrencyIndex + 1}/{configuration.Concurrency.Length}: {concurrency}"
                         );
-                        result.Fixtures.Add(RunFixture(configuration, fixturePath, prepared, fuel, concurrency, cancellationToken));
+                        result.Fixtures.Add(RunFixture(configuration, fixtureKey, prepared, fuel, concurrency, cancellationToken));
                         completedGroups++;
                         reportProgress?.Invoke(
                             completedGroups,
@@ -1981,11 +2006,19 @@ namespace Basis.ImageSandbox.Editor
             return csv.ToString();
         }
 
-        private static string GetFixtureDisplayName(BenchmarkConfiguration configuration, string fixturePath)
+        private static string GetFixturePayloadPath(BenchmarkConfiguration configuration, string fixtureKey)
         {
-            if (configuration.FixtureDisplayNames != null && configuration.FixtureDisplayNames.TryGetValue(fixturePath, out string displayName))
+            if (configuration.FixturePayloadPaths != null && configuration.FixturePayloadPaths.TryGetValue(fixtureKey, out string payloadPath))
+                return payloadPath;
+            return fixtureKey;
+        }
+
+        private static string GetFixtureDisplayName(BenchmarkConfiguration configuration, string fixtureKey)
+        {
+            if (configuration.FixtureDisplayNames != null && configuration.FixtureDisplayNames.TryGetValue(fixtureKey, out string displayName))
                 return displayName;
-            return Path.GetRelativePath(configuration.FixtureDirectory, fixturePath).Replace('\\', '/');
+            string payloadPath = GetFixturePayloadPath(configuration, fixtureKey);
+            return Path.GetRelativePath(configuration.FixtureDirectory, payloadPath).Replace('\\', '/');
         }
 
         private static string Csv(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
@@ -2101,6 +2134,7 @@ namespace Basis.ImageSandbox.Editor
             public float TimeoutSeconds;
             public byte[] DecoderBytes;
             public string[] Fixtures;
+            public Dictionary<string, string> FixturePayloadPaths;
             public Dictionary<string, string> FixtureDisplayNames;
             public Dictionary<string, string> FixturePreparationPrefixes;
             public Dictionary<string, string> FixturePreparationErrors;
