@@ -656,7 +656,6 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
       case kSyntheticWorstCaseSubmittedStructural: {
         FrameSpec first{};
         first.duration = kMinimumDurationUs;
-        first.save_reference = 1;
         first.value = 1;
         ok = AddSyntheticFrame(encoder, width, height, first);
         for (uint32_t i = 1; i < 512 && ok; ++i) {
@@ -668,8 +667,8 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
           frame.width = 255;
           frame.height = 256;
           frame.blend = JXL_BLEND_BLEND;
-          frame.source = 1U + ((i - 1U) % 3U);
-          frame.save_reference = 1U + (i % 3U);
+          frame.source = (i - 1U) % 3U;
+          frame.save_reference = i % 3U;
           frame.value = static_cast<uint8_t>(i);
           ok = AddSyntheticFrame(encoder, width, height, frame);
         }

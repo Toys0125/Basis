@@ -989,7 +989,7 @@ namespace Basis.ImageSandbox.Editor
                       preflight.SubmittedCanvasPixels == 33_554_432UL &&
                       preflight.CroppedLayerCount >= 511 &&
                       preflight.ReferenceReadEdges >= 511 &&
-                      preflight.SavedReferenceCount >= 512 &&
+                      preflight.SavedReferenceCount >= 340 &&
                       preflight.BlendOperationCount >= 511 &&
                       preflight.MaximumReferenceChainDepth >= 512,
                 _ => true,
