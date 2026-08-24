@@ -996,7 +996,11 @@ namespace Basis.ImageSandbox.Editor
             };
             if (!structureOk)
             {
-                error = $"Synthetic fixture kind {kind} was accepted, but libjxl did not preserve the structural features required by the benchmark.";
+                error = $"Synthetic fixture kind {kind} was accepted, but libjxl did not preserve the structural features required by the benchmark. "
+                    + $"frames={preflight.LogicalFrameCount}, submitted={preflight.SubmittedCanvasPixels}, layers={preflight.PublicRegularLayerCount}, "
+                    + $"layerPixels={preflight.PublicRegularLayerPixels}, crops={preflight.CroppedLayerCount}, refs={preflight.ReferenceReadEdges}, "
+                    + $"saved={preflight.SavedReferenceCount}, blends={preflight.BlendOperationCount}, depth={preflight.MaximumReferenceChainDepth}, "
+                    + $"preview={preflight.PreviewPixels}.";
                 return false;
             }
             return true;
