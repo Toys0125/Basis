@@ -80,56 +80,74 @@ bool CanonicalizeCodestreamBoxes(
         return false;
     }
 
+    // Stage-B negative fixtures must still pass the exact Stage-A container contract.
+    // libjxl may emit a jxll level declaration for intentionally out-of-profile
+    // codestreams (for example 16-bit samples). Extract only the codestream bytes and
+    // rewrap them in one canonical final-marked jxlp so the intended semantic defect
+    // reaches Stage B instead of being rejected by Stage A.
     const size_t first_box = kSignature.size() + kFtyp.size();
-    const uint32_t first_box_size = ReadBe32(encoded.data() + first_box);
-    if (first_box_size >= 8 && first_box + first_box_size == encoded.size() &&
-        std::memcmp(encoded.data() + first_box + 4, "jxlc", 4) == 0) {
-        canonical->clear();
-        canonical->insert(canonical->end(), encoded.begin(), encoded.begin() + first_box);
-        AppendBe32(canonical, first_box_size + 4);
-        canonical->insert(canonical->end(), {'j', 'x', 'l', 'p'});
-        AppendBe32(canonical, 0x80000000U);
-        canonical->insert(canonical->end(), encoded.begin() + first_box + 8, encoded.end());
-        return true;
-    }
-
+    std::vector<uint8_t> codestream;
     size_t offset = first_box;
     uint32_t expected_sequence = 0;
-    bool saw_final = false;
+    bool saw_codestream = false;
+    bool saw_final_jxlp = false;
     while (offset < encoded.size()) {
-        if (encoded.size() - offset < 12) {
-            std::fprintf(stderr, "Encoder emitted a truncated codestream box.\n");
+        if (encoded.size() - offset < 8) {
+            std::fprintf(stderr, "Encoder emitted a truncated box.\n");
             return false;
         }
         const uint32_t box_size = ReadBe32(encoded.data() + offset);
-        if (box_size < 12 || offset + box_size > encoded.size() ||
-            std::memcmp(encoded.data() + offset + 4, "jxlp", 4) != 0) {
-            std::fprintf(stderr, "Encoder emitted a non-Profile-1 box after ftyp.\n");
+        if (box_size < 8 || offset + box_size > encoded.size()) {
+            std::fprintf(stderr, "Encoder emitted an invalid box size.\n");
             return false;
         }
-        const uint32_t counter = ReadBe32(encoded.data() + offset + 8);
-        if ((counter & 0x7fffffffU) != expected_sequence) {
-            std::fprintf(stderr, "Encoder emitted a nonconsecutive jxlp counter.\n");
-            return false;
+        const uint8_t* type = encoded.data() + offset + 4;
+        if (std::memcmp(type, "jxll", 4) == 0) {
+            offset += box_size;
+            continue;
         }
-        const bool is_final = (counter & 0x80000000U) != 0;
-        offset += box_size;
-        ++expected_sequence;
-        if (is_final) {
-            saw_final = true;
-            if (offset != encoded.size()) {
-                std::fprintf(stderr, "Encoder emitted data after final jxlp.\n");
+        if (std::memcmp(type, "jxlc", 4) == 0) {
+            if (saw_codestream) {
+                std::fprintf(stderr, "Encoder emitted multiple codestream forms.\n");
                 return false;
             }
-            break;
+            codestream.insert(codestream.end(), encoded.begin() + offset + 8, encoded.begin() + offset + box_size);
+            saw_codestream = true;
+            offset += box_size;
+            continue;
         }
+        if (std::memcmp(type, "jxlp", 4) == 0) {
+            if (box_size < 12 || saw_final_jxlp) {
+                std::fprintf(stderr, "Encoder emitted an invalid jxlp sequence.\n");
+                return false;
+            }
+            const uint32_t counter = ReadBe32(encoded.data() + offset + 8);
+            if ((counter & 0x7fffffffU) != expected_sequence) {
+                std::fprintf(stderr, "Encoder emitted a nonconsecutive jxlp counter.\n");
+                return false;
+            }
+            saw_codestream = true;
+            saw_final_jxlp = (counter & 0x80000000U) != 0;
+            codestream.insert(codestream.end(), encoded.begin() + offset + 12, encoded.begin() + offset + box_size);
+            ++expected_sequence;
+            offset += box_size;
+            continue;
+        }
+        std::fprintf(stderr, "Encoder emitted an unsupported box while preparing a Stage-B fixture.\n");
+        return false;
     }
-    if (!saw_final || expected_sequence == 0) {
-        std::fprintf(stderr, "Encoder did not emit a final-marked jxlp box.\n");
+    if (!saw_codestream || codestream.empty() || codestream.size() > UINT32_MAX - 12U) {
+        std::fprintf(stderr, "Encoder did not emit a bounded codestream.\n");
         return false;
     }
 
-    *canonical = encoded;
+    canonical->clear();
+    canonical->insert(canonical->end(), kSignature.begin(), kSignature.end());
+    canonical->insert(canonical->end(), kFtyp.begin(), kFtyp.end());
+    AppendBe32(canonical, static_cast<uint32_t>(codestream.size() + 12U));
+    canonical->insert(canonical->end(), {'j', 'x', 'l', 'p'});
+    AppendBe32(canonical, 0x80000000U);
+    canonical->insert(canonical->end(), codestream.begin(), codestream.end());
     return true;
 }
 
