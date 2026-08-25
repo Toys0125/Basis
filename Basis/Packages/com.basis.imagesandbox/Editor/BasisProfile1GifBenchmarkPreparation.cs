@@ -16,6 +16,42 @@ namespace Basis.ImageSandbox.Editor
     {
         private const string CacheFormat = "BasisProfile1GifFullCanvasCacheV1";
 
+        internal static bool TryConvertSynchronously(
+            string gifPath,
+            out byte[] profile1,
+            out string error
+        )
+        {
+            profile1 = null;
+            error = null;
+            try
+            {
+                byte[] source = File.ReadAllBytes(gifPath);
+                using var request = BasisBurstGifDecoder.Schedule(source);
+                using BasisBurstGifDecodeResult result = request.Complete();
+                if (result == null || !result.Ok || result.Animation == null)
+                {
+                    error = "GIF decode failed: " + (result?.Error ?? "unknown error");
+                    return false;
+                }
+                if (!TryBuildTimeline(gifPath, result.Animation, out byte[] timeline, out error))
+                    return false;
+                EncodeResult encoded = EncodeTimeline(timeline);
+                if (!encoded.Ok)
+                {
+                    error = "GIF Profile 1 encode failed: " + encoded.Error;
+                    return false;
+                }
+                profile1 = encoded.Profile1;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                error = "GIF benchmark preparation failed: " + exception.Message;
+                return false;
+            }
+        }
+
         public static async Task<GifPreparationResult> ConvertAsync(
             string[] gifPaths,
             string outputRoot,

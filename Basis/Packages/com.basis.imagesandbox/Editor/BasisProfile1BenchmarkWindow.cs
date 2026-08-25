@@ -1360,7 +1360,7 @@ namespace Basis.ImageSandbox.Editor
             return failure;
         }
 
-        private static bool TryPrepareCanonicalProfile1(
+        internal static bool TryPrepareCanonicalProfile1(
             byte[] source,
             out PreparedFixture prepared,
             out string error
@@ -2245,7 +2245,7 @@ namespace Basis.ImageSandbox.Editor
             [NonSerialized] public string JsonPath;
         }
 
-        private sealed class PreparedFixture
+        internal sealed class PreparedFixture
         {
             public readonly byte[] Payload;
             public readonly long OriginalPayloadBytes;

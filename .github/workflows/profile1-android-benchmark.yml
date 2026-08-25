@@ -1,0 +1,134 @@
+name: Profile 1 Android corpus benchmark APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      codec_corpus_ref:
+        description: imazen/codec-corpus ref to package
+        required: true
+        default: main
+        type: string
+
+concurrency:
+  group: profile1-android-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Quest corpus benchmark APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      PROJECT_PATH: Basis
+      BUILD_NAME: BasisProfile1Benchmark
+      PROFILE1_BENCHMARK_WASM_SHA256: 86017587927cc98d049a99ba94908c50439e6c7b50728a166706c4b0a9884bde
+      BASIS_PROFILE1_BUILD_CACHE: ${{ runner.temp }}/basis-profile1-build
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: false
+
+      - name: Checkout Basis
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Imazen codec corpus
+        uses: actions/checkout@v4
+        with:
+          repository: imazen/codec-corpus
+          ref: ${{ inputs.codec_corpus_ref }}
+          path: codec-corpus
+          fetch-depth: 1
+          lfs: true
+          sparse-checkout: |
+            gif-conformance
+            jxl
+          sparse-checkout-cone-mode: false
+
+      - name: Record corpus revision
+        shell: bash
+        run: |
+          echo "PROFILE1_CODEC_CORPUS_COMMIT=$(git -C codec-corpus rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "JXL fixtures: $(find codec-corpus/jxl -type f -name '*.jxl' | wc -l)"
+          echo "GIF fixtures: $(find codec-corpus/gif-conformance -type f -name '*.gif' | wc -l)"
+
+      - name: Build trusted editor-native corpus converter
+        shell: bash
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: bash Packages/com.basis.imagesandbox/Native~/Profile1/build-profile1-editor-native.sh
+
+      - name: Build candidate production WASM decoder
+        shell: bash
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: |
+          set -euo pipefail
+          PROFILE1_DIR="$PWD/Packages/com.basis.imagesandbox/Native~/Profile1"
+          LIBJXL_DIR="$BASIS_PROFILE1_BUILD_CACHE/libjxl"
+          BUILD_DIR="$BASIS_PROFILE1_BUILD_CACHE/android-benchmark-wasm"
+          OUTPUT="$PWD/Packages/com.basis.imagesandbox/Runtime/Resources/BasisImageSandbox/profile1_decoder.bytes"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR" "$(dirname "$OUTPUT")"
+          docker run --rm \
+            -v "$PROFILE1_DIR:/profile1:ro" \
+            -v "$LIBJXL_DIR:/libjxl:ro" \
+            -v "$BUILD_DIR:/build" \
+            emscripten/emsdk:4.0.23 \
+            bash -lc 'emcmake cmake -S /profile1 -B /build -DCMAKE_BUILD_TYPE=Release -DLIBJXL_SOURCE_DIR=/libjxl && cmake --build /build --target profile1_decoder --parallel'
+          cp "$BUILD_DIR/profile1_decoder.wasm" "$OUTPUT"
+          ACTUAL_SHA256="$(sha256sum "$OUTPUT" | awk '{print $1}')"
+          echo "Candidate decoder SHA-256: $ACTUAL_SHA256"
+          if [[ "$ACTUAL_SHA256" != "$PROFILE1_BENCHMARK_WASM_SHA256" ]]; then
+            echo "Candidate WASM changed; update this benchmark pin only after rerunning the desktop differential checks." >&2
+            exit 1
+          fi
+
+      - name: Build benchmark APK
+        uses: BasisVR/unity-builder@main
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          PROFILE1_CODEC_CORPUS_COMMIT: ${{ env.PROFILE1_CODEC_CORPUS_COMMIT }}
+        with:
+          buildName: ${{ env.BUILD_NAME }}
+          projectPath: ${{ env.PROJECT_PATH }}
+          targetPlatform: Android
+          buildMethod: Basis.ImageSandbox.Editor.BasisProfile1AndroidBenchmarkBuild.Build
+          customParameters: -profile1CorpusPath ${{ github.workspace }}/codec-corpus
+          versioning: Custom
+          version: 0.0.${{ github.run_number }}
+          androidVersionCode: ${{ github.run_number }}
+          androidExportType: androidPackage
+          androidKeystoreName: BasisQuest
+          androidKeystoreBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          androidKeystorePass: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          androidKeyaliasName: ${{ secrets.ANDROID_KEYALIAS_NAME }}
+          androidKeyaliasPass: ${{ secrets.ANDROID_KEYALIAS_PASS }}
+          linux64RemoveExecutableExtension: false
+
+      - name: List build outputs
+        shell: bash
+        if: always()
+        run: |
+          find build/Android -maxdepth 2 -type f -printf '%p %s bytes\n' 2>/dev/null | sort || true
+
+      - name: Upload benchmark APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Basis-Profile1-Android-Benchmark-${{ github.run_number }}
+          path: |
+            build/Android/${{ env.BUILD_NAME }}.apk
+            build/Android/profile1-android-benchmark-manifest.json
+          if-no-files-found: error
+          retention-days: 14
