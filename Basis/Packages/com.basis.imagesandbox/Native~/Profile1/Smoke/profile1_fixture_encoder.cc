@@ -21,6 +21,18 @@ enum class FixtureVariant {
     kNoAnimation,
     kWrongTimebase,
     kLinearSrgb,
+    kWidthOver,
+    kHeightOver,
+    kLogicalFramesExact,
+    kLogicalFramesOver,
+    kSubmittedBelow,
+    kSubmittedExact,
+    kSubmittedOver,
+    kTimelineBelow,
+    kTimelineExact,
+    kTimelineOver,
+    kDurationBelow,
+    kDurationExact,
 };
 
 bool ParseVariant(const std::string& name, FixtureVariant* variant) {
@@ -34,6 +46,18 @@ bool ParseVariant(const std::string& name, FixtureVariant* variant) {
     else if (name == "no-animation") *variant = FixtureVariant::kNoAnimation;
     else if (name == "wrong-timebase") *variant = FixtureVariant::kWrongTimebase;
     else if (name == "linear-srgb") *variant = FixtureVariant::kLinearSrgb;
+    else if (name == "width-over") *variant = FixtureVariant::kWidthOver;
+    else if (name == "height-over") *variant = FixtureVariant::kHeightOver;
+    else if (name == "logical-frames-exact") *variant = FixtureVariant::kLogicalFramesExact;
+    else if (name == "logical-frames-over") *variant = FixtureVariant::kLogicalFramesOver;
+    else if (name == "submitted-below") *variant = FixtureVariant::kSubmittedBelow;
+    else if (name == "submitted-exact") *variant = FixtureVariant::kSubmittedExact;
+    else if (name == "submitted-over") *variant = FixtureVariant::kSubmittedOver;
+    else if (name == "timeline-below") *variant = FixtureVariant::kTimelineBelow;
+    else if (name == "timeline-exact") *variant = FixtureVariant::kTimelineExact;
+    else if (name == "timeline-over") *variant = FixtureVariant::kTimelineOver;
+    else if (name == "duration-below") *variant = FixtureVariant::kDurationBelow;
+    else if (name == "duration-exact") *variant = FixtureVariant::kDurationExact;
     else return false;
     return true;
 }
@@ -184,6 +208,39 @@ bool EncodeFixture(FixtureVariant variant, std::vector<uint8_t>* canonical) {
         return false;
     }
 
+    uint32_t width = 2;
+    uint32_t height = 1;
+    uint32_t uniform_frame_count = 0;
+    uint32_t uniform_duration = 0;
+    switch (variant) {
+        case FixtureVariant::kWidthOver:
+            width = 2049; height = 1; uniform_frame_count = 1; uniform_duration = 33'334; break;
+        case FixtureVariant::kHeightOver:
+            width = 1; height = 2049; uniform_frame_count = 1; uniform_duration = 33'334; break;
+        case FixtureVariant::kLogicalFramesExact:
+            width = 8; height = 8; uniform_frame_count = 512; uniform_duration = 33'334; break;
+        case FixtureVariant::kLogicalFramesOver:
+            width = 8; height = 8; uniform_frame_count = 513; uniform_duration = 33'334; break;
+        case FixtureVariant::kSubmittedBelow:
+            width = 257; height = 256; uniform_frame_count = 510; uniform_duration = 33'334; break;
+        case FixtureVariant::kSubmittedExact:
+            width = 256; height = 256; uniform_frame_count = 512; uniform_duration = 33'334; break;
+        case FixtureVariant::kSubmittedOver:
+            width = 257; height = 256; uniform_frame_count = 511; uniform_duration = 33'334; break;
+        case FixtureVariant::kTimelineBelow:
+            width = 8; height = 8; uniform_frame_count = 1; uniform_duration = 299'999'999; break;
+        case FixtureVariant::kTimelineExact:
+            width = 8; height = 8; uniform_frame_count = 1; uniform_duration = 300'000'000; break;
+        case FixtureVariant::kTimelineOver:
+            width = 8; height = 8; uniform_frame_count = 1; uniform_duration = 300'000'001; break;
+        case FixtureVariant::kDurationBelow:
+            width = 8; height = 8; uniform_frame_count = 1; uniform_duration = 33'333; break;
+        case FixtureVariant::kDurationExact:
+            width = 8; height = 8; uniform_frame_count = 1; uniform_duration = 33'334; break;
+        default:
+            break;
+    }
+
     bool ok = false;
     do {
         if (!Check(JxlEncoderUseContainer(encoder, JXL_TRUE), "JxlEncoderUseContainer")) {
@@ -192,8 +249,8 @@ bool EncodeFixture(FixtureVariant variant, std::vector<uint8_t>* canonical) {
 
         JxlBasicInfo info{};
         JxlEncoderInitBasicInfo(&info);
-        info.xsize = 2;
-        info.ysize = 1;
+        info.xsize = width;
+        info.ysize = height;
         info.bits_per_sample = variant == FixtureVariant::kBits16 ? 16 : 8;
         info.exponent_bits_per_sample = 0;
         info.uses_original_profile = JXL_TRUE;
@@ -239,23 +296,39 @@ bool EncodeFixture(FixtureVariant variant, std::vector<uint8_t>* canonical) {
             break;
         }
 
-        uint32_t channels = 4;
-        std::vector<uint8_t> frame0 = {17, 39, 201, 0, 1, 2, 3, 255};
-        std::vector<uint8_t> frame1 = {4, 5, 6, 128, 7, 8, 9, 255};
-        if (variant == FixtureVariant::kNoAlpha) {
-            channels = 3;
-            frame0 = {17, 39, 201, 1, 2, 3};
-            frame1 = {4, 5, 6, 7, 8, 9};
-        } else if (variant == FixtureVariant::kGrayscale) {
-            channels = 2;
-            frame0 = {17, 0, 1, 255};
-            frame1 = {4, 128, 7, 255};
-        }
-        const uint32_t duration0 = variant == FixtureVariant::kNoAnimation ? 0 : 33'334;
-        const uint32_t duration1 = variant == FixtureVariant::kNoAnimation ? 0 : 50'001;
-        if (!AddFrame(encoder, frame0, channels, duration0) ||
-            !AddFrame(encoder, frame1, channels, duration1)) {
-            break;
+        if (uniform_frame_count != 0) {
+            const uint64_t frame_bytes = static_cast<uint64_t>(width) * height * 4ULL;
+            if (frame_bytes == 0 || frame_bytes > SIZE_MAX) break;
+            std::vector<uint8_t> frame(static_cast<size_t>(frame_bytes), 0);
+            for (size_t i = 3; i < frame.size(); i += 4) frame[i] = 255;
+            bool frames_ok = true;
+            for (uint32_t i = 0; i < uniform_frame_count; ++i) {
+                if (!frame.empty()) frame[0] = static_cast<uint8_t>(i);
+                if (!AddFrame(encoder, frame, 4, uniform_duration)) {
+                    frames_ok = false;
+                    break;
+                }
+            }
+            if (!frames_ok) break;
+        } else {
+            uint32_t channels = 4;
+            std::vector<uint8_t> frame0 = {17, 39, 201, 0, 1, 2, 3, 255};
+            std::vector<uint8_t> frame1 = {4, 5, 6, 128, 7, 8, 9, 255};
+            if (variant == FixtureVariant::kNoAlpha) {
+                channels = 3;
+                frame0 = {17, 39, 201, 1, 2, 3};
+                frame1 = {4, 5, 6, 7, 8, 9};
+            } else if (variant == FixtureVariant::kGrayscale) {
+                channels = 2;
+                frame0 = {17, 0, 1, 255};
+                frame1 = {4, 128, 7, 255};
+            }
+            const uint32_t duration0 = variant == FixtureVariant::kNoAnimation ? 0 : 33'334;
+            const uint32_t duration1 = variant == FixtureVariant::kNoAnimation ? 0 : 50'001;
+            if (!AddFrame(encoder, frame0, channels, duration0) ||
+                !AddFrame(encoder, frame1, channels, duration1)) {
+                break;
+            }
         }
         JxlEncoderCloseInput(encoder);
 
@@ -290,7 +363,7 @@ bool EncodeFixture(FixtureVariant variant, std::vector<uint8_t>* canonical) {
 
 int main(int argc, char** argv) {
     if (argc < 2 || argc > 3) {
-        std::fprintf(stderr, "Usage: profile1_fixture_encoder <output.jxl> [valid|bits16|grayscale|no-alpha|alpha16|premultiplied-alpha|orientation|no-animation|wrong-timebase|linear-srgb]\n");
+        std::fprintf(stderr, "Usage: profile1_fixture_encoder <output.jxl> [valid|bits16|grayscale|no-alpha|alpha16|premultiplied-alpha|orientation|no-animation|wrong-timebase|linear-srgb|width-over|height-over|logical-frames-exact|logical-frames-over|submitted-below|submitted-exact|submitted-over|timeline-below|timeline-exact|timeline-over|duration-below|duration-exact]\n");
         return 2;
     }
 

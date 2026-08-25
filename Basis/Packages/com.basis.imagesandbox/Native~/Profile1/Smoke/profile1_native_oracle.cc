@@ -38,8 +38,13 @@ void PrintHex(const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 2) {
-    std::cerr << "Usage: profile1_native_oracle <canonical-profile1.jxl>\n";
+  if (argc < 2 || argc > 3) {
+    std::cerr << "Usage: profile1_native_oracle <canonical-profile1.jxl> [--preflight-only]\n";
+    return 2;
+  }
+  const bool preflight_only = argc == 3 && std::string(argv[2]) == "--preflight-only";
+  if (argc == 3 && !preflight_only) {
+    std::cerr << "Unknown option: " << argv[2] << '\n';
     return 2;
   }
 
@@ -62,7 +67,7 @@ int main(int argc, char** argv) {
   for (uint64_t value : result) std::cout << ' ' << value;
   std::cout << '\n';
 
-  if (status != 0) return 0;
+  if (status != 0 || preflight_only) return 0;
   if (slots < 17 || result[2] == 0 || result[3] == 0 ||
       result[2] > std::numeric_limits<uint32_t>::max() ||
       result[3] > std::numeric_limits<uint32_t>::max()) {

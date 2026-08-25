@@ -194,6 +194,69 @@ try
                 TryDelete(path);
             }
         }
+
+        var boundaryCases = new (string Variant, BasisProfile1SandboxStatus Status, BasisProfile1SandboxDiagnosticReason Reason, uint Frames, ulong Submitted, ulong Timeline)[]
+        {
+            ("width-over", BasisProfile1SandboxStatus.SharedLimitExceeded, BasisProfile1SandboxDiagnosticReason.Dimensions, 0, 0, 0),
+            ("height-over", BasisProfile1SandboxStatus.SharedLimitExceeded, BasisProfile1SandboxDiagnosticReason.Dimensions, 0, 0, 0),
+            ("logical-frames-exact", BasisProfile1SandboxStatus.Success, BasisProfile1SandboxDiagnosticReason.None, 512, 32_768, 17_067_008),
+            ("logical-frames-over", BasisProfile1SandboxStatus.SharedLimitExceeded, BasisProfile1SandboxDiagnosticReason.LogicalFrames, 0, 0, 0),
+            ("submitted-below", BasisProfile1SandboxStatus.Success, BasisProfile1SandboxDiagnosticReason.None, 510, 33_553_920, 17_000_340),
+            ("submitted-exact", BasisProfile1SandboxStatus.Success, BasisProfile1SandboxDiagnosticReason.None, 512, 33_554_432, 17_067_008),
+            ("submitted-over", BasisProfile1SandboxStatus.SharedLimitExceeded, BasisProfile1SandboxDiagnosticReason.SubmittedPixels, 0, 0, 0),
+            ("timeline-below", BasisProfile1SandboxStatus.Success, BasisProfile1SandboxDiagnosticReason.None, 1, 64, 299_999_999),
+            ("timeline-exact", BasisProfile1SandboxStatus.Success, BasisProfile1SandboxDiagnosticReason.None, 1, 64, 300_000_000),
+            ("timeline-over", BasisProfile1SandboxStatus.SharedLimitExceeded, BasisProfile1SandboxDiagnosticReason.Timeline, 0, 0, 0),
+            ("duration-below", BasisProfile1SandboxStatus.SharedLimitExceeded, BasisProfile1SandboxDiagnosticReason.FrameDuration, 0, 0, 0),
+            ("duration-exact", BasisProfile1SandboxStatus.Success, BasisProfile1SandboxDiagnosticReason.None, 1, 64, 33_334),
+        };
+        foreach (var boundary in boundaryCases)
+        {
+            string path = Path.Combine(Path.GetTempPath(), $"basis-profile1-{boundary.Variant}-{Guid.NewGuid():N}.jxl");
+            try
+            {
+                RunFixtureEncoder(fixtureEncoderPath, path, boundary.Variant);
+                BasisProfile1SandboxPreflight wasmBoundary = decoder.Preflight(File.ReadAllBytes(path));
+                NativeOracleResult nativeBoundary = RunNativeOracle(nativeOraclePath, path, preflightOnly: true);
+                const int DiagnosticReasonSlot = 17 + 512;
+                ulong nativeReason = nativeBoundary.Slots.Length > DiagnosticReasonSlot
+                    ? nativeBoundary.Slots[DiagnosticReasonSlot]
+                    : ulong.MaxValue;
+                uint expectedNativeStatus = boundary.Status == BasisProfile1SandboxStatus.Success ? 0U : 3U;
+                if (wasmBoundary.Status != boundary.Status || nativeBoundary.Status != expectedNativeStatus ||
+                    (boundary.Status != BasisProfile1SandboxStatus.Success &&
+                        (wasmBoundary.DiagnosticReason != boundary.Reason || nativeReason != (ulong)boundary.Reason)))
+                {
+                    Console.Error.WriteLine(
+                        $"Boundary differential {boundary.Variant} mismatch: WASM={wasmBoundary.Status}/{wasmBoundary.DiagnosticReason}, "
+                        + $"native={nativeBoundary.Status}/{nativeReason}, expected {boundary.Status}/{boundary.Reason}."
+                    );
+                    return 12;
+                }
+                if (boundary.Status == BasisProfile1SandboxStatus.Success)
+                {
+                    bool nativeMatches = NativeEnvelopeMatchesWasm(
+                        nativeBoundary,
+                        wasmBoundary,
+                        out string boundaryError
+                    );
+                    if (wasmBoundary.LogicalFrameCount != boundary.Frames ||
+                        wasmBoundary.SubmittedCanvasPixels != boundary.Submitted ||
+                        wasmBoundary.BaseTimelineMicroseconds != boundary.Timeline ||
+                        !nativeMatches)
+                    {
+                        Console.Error.WriteLine(
+                            $"Boundary differential {boundary.Variant} accepted-envelope mismatch: {boundaryError}."
+                        );
+                        return 13;
+                    }
+                }
+            }
+            finally
+            {
+                TryDelete(path);
+            }
+        }
     }
 
     using (var fuelLimitedDecoder = new BasisProfile1SandboxDecoder(
@@ -259,7 +322,11 @@ static void RunFixtureEncoder(string executable, string outputPath, string varia
     }
 }
 
-static NativeOracleResult RunNativeOracle(string executable, string payloadPath)
+static NativeOracleResult RunNativeOracle(
+    string executable,
+    string payloadPath,
+    bool preflightOnly = false
+)
 {
     var startInfo = new ProcessStartInfo
     {
@@ -270,6 +337,8 @@ static NativeOracleResult RunNativeOracle(string executable, string payloadPath)
         CreateNoWindow = true,
     };
     startInfo.ArgumentList.Add(payloadPath);
+    if (preflightOnly)
+        startInfo.ArgumentList.Add("--preflight-only");
     using Process process = Process.Start(startInfo)
         ?? throw new InvalidOperationException("Could not start Profile 1 native oracle.");
     string stdout = process.StandardOutput.ReadToEnd();
