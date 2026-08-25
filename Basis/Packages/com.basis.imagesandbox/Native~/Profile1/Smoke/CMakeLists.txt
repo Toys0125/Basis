@@ -18,3 +18,11 @@ add_subdirectory("${LIBJXL_SOURCE_DIR}" libjxl EXCLUDE_FROM_ALL)
 add_executable(profile1_fixture_encoder profile1_fixture_encoder.cc)
 target_compile_features(profile1_fixture_encoder PRIVATE cxx_std_17)
 target_link_libraries(profile1_fixture_encoder PRIVATE jxl)
+
+add_executable(
+  profile1_native_oracle
+  profile1_native_oracle.cc
+  ../profile1_decoder.cc
+)
+target_compile_features(profile1_native_oracle PRIVATE cxx_std_17)
+target_link_libraries(profile1_native_oracle PRIVATE jxl)

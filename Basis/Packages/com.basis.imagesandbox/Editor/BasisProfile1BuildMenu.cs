@@ -210,6 +210,12 @@ namespace Basis.ImageSandbox.Editor
                     || preflight.BlendOperationCount != 0
                     || preflight.MaximumReferenceChainDepth != 1
                     || preflight.PreviewPixels != 0
+                    || preflight.CroppedLayerPixels != 0
+                    || preflight.ReferenceReadPixels != 0
+                    || preflight.SavedReferencePixels != 0
+                    || preflight.BlendOperationPixels != 0
+                    || preflight.ReferenceChainExtraPixels != 0
+                    || preflight.DecodeWorkCandidate != 4_140
                 )
                 {
                     error = $"Unexpected Profile 1 preflight result: {preflight.Status}, {preflight.Width}x{preflight.Height}, {preflight.LogicalFrameCount} frames.";

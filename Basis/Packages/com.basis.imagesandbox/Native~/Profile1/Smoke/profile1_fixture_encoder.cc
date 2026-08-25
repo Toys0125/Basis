@@ -10,6 +10,34 @@
 
 namespace {
 
+enum class FixtureVariant {
+    kValid,
+    kBits16,
+    kGrayscale,
+    kNoAlpha,
+    kAlpha16,
+    kPremultipliedAlpha,
+    kOrientation,
+    kNoAnimation,
+    kWrongTimebase,
+    kLinearSrgb,
+};
+
+bool ParseVariant(const std::string& name, FixtureVariant* variant) {
+    if (name == "valid") *variant = FixtureVariant::kValid;
+    else if (name == "bits16") *variant = FixtureVariant::kBits16;
+    else if (name == "grayscale") *variant = FixtureVariant::kGrayscale;
+    else if (name == "no-alpha") *variant = FixtureVariant::kNoAlpha;
+    else if (name == "alpha16") *variant = FixtureVariant::kAlpha16;
+    else if (name == "premultiplied-alpha") *variant = FixtureVariant::kPremultipliedAlpha;
+    else if (name == "orientation") *variant = FixtureVariant::kOrientation;
+    else if (name == "no-animation") *variant = FixtureVariant::kNoAnimation;
+    else if (name == "wrong-timebase") *variant = FixtureVariant::kWrongTimebase;
+    else if (name == "linear-srgb") *variant = FixtureVariant::kLinearSrgb;
+    else return false;
+    return true;
+}
+
 constexpr std::array<uint8_t, 12> kSignature = {
     0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20,
     0x0d, 0x0a, 0x87, 0x0a,
@@ -107,7 +135,8 @@ bool CanonicalizeCodestreamBoxes(
 
 bool AddFrame(
     JxlEncoder* encoder,
-    const std::array<uint8_t, 8>& rgba,
+    const std::vector<uint8_t>& pixels,
+    uint32_t channels,
     uint32_t duration_microseconds) {
     JxlEncoderFrameSettings* settings = JxlEncoderFrameSettingsCreate(encoder, nullptr);
     if (settings == nullptr ||
@@ -125,13 +154,13 @@ bool AddFrame(
         return false;
     }
 
-    const JxlPixelFormat format = {4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
+    const JxlPixelFormat format = {channels, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
     return Check(
-        JxlEncoderAddImageFrame(settings, &format, rgba.data(), rgba.size()),
+        JxlEncoderAddImageFrame(settings, &format, pixels.data(), pixels.size()),
         "JxlEncoderAddImageFrame");
 }
 
-bool EncodeFixture(std::vector<uint8_t>* canonical) {
+bool EncodeFixture(FixtureVariant variant, std::vector<uint8_t>* canonical) {
     JxlEncoder* encoder = JxlEncoderCreate(nullptr);
     if (encoder == nullptr) {
         return false;
@@ -147,44 +176,67 @@ bool EncodeFixture(std::vector<uint8_t>* canonical) {
         JxlEncoderInitBasicInfo(&info);
         info.xsize = 2;
         info.ysize = 1;
-        info.bits_per_sample = 8;
+        info.bits_per_sample = variant == FixtureVariant::kBits16 ? 16 : 8;
         info.exponent_bits_per_sample = 0;
         info.uses_original_profile = JXL_TRUE;
-        info.num_color_channels = 3;
-        info.num_extra_channels = 1;
-        info.alpha_bits = 8;
+        info.num_color_channels = variant == FixtureVariant::kGrayscale ? 1 : 3;
+        info.num_extra_channels = variant == FixtureVariant::kNoAlpha ? 0 : 1;
+        info.alpha_bits = variant == FixtureVariant::kNoAlpha ? 0 :
+            (variant == FixtureVariant::kAlpha16 ? 16 : 8);
         info.alpha_exponent_bits = 0;
-        info.alpha_premultiplied = JXL_FALSE;
-        info.have_animation = JXL_TRUE;
-        info.animation.tps_numerator = 1'000'000;
-        info.animation.tps_denominator = 1;
-        info.animation.num_loops = 0;
-        info.animation.have_timecodes = JXL_FALSE;
+        info.alpha_premultiplied = variant == FixtureVariant::kPremultipliedAlpha ? JXL_TRUE : JXL_FALSE;
+        info.orientation = variant == FixtureVariant::kOrientation ? JXL_ORIENT_ROTATE_90_CW : JXL_ORIENT_IDENTITY;
+        info.have_animation = variant == FixtureVariant::kNoAnimation ? JXL_FALSE : JXL_TRUE;
+        if (info.have_animation == JXL_TRUE) {
+            info.animation.tps_numerator = variant == FixtureVariant::kWrongTimebase ? 1'000 : 1'000'000;
+            info.animation.tps_denominator = 1;
+            info.animation.num_loops = 0;
+            info.animation.have_timecodes = JXL_FALSE;
+        }
         if (!Check(JxlEncoderSetBasicInfo(encoder, &info), "JxlEncoderSetBasicInfo")) {
             break;
         }
 
-        JxlExtraChannelInfo alpha{};
-        JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
-        alpha.bits_per_sample = 8;
-        alpha.exponent_bits_per_sample = 0;
-        alpha.dim_shift = 0;
-        alpha.alpha_premultiplied = JXL_FALSE;
-        if (!Check(
-                JxlEncoderSetExtraChannelInfo(encoder, 0, &alpha),
-                "JxlEncoderSetExtraChannelInfo")) {
-            break;
+        if (info.num_extra_channels == 1) {
+            JxlExtraChannelInfo alpha{};
+            JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
+            alpha.bits_per_sample = variant == FixtureVariant::kAlpha16 ? 16 : 8;
+            alpha.exponent_bits_per_sample = 0;
+            alpha.dim_shift = 0;
+            alpha.alpha_premultiplied = variant == FixtureVariant::kPremultipliedAlpha ? JXL_TRUE : JXL_FALSE;
+            if (!Check(
+                    JxlEncoderSetExtraChannelInfo(encoder, 0, &alpha),
+                    "JxlEncoderSetExtraChannelInfo")) {
+                break;
+            }
         }
 
         JxlColorEncoding color{};
-        JxlColorEncodingSetToSRGB(&color, JXL_FALSE);
+        if (variant == FixtureVariant::kLinearSrgb) {
+            JxlColorEncodingSetToLinearSRGB(&color, JXL_FALSE);
+        } else {
+            JxlColorEncodingSetToSRGB(&color, variant == FixtureVariant::kGrayscale ? JXL_TRUE : JXL_FALSE);
+        }
         if (!Check(JxlEncoderSetColorEncoding(encoder, &color), "JxlEncoderSetColorEncoding")) {
             break;
         }
 
-        const std::array<uint8_t, 8> frame0 = {17, 39, 201, 0, 1, 2, 3, 255};
-        const std::array<uint8_t, 8> frame1 = {4, 5, 6, 128, 7, 8, 9, 255};
-        if (!AddFrame(encoder, frame0, 33'334) || !AddFrame(encoder, frame1, 50'001)) {
+        uint32_t channels = 4;
+        std::vector<uint8_t> frame0 = {17, 39, 201, 0, 1, 2, 3, 255};
+        std::vector<uint8_t> frame1 = {4, 5, 6, 128, 7, 8, 9, 255};
+        if (variant == FixtureVariant::kNoAlpha) {
+            channels = 3;
+            frame0 = {17, 39, 201, 1, 2, 3};
+            frame1 = {4, 5, 6, 7, 8, 9};
+        } else if (variant == FixtureVariant::kGrayscale) {
+            channels = 2;
+            frame0 = {17, 0, 1, 255};
+            frame1 = {4, 128, 7, 255};
+        }
+        const uint32_t duration0 = variant == FixtureVariant::kNoAnimation ? 0 : 33'334;
+        const uint32_t duration1 = variant == FixtureVariant::kNoAnimation ? 0 : 50'001;
+        if (!AddFrame(encoder, frame0, channels, duration0) ||
+            !AddFrame(encoder, frame1, channels, duration1)) {
             break;
         }
         JxlEncoderCloseInput(encoder);
@@ -219,13 +271,19 @@ bool EncodeFixture(std::vector<uint8_t>* canonical) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::fprintf(stderr, "Usage: profile1_fixture_encoder <output.jxl>\n");
+    if (argc < 2 || argc > 3) {
+        std::fprintf(stderr, "Usage: profile1_fixture_encoder <output.jxl> [valid|bits16|grayscale|no-alpha|alpha16|premultiplied-alpha|orientation|no-animation|wrong-timebase|linear-srgb]\n");
+        return 2;
+    }
+
+    FixtureVariant variant = FixtureVariant::kValid;
+    if (argc == 3 && !ParseVariant(argv[2], &variant)) {
+        std::fprintf(stderr, "Unknown fixture variant: %s\n", argv[2]);
         return 2;
     }
 
     std::vector<uint8_t> canonical;
-    if (!EncodeFixture(&canonical)) {
+    if (!EncodeFixture(variant, &canonical)) {
         return 3;
     }
 
