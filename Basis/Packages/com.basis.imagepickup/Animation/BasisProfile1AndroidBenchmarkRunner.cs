@@ -156,6 +156,8 @@ namespace Basis.ImagePickup
 
         private IEnumerator Start()
         {
+            Screen.sleepTimeout = SleepTimeout.NeverSleep;
+            Application.runInBackground = true;
             yield return null;
             yield return RunBenchmark();
         }

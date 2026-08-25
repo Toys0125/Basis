@@ -84,7 +84,7 @@ jobs:
           mkdir -p "$BUILD_DIR" "$(dirname "$OUTPUT")"
           docker run --rm \
             -v "$PROFILE1_DIR:/profile1:ro" \
-            -v "$LIBJXL_DIR:/libjxl:ro" \
+            -v "$LIBJXL_DIR:/libjxl" \
             -v "$BUILD_DIR:/build" \
             emscripten/emsdk:4.0.23 \
             bash -lc 'emcmake cmake -S /profile1 -B /build -DCMAKE_BUILD_TYPE=Release -DLIBJXL_SOURCE_DIR=/libjxl && cmake --build /build --target profile1_decoder --parallel'
@@ -102,7 +102,6 @@ jobs:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-          PROFILE1_CODEC_CORPUS_COMMIT: ${{ env.PROFILE1_CODEC_CORPUS_COMMIT }}
         with:
           buildName: ${{ env.BUILD_NAME }}
           projectPath: ${{ env.PROJECT_PATH }}
