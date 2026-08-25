@@ -1,6 +1,9 @@
 name: Profile 1 Android corpus benchmark APK
 
 on:
+  push:
+    branches:
+      - validation/profile1-android-benchmark
   workflow_dispatch:
     inputs:
       codec_corpus_ref:
@@ -47,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: imazen/codec-corpus
-          ref: ${{ inputs.codec_corpus_ref }}
+          ref: ${{ inputs.codec_corpus_ref || 'main' }}
           path: codec-corpus
           fetch-depth: 1
           lfs: true
