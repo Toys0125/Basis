@@ -227,6 +227,14 @@ namespace Basis.ImageSandbox
         public const string EmscriptenVersion = "4.0.23";
         public const string WasmtimeVersion = "44.0.0";
         public const string NativeRuntimeSourceCommit = "f200256a2e56c1c5229a07e5530faa4a6b1ab325";
+        public const uint DecodeWorkCandidateVersion = 1;
+        public const string CodedFrameCandidateDefinition =
+            "public regular JXL_DEC_FRAME layers observed with decoder coalescing disabled";
+        public const string DecodeWorkCandidateFormula =
+            "5*submittedCanvasPixels + 5*publicRegularLayerPixels + 2048*publicRegularLayerCount + "
+            + "64*croppedLayerCount + ceil(croppedLayerPixels/4) + 128*referenceReadEdges + "
+            + "ceil(referenceReadPixels/2) + 512*savedReferenceCount + 64*blendOperationCount + "
+            + "ceil(blendOperationPixels/2) + 4*maximumReferenceChainDepth + 5*previewPixels";
 
         private const uint DecoderAbiVersion = 1;
         private const int MaximumFrames = 512;

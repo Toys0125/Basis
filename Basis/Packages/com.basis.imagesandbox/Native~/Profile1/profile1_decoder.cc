@@ -301,34 +301,43 @@ Status CalculateDecodeWorkCandidate(
     const LogicalInfo& logical,
     StructuralMetrics* metrics,
     DiagnosticReason* reason) {
-    // Provisional implementation-validation metric. Every term is observable
-    // through the pinned public libjxl decoder API. The all-ones weights are a
-    // deliberately simple baseline for receiver benchmarking; no production
-    // ceiling is enforced until the Phase 5 desktop + Quest/Android evidence
-    // is complete and the second wire reconciliation publishes the final rule.
+    // Provisional implementation-validation metric, candidate v1. Every input
+    // is observable through the pinned public libjxl decoder API. The integer
+    // weights were calibrated against desktop production-WASM measurements so
+    // large pixel-, coded-frame-, crop-, and reference-heavy cases remain on a
+    // comparable scale. They are not a final wire contract or production
+    // ceiling: Quest/Android evidence and the second reconciliation are still
+    // required by the implementation-validation plan.
     uint64_t work = 0;
-    const uint64_t terms[] = {
-        logical.submitted_pixels,
-        metrics->layer_count,
-        metrics->layer_pixels,
-        metrics->cropped_layer_count,
-        metrics->cropped_layer_pixels,
-        metrics->reference_read_edges,
-        metrics->reference_read_pixels,
-        metrics->saved_reference_count,
-        metrics->saved_reference_pixels,
-        metrics->blend_operations,
-        metrics->blend_operation_pixels,
-        metrics->maximum_reference_chain_depth,
-        metrics->reference_chain_extra_pixels,
-        logical.preview_pixels,
+    auto add_weighted = [&](uint64_t value, uint64_t weight) -> bool {
+        uint64_t weighted = 0;
+        return CheckedMultiply(value, weight, &weighted) &&
+            CheckedAdd(work, weighted, &work);
     };
-    for (uint64_t term : terms) {
-        if (!CheckedAdd(work, term, &work)) {
-            *reason = kReasonDecodeWorkOverflow;
-            return kSharedLimitExceeded;
+    auto add_ceil_divided = [&](uint64_t value, uint64_t divisor) -> bool {
+        uint64_t divided = value / divisor;
+        if ((value % divisor) != 0) {
+            if (!CheckedAdd(divided, 1, &divided)) return false;
         }
+        return CheckedAdd(work, divided, &work);
+    };
+
+    if (!add_weighted(logical.submitted_pixels, 5) ||
+        !add_weighted(metrics->layer_pixels, 5) ||
+        !add_weighted(metrics->layer_count, 2048) ||
+        !add_weighted(metrics->cropped_layer_count, 64) ||
+        !add_ceil_divided(metrics->cropped_layer_pixels, 4) ||
+        !add_weighted(metrics->reference_read_edges, 128) ||
+        !add_ceil_divided(metrics->reference_read_pixels, 2) ||
+        !add_weighted(metrics->saved_reference_count, 512) ||
+        !add_weighted(metrics->blend_operations, 64) ||
+        !add_ceil_divided(metrics->blend_operation_pixels, 2) ||
+        !add_weighted(metrics->maximum_reference_chain_depth, 4) ||
+        !add_weighted(logical.preview_pixels, 5)) {
+        *reason = kReasonDecodeWorkOverflow;
+        return kSharedLimitExceeded;
     }
+
     metrics->decode_work_candidate = work;
     return kSuccess;
 }

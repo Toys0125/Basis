@@ -93,6 +93,10 @@ namespace Basis.ImageSandbox.Editor
             new SyntheticFixtureDefinition(28, "coded-frames-2048.jxl", "synthetic/coded-frames-2048.jxl"),
             new SyntheticFixtureDefinition(29, "reference-chain-512.jxl", "synthetic/reference-chain-512.jxl"),
             new SyntheticFixtureDefinition(30, "reference-chain-1024.jxl", "synthetic/reference-chain-1024.jxl"),
+            new SyntheticFixtureDefinition(31, "coded-frames-4096.jxl", "synthetic/coded-frames-4096.jxl"),
+            new SyntheticFixtureDefinition(32, "coded-frames-8192.jxl", "synthetic/coded-frames-8192.jxl"),
+            new SyntheticFixtureDefinition(33, "reference-chain-2048.jxl", "synthetic/reference-chain-2048.jxl"),
+            new SyntheticFixtureDefinition(34, "reference-chain-4096.jxl", "synthetic/reference-chain-4096.jxl"),
         };
 
         [MenuItem(MenuPath, false, MenuPriority)]
@@ -1009,6 +1013,14 @@ namespace Basis.ImageSandbox.Editor
                       preflight.MaximumReferenceChainDepth >= 512 && preflight.DecodeWorkCandidate > 0,
                 30 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 1024 &&
                       preflight.MaximumReferenceChainDepth >= 1024 && preflight.DecodeWorkCandidate > 0,
+                31 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 4096 &&
+                      preflight.DecodeWorkCandidate > 0,
+                32 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 8192 &&
+                      preflight.DecodeWorkCandidate > 0,
+                33 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 2048 &&
+                      preflight.MaximumReferenceChainDepth >= 2048 && preflight.DecodeWorkCandidate > 0,
+                34 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 4096 &&
+                      preflight.MaximumReferenceChainDepth >= 4096 && preflight.DecodeWorkCandidate > 0,
                 _ => true,
             };
             if (!structureOk)
@@ -1192,6 +1204,9 @@ namespace Basis.ImageSandbox.Editor
                 EmscriptenVersion = BasisProfile1SandboxDecoder.EmscriptenVersion,
                 WasmtimeVersion = BasisProfile1SandboxDecoder.WasmtimeVersion,
                 NativeRuntimeSourceCommit = BasisProfile1SandboxDecoder.NativeRuntimeSourceCommit,
+                DecodeWorkCandidateVersion = BasisProfile1SandboxDecoder.DecodeWorkCandidateVersion,
+                CodedFrameCandidateDefinition = BasisProfile1SandboxDecoder.CodedFrameCandidateDefinition,
+                DecodeWorkCandidateFormula = BasisProfile1SandboxDecoder.DecodeWorkCandidateFormula,
                 DecoderSha256 = ComputeSha256(Resources.Load<TextAsset>(BasisProfile1SandboxResources.DecoderResourcePath).bytes),
             };
         }
@@ -2157,6 +2172,9 @@ namespace Basis.ImageSandbox.Editor
             public string EmscriptenVersion;
             public string WasmtimeVersion;
             public string NativeRuntimeSourceCommit;
+            public uint DecodeWorkCandidateVersion;
+            public string CodedFrameCandidateDefinition;
+            public string DecodeWorkCandidateFormula;
             public string DecoderSha256;
         }
 

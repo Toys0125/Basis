@@ -77,6 +77,10 @@ enum SyntheticFixtureKind : uint32_t {
   kSyntheticCodedFrames2048 = 28,
   kSyntheticReferenceChain512 = 29,
   kSyntheticReferenceChain1024 = 30,
+  kSyntheticCodedFrames4096 = 31,
+  kSyntheticCodedFrames8192 = 32,
+  kSyntheticReferenceChain2048 = 33,
+  kSyntheticReferenceChain4096 = 34,
 };
 
 void AppendLe32(std::vector<uint8_t>* output, uint32_t value) {
@@ -700,6 +704,18 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
         break;
       case kSyntheticReferenceChain1024:
         ok = AddCodedFrameStress(encoder, width, height, 1024, true);
+        break;
+      case kSyntheticCodedFrames4096:
+        ok = AddCodedFrameStress(encoder, width, height, 4096, false);
+        break;
+      case kSyntheticCodedFrames8192:
+        ok = AddCodedFrameStress(encoder, width, height, 8192, false);
+        break;
+      case kSyntheticReferenceChain2048:
+        ok = AddCodedFrameStress(encoder, width, height, 2048, true);
+        break;
+      case kSyntheticReferenceChain4096:
+        ok = AddCodedFrameStress(encoder, width, height, 4096, true);
         break;
       case kSyntheticWorstCaseSubmittedStructural: {
         for (uint32_t i = 0; i < 128 && ok; ++i) {
