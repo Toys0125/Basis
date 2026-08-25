@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "status": "PROVISIONAL_DESKTOP_EVIDENCE",
+  "profileVersion": 1,
+  "sourceCommit": "24a04fcfb804672cbf9cfa5a973d16cf4d28d0c0",
+  "timestampUtc": "2026-08-25T05:00:27.0997890Z",
+  "environment": {
+    "operatingSystem": "Linux 6.12 Ubuntu 22.04 64bit",
+    "processor": "Intel(R) Xeon(R) CPU E5-2620 v3 @ 2.40GHz",
+    "logicalProcessorCount": 24,
+    "systemMemoryMiB": 104277,
+    "unityVersion": "6000.5.8f1",
+    "libjxlVersion": "0.12.0",
+    "libjxlCommit": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+    "emscriptenVersion": "4.0.23",
+    "wasmtimeVersion": "44.0.0",
+    "nativeRuntimeSourceCommit": "f200256a2e56c1c5229a07e5530faa4a6b1ab325",
+    "benchmarkDecoderSha256": "17a1e564d3540fde7ffefbf0693332179f2a2d13c32986f89ae7b47185209b57",
+    "decoderShaAuthority": "non-Docker Unity-Server benchmark build; not the final deterministic production pin"
+  },
+  "configuration": {
+    "warmupIterations": 0,
+    "measuredIterations": 1,
+    "concurrency": 1,
+    "fuelLimit": 96000000000,
+    "maximumLinearMemoryMiB": 256,
+    "timeoutSeconds": 30,
+    "syntheticFixtureCount": 35
+  },
+  "codedFrameCandidate": {
+    "definition": "public regular JXL_DEC_FRAME layers observed with decoder coalescing disabled",
+    "testedPlainCodedFramesThrough": 8192,
+    "testedReferenceChainFramesThrough": 4096,
+    "provisionalCeiling": null,
+    "finalizationRequiresQuestAndroid": true
+  },
+  "decodeWorkCandidate": {
+    "version": 1,
+    "formula": "5*submittedCanvasPixels + 5*publicRegularLayerPixels + 2048*publicRegularLayerCount + 64*croppedLayerCount + ceil(croppedLayerPixels/4) + 128*referenceReadEdges + ceil(referenceReadPixels/2) + 512*savedReferenceCount + 64*blendOperationCount + ceil(blendOperationPixels/2) + 4*maximumReferenceChainDepth + 5*previewPixels",
+    "implementationIndependent": true,
+    "publicLibjxlObservableOnly": true,
+    "productionCeiling": null,
+    "maximumObservedCandidate": 428560008,
+    "finalizationRequiresQuestAndroid": true
+  },
+  "keyMeasurements": [
+    {
+      "fixture": "synthetic/coded-frames-512.jxl",
+      "codedFrames": 512,
+      "decodeWork": 1474372,
+      "stageBFuel": 304944499,
+      "decodeFuel": 240836420,
+      "decodeFuelPerWorkUnit": 163.348
+    },
+    {
+      "fixture": "synthetic/coded-frames-1024.jxl",
+      "codedFrames": 1024,
+      "decodeWork": 2948932,
+      "stageBFuel": 607468075,
+      "decodeFuel": 481011981,
+      "decodeFuelPerWorkUnit": 163.114
+    },
+    {
+      "fixture": "synthetic/coded-frames-2048.jxl",
+      "codedFrames": 2048,
+      "decodeWork": 5898052,
+      "stageBFuel": 1211744971,
+      "decodeFuel": 960479666,
+      "decodeFuelPerWorkUnit": 162.847
+    },
+    {
+      "fixture": "synthetic/coded-frames-4096.jxl",
+      "codedFrames": 4096,
+      "decodeWork": 11796292,
+      "stageBFuel": 2424145102,
+      "decodeFuel": 1923268244,
+      "decodeFuelPerWorkUnit": 163.040
+    },
+    {
+      "fixture": "synthetic/coded-frames-8192.jxl",
+      "codedFrames": 8192,
+      "decodeWork": 23592772,
+      "stageBFuel": 4848709223,
+      "decodeFuel": 3848612444,
+      "decodeFuelPerWorkUnit": 163.127
+    },
+    {
+      "fixture": "synthetic/reference-chain-512.jxl",
+      "codedFrames": 512,
+      "maximumReferenceChainDepth": 512,
+      "decodeWork": 1607232,
+      "stageBFuel": 327893068,
+      "decodeFuel": 262934002,
+      "decodeFuelPerWorkUnit": 163.594
+    },
+    {
+      "fixture": "synthetic/reference-chain-1024.jxl",
+      "codedFrames": 1024,
+      "maximumReferenceChainDepth": 1024,
+      "decodeWork": 3214912,
+      "stageBFuel": 653124091,
+      "decodeFuel": 524976151,
+      "decodeFuelPerWorkUnit": 163.294
+    },
+    {
+      "fixture": "synthetic/reference-chain-2048.jxl",
+      "codedFrames": 2048,
+      "maximumReferenceChainDepth": 2048,
+      "decodeWork": 6430272,
+      "stageBFuel": 1303818225,
+      "decodeFuel": 1049168699,
+      "decodeFuelPerWorkUnit": 163.161
+    },
+    {
+      "fixture": "synthetic/reference-chain-4096.jxl",
+      "codedFrames": 4096,
+      "maximumReferenceChainDepth": 4096,
+      "decodeWork": 12860992,
+      "stageBFuel": 2606130173,
+      "decodeFuel": 2098488465,
+      "decodeFuelPerWorkUnit": 163.167
+    },
+    {
+      "fixture": "synthetic/boundary-submitted-exact.jxl",
+      "submittedCanvasPixels": 33554432,
+      "decodeWork": 336592900,
+      "decodeFuel": 55208408941,
+      "decodeFuelPerWorkUnit": 164.021
+    },
+    {
+      "fixture": "synthetic/worst-case-submitted-structural.jxl",
+      "submittedCanvasPixels": 33554432,
+      "codedFrames": 640,
+      "croppedLayers": 511,
+      "referenceReadEdges": 638,
+      "savedReferences": 468,
+      "blendOperations": 638,
+      "maximumReferenceChainDepth": 130,
+      "decodeWork": 428560008,
+      "stageBFuel": 72136066261,
+      "decodeFuel": 72053436269,
+      "decodeFuelPerWorkUnit": 168.129,
+      "stageBPeakLinearMemoryBytes": 33554432,
+      "decodePeakLinearMemoryBytes": 33554432
+    }
+  ],
+  "interpretation": {
+    "largeStressDecodeFuelPerWorkUnitApproximateRange": "162.8-168.2",
+    "smallFixtureFixedOverheadDominates": true,
+    "desktopCandidateUsefulForFurtherCalibration": true,
+    "finalWireContractReady": false,
+    "blockingEvidence": [
+      "early Quest/Android on-device production-WASM feasibility measurements",
+      "final coded-frame ceiling selection",
+      "final decodeWork ceiling selection",
+      "portable limit-minus-one/limit/limit-plus-one vectors after ceilings are selected"
+    ]
+  }
+}

@@ -19,9 +19,13 @@
       "implemented": [
         "real pinned-libjxl valid animated Profile 1 fixture",
         "exact hidden-RGB/duration/full-pixel decode",
-        "container-complete semantic codestream truncation"
+        "container-complete semantic codestream truncation",
+        "benchmark-generated public coded-frame amplification fixtures through 8192 layers",
+        "benchmark-generated reference-chain fixtures through depth 4096",
+        "provisional public-API decodeWork candidate measurement"
       ],
       "pending": [
+        "Quest/Android calibration of coded-frame and decodeWork candidate",
         "final coded-frame ceiling vectors",
         "final decodeWork ceiling vectors",
         "remaining pixel/color/alpha/orientation negative matrix"

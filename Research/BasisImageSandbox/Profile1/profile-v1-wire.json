@@ -122,10 +122,22 @@
   "hostileReceiverResourceContract": {
     "status": "PENDING_SECOND_RECONCILIATION",
     "codedFrameCeiling": null,
+    "provisionalDesktopCandidate": {
+      "status": "MEASURED_NOT_NORMATIVE",
+      "codedFrameDefinition": "public regular JXL_DEC_FRAME layers observed with decoder coalescing disabled",
+      "plainCodedFramesTestedThrough": 8192,
+      "referenceChainFramesTestedThrough": 4096,
+      "maximumObservedDecodeWork": 428560008,
+      "desktopSummary": "results/summary/profile1-wasm-resource-candidate-desktop-20260825.json",
+      "finalizationRequiresQuestAndroid": true
+    },
     "decodeWork": {
       "formula": null,
       "weights": null,
       "ceiling": null,
+      "provisionalCandidateVersion": 1,
+      "provisionalFormula": "5*submittedCanvasPixels + 5*publicRegularLayerPixels + 2048*publicRegularLayerCount + 64*croppedLayerCount + ceil(croppedLayerPixels/4) + 128*referenceReadEdges + ceil(referenceReadPixels/2) + 512*savedReferenceCount + 64*blendOperationCount + ceil(blendOperationPixels/2) + 4*maximumReferenceChainDepth + 5*previewPixels",
+      "provisionalFormulaStatus": "MEASUREMENT_ONLY_NOT_ENFORCED",
       "finalizationRequiresProductionWasmBenchmark": true,
       "implementationIndependent": true,
       "wallClockIndependent": true,
@@ -339,7 +351,7 @@
       "senderSmoke": "139/139"
     },
     "rawDatasetsAvailability": "UNAVAILABLE_OR_UNRECOVERED_IN_CURRENT_REPOSITORY",
-    "profile-v1-phase1-final-recommendation.json": "UNAVAILABLE_OR_UNRECOVERED",
+    "profile-v1-phase1-final-recommendation.json": "PRESERVED_IN_REPOSITORY; original referenced raw Phase 1 datasets remain unavailable/unrecovered",
     "policy": "do not recreate or invent missing historical results; new repo-contained implementation fixtures are gate-bearing"
   },
   "reconciliations": {

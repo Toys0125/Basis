@@ -218,6 +218,8 @@ reference-chain structure/depth
 
 The final formula, weights, coded-frame ceiling, and `decodeWork` ceiling remain intentionally unpublished until the production WASM receiver benchmark has calibrated them. The broad feature policy must not be narrowed merely to simplify accounting.
 
+A provisional desktop production-WASM candidate has now been measured and is preserved at `results/summary/profile1-wasm-resource-candidate-desktop-20260825.md`. It defines coded frames as public regular `JXL_DEC_FRAME` layers observed with coalescing disabled and exercises plain coded-frame amplification through 8,192 layers plus reference chains through depth 4,096. Candidate `decodeWork` version 1 tracks the large desktop stress fixtures closely enough for continued calibration, including the exact 33,554,432 submitted-pixel boundary and the combined maximum-pixel/reference workload. This evidence is **measurement-only**: no coded-frame or `decodeWork` ceiling is normative or enforced from it. Quest/Android on-device production-WASM measurements remain required before final values can enter the second reconciliation.
+
 ## 9. Local sender policy
 
 Sender admission is implementation policy below the wire ceiling; it does not redefine receiver compatibility or decoded-residency budgets.
@@ -483,7 +485,7 @@ container matrix: 9/9
 frozen sender smoke: 139/139
 ```
 
-The raw historical Phase 1 datasets and `profile-v1-phase1-final-recommendation.json` referenced by those reports are currently **unavailable/unrecovered in this repository**. Those claims are retained as historical evidence only; the implementation must not recreate or invent missing benchmark outputs. Missing historical raw evidence is not a production dependency and does not block new repo-contained implementation/conformance fixtures.
+The historical `profile-v1-phase1-final-recommendation.json` preservation entry is present in this repository. The raw historical Phase 1 datasets referenced by the reports remain **unavailable/unrecovered**. Those claims are retained as historical evidence only; the implementation must not recreate or invent missing benchmark outputs. Missing historical raw evidence is not a production dependency and does not block new repo-contained implementation/conformance fixtures.
 
 ## 19. Reconciliation state and remaining gate
 
