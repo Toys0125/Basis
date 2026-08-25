@@ -24,7 +24,7 @@ namespace Basis.ImageSandbox.Editor
 
         public static void Build()
         {
-            string corpusRoot = Path.GetFullPath(RequireArgument("profile1CorpusPath"));
+            string corpusRoot = ResolveProjectPath(RequireArgument("profile1CorpusPath"));
             string buildPath = Path.GetFullPath(RequireArgument("customBuildPath"));
             if (!Directory.Exists(corpusRoot))
                 throw new BuildFailedException("Profile 1 codec corpus directory does not exist: " + corpusRoot);
@@ -315,6 +315,14 @@ namespace Basis.ImageSandbox.Editor
             );
             values.Add(define);
             return string.Join(";", values.OrderBy(value => value, StringComparer.Ordinal));
+        }
+
+        private static string ResolveProjectPath(string path)
+        {
+            if (Path.IsPathRooted(path))
+                return Path.GetFullPath(path);
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.GetFullPath(Path.Combine(projectRoot, path));
         }
 
         private static string RequireArgument(string name)

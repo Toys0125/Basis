@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - validation/profile1-android-benchmark
+      - feat/jpeg-xl-profile1-test
   workflow_dispatch:
     inputs:
       codec_corpus_ref:
@@ -51,7 +52,7 @@ jobs:
         with:
           repository: imazen/codec-corpus
           ref: ${{ inputs.codec_corpus_ref || 'main' }}
-          path: codec-corpus
+          path: Basis/Profile1CodecCorpus
           fetch-depth: 1
           lfs: true
           sparse-checkout: |
@@ -62,9 +63,9 @@ jobs:
       - name: Record corpus revision
         shell: bash
         run: |
-          echo "PROFILE1_CODEC_CORPUS_COMMIT=$(git -C codec-corpus rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "JXL fixtures: $(find codec-corpus/jxl -type f -name '*.jxl' | wc -l)"
-          echo "GIF fixtures: $(find codec-corpus/gif-conformance -type f -name '*.gif' | wc -l)"
+          echo "PROFILE1_CODEC_CORPUS_COMMIT=$(git -C Basis/Profile1CodecCorpus rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "JXL fixtures: $(find Basis/Profile1CodecCorpus/jxl -type f -name '*.jxl' | wc -l)"
+          echo "GIF fixtures: $(find Basis/Profile1CodecCorpus/gif-conformance -type f -name '*.gif' | wc -l)"
 
       - name: Build trusted editor-native corpus converter
         shell: bash
@@ -107,7 +108,7 @@ jobs:
           projectPath: ${{ env.PROJECT_PATH }}
           targetPlatform: Android
           buildMethod: Basis.ImageSandbox.Editor.BasisProfile1AndroidBenchmarkBuild.Build
-          customParameters: -profile1CorpusPath ${{ github.workspace }}/codec-corpus
+          customParameters: -profile1CorpusPath Profile1CodecCorpus
           versioning: Custom
           version: 0.0.${{ github.run_number }}
           androidVersionCode: ${{ github.run_number }}
