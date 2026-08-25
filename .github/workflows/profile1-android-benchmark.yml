@@ -27,7 +27,7 @@ jobs:
       PROJECT_PATH: Basis
       BUILD_NAME: BasisProfile1Benchmark
       PROFILE1_BENCHMARK_WASM_SHA256: 86017587927cc98d049a99ba94908c50439e6c7b50728a166706c4b0a9884bde
-      BASIS_PROFILE1_BUILD_CACHE: ${{ runner.temp }}/basis-profile1-build
+      BASIS_PROFILE1_BUILD_CACHE: /tmp/basis-profile1-build
 
     steps:
       - name: Free disk space
