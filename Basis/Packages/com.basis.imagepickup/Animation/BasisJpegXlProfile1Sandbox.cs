@@ -120,7 +120,13 @@ namespace Basis.ImagePickup
                 result.SavedReferenceCount,
                 result.BlendOperationCount,
                 result.MaximumReferenceChainDepth,
-                result.PreviewPixels
+                result.PreviewPixels,
+                result.CroppedLayerPixels,
+                result.ReferenceReadPixels,
+                result.SavedReferencePixels,
+                result.BlendOperationPixels,
+                result.ReferenceChainExtraPixels,
+                result.DecodeWorkCandidate
             );
             return true;
         }
@@ -165,6 +171,7 @@ namespace Basis.ImagePickup
                 || sandboxPreflight.SubmittedCanvasPixels != envelope.SubmittedCanvasPixels
                 || sandboxPreflight.BaseTimelineMicroseconds
                     != envelope.BaseTimelineDurationMicroseconds
+                || sandboxPreflight.DecodeWorkCandidate != envelope.DecodeWorkCandidate
             )
             {
                 rejection = BasisProfile1RejectionCategory.Malformed;

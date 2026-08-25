@@ -62,6 +62,15 @@ namespace Basis.ImagePickup
         public readonly ulong BlendOperationCount;
         public readonly ulong MaximumReferenceChainDepth;
         public readonly ulong PreviewPixels;
+        public readonly ulong CroppedLayerPixels;
+        public readonly ulong ReferenceReadPixels;
+        public readonly ulong SavedReferencePixels;
+        public readonly ulong BlendOperationPixels;
+        public readonly ulong ReferenceChainExtraPixels;
+        public readonly ulong DecodeWorkCandidate;
+
+        public ulong CodedFrameCount => PublicRegularLayerCount;
+        public ulong CodedFramePixels => PublicRegularLayerPixels;
 
         public BasisProfile1StageBResourceEnvelope(
             int canvasWidth,
@@ -77,7 +86,13 @@ namespace Basis.ImagePickup
             ulong savedReferenceCount,
             ulong blendOperationCount,
             ulong maximumReferenceChainDepth,
-            ulong previewPixels
+            ulong previewPixels,
+            ulong croppedLayerPixels,
+            ulong referenceReadPixels,
+            ulong savedReferencePixels,
+            ulong blendOperationPixels,
+            ulong referenceChainExtraPixels,
+            ulong decodeWorkCandidate
         )
         {
             CanvasWidth = canvasWidth;
@@ -94,6 +109,12 @@ namespace Basis.ImagePickup
             BlendOperationCount = blendOperationCount;
             MaximumReferenceChainDepth = maximumReferenceChainDepth;
             PreviewPixels = previewPixels;
+            CroppedLayerPixels = croppedLayerPixels;
+            ReferenceReadPixels = referenceReadPixels;
+            SavedReferencePixels = savedReferencePixels;
+            BlendOperationPixels = blendOperationPixels;
+            ReferenceChainExtraPixels = referenceChainExtraPixels;
+            DecodeWorkCandidate = decodeWorkCandidate;
         }
     }
 

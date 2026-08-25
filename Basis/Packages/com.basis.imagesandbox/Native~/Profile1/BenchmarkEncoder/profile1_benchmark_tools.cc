@@ -72,6 +72,11 @@ enum SyntheticFixtureKind : uint32_t {
   kSyntheticCanvasBelow = 23,
   kSyntheticCanvasExact = 24,
   kSyntheticWorstCaseSubmittedStructural = 25,
+  kSyntheticCodedFrames512 = 26,
+  kSyntheticCodedFrames1024 = 27,
+  kSyntheticCodedFrames2048 = 28,
+  kSyntheticReferenceChain512 = 29,
+  kSyntheticReferenceChain1024 = 30,
 };
 
 void AppendLe32(std::vector<uint8_t>* output, uint32_t value) {
@@ -353,6 +358,34 @@ bool AddRepeatedFrames(
     if (!AddSyntheticFrame(encoder, width, height, frame)) return false;
   }
   return true;
+}
+
+bool AddCodedFrameStress(
+    JxlEncoder* encoder,
+    uint32_t width,
+    uint32_t height,
+    uint32_t total_layers,
+    bool reference_chain) {
+  if (total_layers == 0) return false;
+  for (uint32_t i = 0; i + 1U < total_layers; ++i) {
+    FrameSpec layer{};
+    layer.duration = 0;
+    layer.save_reference = reference_chain ? i % 3U : 0U;
+    layer.value = static_cast<uint8_t>(i);
+    if (reference_chain && i != 0) {
+      layer.blend = JXL_BLEND_BLEND;
+      layer.source = (i - 1U) % 3U;
+    }
+    if (!AddSyntheticFrame(encoder, width, height, layer)) return false;
+  }
+
+  FrameSpec display{};
+  display.value = 255;
+  if (reference_chain && total_layers > 1U) {
+    display.blend = JXL_BLEND_BLEND;
+    display.source = (total_layers - 2U) % 3U;
+  }
+  return AddSyntheticFrame(encoder, width, height, display);
 }
 
 bool EncodeInternalPreviewFixture(std::vector<uint8_t>* output) {
@@ -652,6 +685,21 @@ int EncodeSynthetic(uint32_t kind, std::vector<uint8_t>* output) {
         break;
       case kSyntheticDurationAbove:
         ok = AddRepeatedFrames(encoder, width, height, 1, 33'335U);
+        break;
+      case kSyntheticCodedFrames512:
+        ok = AddCodedFrameStress(encoder, width, height, 512, false);
+        break;
+      case kSyntheticCodedFrames1024:
+        ok = AddCodedFrameStress(encoder, width, height, 1024, false);
+        break;
+      case kSyntheticCodedFrames2048:
+        ok = AddCodedFrameStress(encoder, width, height, 2048, false);
+        break;
+      case kSyntheticReferenceChain512:
+        ok = AddCodedFrameStress(encoder, width, height, 512, true);
+        break;
+      case kSyntheticReferenceChain1024:
+        ok = AddCodedFrameStress(encoder, width, height, 1024, true);
         break;
       case kSyntheticWorstCaseSubmittedStructural: {
         for (uint32_t i = 0; i < 128 && ok; ++i) {

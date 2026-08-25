@@ -88,6 +88,11 @@ namespace Basis.ImageSandbox.Editor
             new SyntheticFixtureDefinition(23, "boundary-canvas-below.jxl", "synthetic/boundary-canvas-2048x2047.jxl"),
             new SyntheticFixtureDefinition(24, "boundary-canvas-exact.jxl", "synthetic/boundary-canvas-2048x2048.jxl"),
             new SyntheticFixtureDefinition(25, "worst-case-submitted-structural.jxl", "synthetic/worst-case-submitted-structural.jxl"),
+            new SyntheticFixtureDefinition(26, "coded-frames-512.jxl", "synthetic/coded-frames-512.jxl"),
+            new SyntheticFixtureDefinition(27, "coded-frames-1024.jxl", "synthetic/coded-frames-1024.jxl"),
+            new SyntheticFixtureDefinition(28, "coded-frames-2048.jxl", "synthetic/coded-frames-2048.jxl"),
+            new SyntheticFixtureDefinition(29, "reference-chain-512.jxl", "synthetic/reference-chain-512.jxl"),
+            new SyntheticFixtureDefinition(30, "reference-chain-1024.jxl", "synthetic/reference-chain-1024.jxl"),
         };
 
         [MenuItem(MenuPath, false, MenuPriority)]
@@ -992,7 +997,18 @@ namespace Basis.ImageSandbox.Editor
                       preflight.ReferenceReadEdges >= 638 &&
                       preflight.SavedReferenceCount >= 425 &&
                       preflight.BlendOperationCount >= 638 &&
-                      preflight.MaximumReferenceChainDepth >= 129,
+                      preflight.MaximumReferenceChainDepth >= 129 &&
+                      preflight.DecodeWorkCandidate > 0,
+                26 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 512 &&
+                      preflight.DecodeWorkCandidate > 0,
+                27 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 1024 &&
+                      preflight.DecodeWorkCandidate > 0,
+                28 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 2048 &&
+                      preflight.DecodeWorkCandidate > 0,
+                29 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 512 &&
+                      preflight.MaximumReferenceChainDepth >= 512 && preflight.DecodeWorkCandidate > 0,
+                30 => preflight.LogicalFrameCount == 1 && preflight.PublicRegularLayerCount == 1024 &&
+                      preflight.MaximumReferenceChainDepth >= 1024 && preflight.DecodeWorkCandidate > 0,
                 _ => true,
             };
             if (!structureOk)
@@ -1001,7 +1017,9 @@ namespace Basis.ImageSandbox.Editor
                     + $"frames={preflight.LogicalFrameCount}, submitted={preflight.SubmittedCanvasPixels}, layers={preflight.PublicRegularLayerCount}, "
                     + $"layerPixels={preflight.PublicRegularLayerPixels}, crops={preflight.CroppedLayerCount}, refs={preflight.ReferenceReadEdges}, "
                     + $"saved={preflight.SavedReferenceCount}, blends={preflight.BlendOperationCount}, depth={preflight.MaximumReferenceChainDepth}, "
-                    + $"preview={preflight.PreviewPixels}.";
+                    + $"cropPixels={preflight.CroppedLayerPixels}, refPixels={preflight.ReferenceReadPixels}, savePixels={preflight.SavedReferencePixels}, "
+                    + $"blendPixels={preflight.BlendOperationPixels}, chainExtra={preflight.ReferenceChainExtraPixels}, "
+                    + $"decodeWork={preflight.DecodeWorkCandidate}, preview={preflight.PreviewPixels}.";
                 return false;
             }
             return true;
@@ -1829,6 +1847,11 @@ namespace Basis.ImageSandbox.Editor
                 sample.DecodeFuelPerBlendOperation = decodeFuelConsumed / (double)preflight.BlendOperationCount;
             if (preflight.ReferenceReadEdges > 0)
                 sample.DecodeFuelPerReferenceEdge = decodeFuelConsumed / (double)preflight.ReferenceReadEdges;
+            if (preflight.DecodeWorkCandidate > 0)
+            {
+                sample.StageBFuelPerDecodeWorkUnit = sample.StageBFuelConsumed / (double)preflight.DecodeWorkCandidate;
+                sample.DecodeFuelPerDecodeWorkUnit = decodeFuelConsumed / (double)preflight.DecodeWorkCandidate;
+            }
             return sample;
         }
 
@@ -1848,6 +1871,12 @@ namespace Basis.ImageSandbox.Editor
             sample.BlendOperationCount = preflight.BlendOperationCount;
             sample.MaximumReferenceChainDepth = preflight.MaximumReferenceChainDepth;
             sample.PreviewPixels = preflight.PreviewPixels;
+            sample.CroppedLayerPixels = preflight.CroppedLayerPixels;
+            sample.ReferenceReadPixels = preflight.ReferenceReadPixels;
+            sample.SavedReferencePixels = preflight.SavedReferencePixels;
+            sample.BlendOperationPixels = preflight.BlendOperationPixels;
+            sample.ReferenceChainExtraPixels = preflight.ReferenceChainExtraPixels;
+            sample.DecodeWorkCandidate = preflight.DecodeWorkCandidate;
         }
 
         private void ReportBenchmarkProgress(int completed, int total, string status)
@@ -1917,7 +1946,7 @@ namespace Basis.ImageSandbox.Editor
         private static string BuildCsv(BenchmarkRunResult run)
         {
             var csv = new StringBuilder();
-            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,preparation_backend,preparation_cache_hit,was_reencoded,source_already_profile1,source_decode_ms,profile1_encode_ms,preparation_total_ms,timeline_bytes,preparation_working_set_before_bytes,preparation_working_set_after_bytes,preparation_working_set_peak_bytes,preparation_working_set_peak_delta_bytes,prepared_to_original_size_ratio,prepared_bytes_per_submitted_mp,prepared_bytes_per_logical_frame,fuel_limit,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,stage_b_diagnostic_reason,stage_b_logical_header_mean_ms,stage_b_structural_header_mean_ms,stage_b_header_mean_ms,stage_b_validation_mean_ms,stage_b_logical_header_fuel_mean,stage_b_logical_header_fuel_max,stage_b_structural_header_fuel_mean,stage_b_structural_header_fuel_max,stage_b_header_fuel_mean,stage_b_header_fuel_max,stage_b_validation_fuel_mean,stage_b_validation_fuel_max,stage_b_peak_linear_memory_bytes,stage_b_memory_growth_count_max,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,decode_fuel_per_canvas_pixel_mean,decode_fuel_per_submitted_pixel_mean,decode_fuel_per_logical_frame_mean,decode_fuel_per_public_layer_pixel_mean,decode_fuel_per_blend_operation_mean,decode_fuel_per_reference_edge_mean,decode_peak_linear_memory_bytes,decode_memory_growth_count_max,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_consumed_available,stage_b_fuel_mean,stage_b_fuel_max,decode_fuel_mean,decode_fuel_max,wasm_peak_memory_available");
+            csv.AppendLine("fixture,original_payload_bytes,prepared_payload_bytes,preparation_kind,preparation_error,preparation_backend,preparation_cache_hit,was_reencoded,source_already_profile1,source_decode_ms,profile1_encode_ms,preparation_total_ms,timeline_bytes,preparation_working_set_before_bytes,preparation_working_set_after_bytes,preparation_working_set_peak_bytes,preparation_working_set_peak_delta_bytes,prepared_to_original_size_ratio,prepared_bytes_per_submitted_mp,prepared_bytes_per_logical_frame,fuel_limit,concurrency,sample_count,width,height,logical_frames,submitted_pixels,regular_layers,regular_layer_pixels,crops,reference_edges,saved_references,blends,max_reference_chain,preview_pixels,cropped_layer_pixels,reference_read_pixels,saved_reference_pixels,blend_operation_pixels,reference_chain_extra_pixels,decode_work_candidate,module_init_mean_ms,stage_a_mean_ms,stage_a_median_ms,stage_a_p95_ms,stage_b_mean_ms,stage_b_median_ms,stage_b_p95_ms,stage_b_diagnostic_reason,stage_b_logical_header_mean_ms,stage_b_structural_header_mean_ms,stage_b_header_mean_ms,stage_b_validation_mean_ms,stage_b_logical_header_fuel_mean,stage_b_logical_header_fuel_max,stage_b_structural_header_fuel_mean,stage_b_structural_header_fuel_max,stage_b_header_fuel_mean,stage_b_header_fuel_max,stage_b_validation_fuel_mean,stage_b_validation_fuel_max,stage_b_peak_linear_memory_bytes,stage_b_memory_growth_count_max,decode_mean_ms,decode_median_ms,decode_p95_ms,decode_max_ms,decode_stddev_ms,decode_mean_ms_per_submitted_mp,decode_mean_ms_per_frame,decode_fuel_per_canvas_pixel_mean,decode_fuel_per_submitted_pixel_mean,decode_fuel_per_logical_frame_mean,decode_fuel_per_public_layer_pixel_mean,decode_fuel_per_blend_operation_mean,decode_fuel_per_reference_edge_mean,stage_b_fuel_per_decode_work_unit_mean,decode_fuel_per_decode_work_unit_mean,decode_peak_linear_memory_bytes,decode_memory_growth_count_max,group_wall_ms,aggregate_decoded_frames_per_second,working_set_before_bytes,working_set_after_bytes,working_set_peak_bytes,working_set_peak_delta_bytes,success_count,failure_count,fuel_consumed_available,stage_b_fuel_mean,stage_b_fuel_max,decode_fuel_mean,decode_fuel_max,wasm_peak_memory_available");
             foreach (FixtureBenchmarkResult item in run.Fixtures)
             {
                 csv.Append(Csv(item.Fixture)).Append(',')
@@ -1955,6 +1984,12 @@ namespace Basis.ImageSandbox.Editor
                     .Append(item.BlendOperationCount).Append(',')
                     .Append(item.MaximumReferenceChainDepth).Append(',')
                     .Append(item.PreviewPixels).Append(',')
+                    .Append(item.CroppedLayerPixels).Append(',')
+                    .Append(item.ReferenceReadPixels).Append(',')
+                    .Append(item.SavedReferencePixels).Append(',')
+                    .Append(item.BlendOperationPixels).Append(',')
+                    .Append(item.ReferenceChainExtraPixels).Append(',')
+                    .Append(item.DecodeWorkCandidate).Append(',')
                     .Append(F(item.ModuleInitMeanMilliseconds)).Append(',')
                     .Append(F(item.StageAMeanMilliseconds)).Append(',')
                     .Append(F(item.StageAMedianMilliseconds)).Append(',')
@@ -1990,6 +2025,8 @@ namespace Basis.ImageSandbox.Editor
                     .Append(F(item.DecodeFuelPerPublicLayerPixelMean)).Append(',')
                     .Append(F(item.DecodeFuelPerBlendOperationMean)).Append(',')
                     .Append(F(item.DecodeFuelPerReferenceEdgeMean)).Append(',')
+                    .Append(F(item.StageBFuelPerDecodeWorkUnitMean)).Append(',')
+                    .Append(F(item.DecodeFuelPerDecodeWorkUnitMean)).Append(',')
                     .Append(item.DecodePeakLinearMemoryBytes).Append(',')
                     .Append(item.DecodeMemoryGrowthCountMax).Append(',')
                     .Append(F(item.GroupWallMilliseconds)).Append(',')
@@ -2248,6 +2285,12 @@ namespace Basis.ImageSandbox.Editor
             public ulong BlendOperationCount;
             public ulong MaximumReferenceChainDepth;
             public ulong PreviewPixels;
+            public ulong CroppedLayerPixels;
+            public ulong ReferenceReadPixels;
+            public ulong SavedReferencePixels;
+            public ulong BlendOperationPixels;
+            public ulong ReferenceChainExtraPixels;
+            public ulong DecodeWorkCandidate;
             public List<double> ModuleInitMilliseconds = new List<double>();
             public double ModuleInitMeanMilliseconds;
             public double StageAMeanMilliseconds;
@@ -2284,6 +2327,8 @@ namespace Basis.ImageSandbox.Editor
             public double DecodeFuelPerPublicLayerPixelMean;
             public double DecodeFuelPerBlendOperationMean;
             public double DecodeFuelPerReferenceEdgeMean;
+            public double StageBFuelPerDecodeWorkUnitMean;
+            public double DecodeFuelPerDecodeWorkUnitMean;
             public ulong DecodePeakLinearMemoryBytes;
             public int DecodeMemoryGrowthCountMax;
             public double GroupWallMilliseconds;
@@ -2320,6 +2365,12 @@ namespace Basis.ImageSandbox.Editor
                     BlendOperationCount = firstSuccess.BlendOperationCount;
                     MaximumReferenceChainDepth = firstSuccess.MaximumReferenceChainDepth;
                     PreviewPixels = firstSuccess.PreviewPixels;
+                    CroppedLayerPixels = firstSuccess.CroppedLayerPixels;
+                    ReferenceReadPixels = firstSuccess.ReferenceReadPixels;
+                    SavedReferencePixels = firstSuccess.SavedReferencePixels;
+                    BlendOperationPixels = firstSuccess.BlendOperationPixels;
+                    ReferenceChainExtraPixels = firstSuccess.ReferenceChainExtraPixels;
+                    DecodeWorkCandidate = firstSuccess.DecodeWorkCandidate;
                     if (SubmittedCanvasPixels > 0)
                         PreparedBytesPerSubmittedMegapixel = PayloadBytes / (SubmittedCanvasPixels / 1_000_000.0);
                     if (LogicalFrames > 0)
@@ -2388,6 +2439,8 @@ namespace Basis.ImageSandbox.Editor
                 DecodeFuelPerPublicLayerPixelMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerPublicLayerPixel > 0).Select(sample => sample.DecodeFuelPerPublicLayerPixel));
                 DecodeFuelPerBlendOperationMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerBlendOperation > 0).Select(sample => sample.DecodeFuelPerBlendOperation));
                 DecodeFuelPerReferenceEdgeMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerReferenceEdge > 0).Select(sample => sample.DecodeFuelPerReferenceEdge));
+                StageBFuelPerDecodeWorkUnitMean = Stats.Mean(Samples.Where(sample => sample.StageBFuelPerDecodeWorkUnit > 0).Select(sample => sample.StageBFuelPerDecodeWorkUnit));
+                DecodeFuelPerDecodeWorkUnitMean = Stats.Mean(Samples.Where(sample => sample.DecodeFuelPerDecodeWorkUnit > 0).Select(sample => sample.DecodeFuelPerDecodeWorkUnit));
                 DecodePeakLinearMemoryBytes = Samples.Count == 0 ? 0 : Samples.Max(sample => sample.DecodePeakMemoryBytes);
                 DecodeMemoryGrowthCountMax = Samples.Count == 0 ? 0 : Samples.Max(sample => sample.DecodeMemoryGrowthCount);
                 WasmPeakMemoryAvailable = StageBPeakLinearMemoryBytes > 0 || DecodePeakLinearMemoryBytes > 0;
@@ -2435,6 +2488,8 @@ namespace Basis.ImageSandbox.Editor
             public double DecodeFuelPerPublicLayerPixel;
             public double DecodeFuelPerBlendOperation;
             public double DecodeFuelPerReferenceEdge;
+            public double StageBFuelPerDecodeWorkUnit;
+            public double DecodeFuelPerDecodeWorkUnit;
             public int DecodedFrames;
             public string DecodeChecksum;
             public uint Width;
@@ -2451,6 +2506,12 @@ namespace Basis.ImageSandbox.Editor
             public ulong BlendOperationCount;
             public ulong MaximumReferenceChainDepth;
             public ulong PreviewPixels;
+            public ulong CroppedLayerPixels;
+            public ulong ReferenceReadPixels;
+            public ulong SavedReferencePixels;
+            public ulong BlendOperationPixels;
+            public ulong ReferenceChainExtraPixels;
+            public ulong DecodeWorkCandidate;
         }
 
         [StructLayout(LayoutKind.Sequential)]

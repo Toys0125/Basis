@@ -43,6 +43,7 @@ namespace Basis.ImageSandbox
         PreviewPixels = 20,
         LogicalMismatch = 21,
         Decoder = 22,
+        DecodeWorkOverflow = 23,
     }
 
     public readonly struct BasisProfile1SandboxExecutionMetrics
@@ -143,7 +144,16 @@ namespace Basis.ImageSandbox
         public readonly ulong BlendOperationCount;
         public readonly ulong MaximumReferenceChainDepth;
         public readonly ulong PreviewPixels;
+        public readonly ulong CroppedLayerPixels;
+        public readonly ulong ReferenceReadPixels;
+        public readonly ulong SavedReferencePixels;
+        public readonly ulong BlendOperationPixels;
+        public readonly ulong ReferenceChainExtraPixels;
+        public readonly ulong DecodeWorkCandidate;
         public readonly ulong[] FrameDurationsMicroseconds;
+
+        public ulong CodedFrameCount => PublicRegularLayerCount;
+        public ulong CodedFramePixels => PublicRegularLayerPixels;
 
         internal BasisProfile1SandboxPreflight(
             BasisProfile1SandboxStatus status,
@@ -162,6 +172,12 @@ namespace Basis.ImageSandbox
             ulong blendOperationCount = 0,
             ulong maximumReferenceChainDepth = 0,
             ulong previewPixels = 0,
+            ulong croppedLayerPixels = 0,
+            ulong referenceReadPixels = 0,
+            ulong savedReferencePixels = 0,
+            ulong blendOperationPixels = 0,
+            ulong referenceChainExtraPixels = 0,
+            ulong decodeWorkCandidate = 0,
             ulong[] frameDurationsMicroseconds = null
         )
         {
@@ -181,6 +197,12 @@ namespace Basis.ImageSandbox
             BlendOperationCount = blendOperationCount;
             MaximumReferenceChainDepth = maximumReferenceChainDepth;
             PreviewPixels = previewPixels;
+            CroppedLayerPixels = croppedLayerPixels;
+            ReferenceReadPixels = referenceReadPixels;
+            SavedReferencePixels = savedReferencePixels;
+            BlendOperationPixels = blendOperationPixels;
+            ReferenceChainExtraPixels = referenceChainExtraPixels;
+            DecodeWorkCandidate = decodeWorkCandidate;
             FrameDurationsMicroseconds = frameDurationsMicroseconds ?? Array.Empty<ulong>();
         }
     }
@@ -210,7 +232,13 @@ namespace Basis.ImageSandbox
         private const int MaximumFrames = 512;
         private const int ResultHeaderSlots = 17;
         private const int DiagnosticReasonSlot = ResultHeaderSlots + MaximumFrames;
-        private const int ExpectedResultSlots = DiagnosticReasonSlot + 1;
+        private const int CroppedLayerPixelsSlot = DiagnosticReasonSlot + 1;
+        private const int ReferenceReadPixelsSlot = CroppedLayerPixelsSlot + 1;
+        private const int SavedReferencePixelsSlot = ReferenceReadPixelsSlot + 1;
+        private const int BlendOperationPixelsSlot = SavedReferencePixelsSlot + 1;
+        private const int ReferenceChainExtraPixelsSlot = BlendOperationPixelsSlot + 1;
+        private const int DecodeWorkCandidateSlot = ReferenceChainExtraPixelsSlot + 1;
+        private const int ExpectedResultSlots = DecodeWorkCandidateSlot + 1;
         private const uint DecodeEndOfStream = 4;
 
         private static readonly WasmtimeNative.HostFunctionCallback MemoryGrowthCallback =
@@ -1200,6 +1228,12 @@ namespace Basis.ImageSandbox
                 ReadSlot(memory, 13),
                 ReadSlot(memory, 14),
                 ReadSlot(memory, 15),
+                ReadSlot(memory, CroppedLayerPixelsSlot),
+                ReadSlot(memory, ReferenceReadPixelsSlot),
+                ReadSlot(memory, SavedReferencePixelsSlot),
+                ReadSlot(memory, BlendOperationPixelsSlot),
+                ReadSlot(memory, ReferenceChainExtraPixelsSlot),
+                ReadSlot(memory, DecodeWorkCandidateSlot),
                 durations
             );
             return true;
@@ -1314,7 +1348,7 @@ namespace Basis.ImageSandbox
             };
 
         private static BasisProfile1SandboxDiagnosticReason MapDiagnosticReason(ulong reason) =>
-            reason <= (ulong)BasisProfile1SandboxDiagnosticReason.Decoder
+            reason <= (ulong)BasisProfile1SandboxDiagnosticReason.DecodeWorkOverflow
                 ? (BasisProfile1SandboxDiagnosticReason)reason
                 : BasisProfile1SandboxDiagnosticReason.None;
 

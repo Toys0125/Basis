@@ -44,7 +44,13 @@ enum ResultSlot : uint32_t {
     kSlotDurationCount = 16,
     kSlotDurations = 17,
     kSlotDiagnosticReason = kSlotDurations + kMaximumLogicalFrames,
-    kResultSlotCount = kSlotDiagnosticReason + 1,
+    kSlotCroppedLayerPixels = kSlotDiagnosticReason + 1,
+    kSlotReferenceReadPixels = kSlotCroppedLayerPixels + 1,
+    kSlotSavedReferencePixels = kSlotReferenceReadPixels + 1,
+    kSlotBlendOperationPixels = kSlotSavedReferencePixels + 1,
+    kSlotReferenceChainExtraPixels = kSlotBlendOperationPixels + 1,
+    kSlotDecodeWorkCandidate = kSlotReferenceChainExtraPixels + 1,
+    kResultSlotCount = kSlotDecodeWorkCandidate + 1,
 };
 
 enum Status : uint32_t {
@@ -78,16 +84,23 @@ enum DiagnosticReason : uint32_t {
     kReasonPreviewPixels = 20,
     kReasonLogicalMismatch = 21,
     kReasonDecoder = 22,
+    kReasonDecodeWorkOverflow = 23,
 };
 
 struct StructuralMetrics {
     uint64_t layer_count = 0;
     uint64_t layer_pixels = 0;
     uint64_t cropped_layer_count = 0;
+    uint64_t cropped_layer_pixels = 0;
     uint64_t reference_read_edges = 0;
+    uint64_t reference_read_pixels = 0;
     uint64_t saved_reference_count = 0;
+    uint64_t saved_reference_pixels = 0;
     uint64_t blend_operations = 0;
+    uint64_t blend_operation_pixels = 0;
     uint64_t maximum_reference_chain_depth = 0;
+    uint64_t reference_chain_extra_pixels = 0;
+    uint64_t decode_work_candidate = 0;
     uint64_t reference_depth[4] = {0, 0, 0, 0};
 };
 
@@ -235,6 +248,10 @@ Status AccumulateStructure(
 
     if (layer.have_crop == JXL_TRUE) {
         ++metrics->cropped_layer_count;
+        if (!CheckedAdd(metrics->cropped_layer_pixels, pixels, &metrics->cropped_layer_pixels)) {
+            *reason = kReasonDecodeWorkOverflow;
+            return kSharedLimitExceeded;
+        }
     }
 
     uint64_t chain_depth = 1;
@@ -245,7 +262,21 @@ Status AccumulateStructure(
         }
         ++metrics->reference_read_edges;
         ++metrics->blend_operations;
+        if (!CheckedAdd(metrics->reference_read_pixels, pixels, &metrics->reference_read_pixels) ||
+            !CheckedAdd(metrics->blend_operation_pixels, pixels, &metrics->blend_operation_pixels)) {
+            *reason = kReasonDecodeWorkOverflow;
+            return kSharedLimitExceeded;
+        }
         chain_depth = metrics->reference_depth[layer.blend_info.source] + 1;
+        uint64_t chain_extra = 0;
+        if (!CheckedMultiply(pixels, chain_depth - 1, &chain_extra) ||
+            !CheckedAdd(
+                metrics->reference_chain_extra_pixels,
+                chain_extra,
+                &metrics->reference_chain_extra_pixels)) {
+            *reason = kReasonDecodeWorkOverflow;
+            return kSharedLimitExceeded;
+        }
     }
     if (chain_depth > metrics->maximum_reference_chain_depth) {
         metrics->maximum_reference_chain_depth = chain_depth;
@@ -258,7 +289,47 @@ Status AccumulateStructure(
         (layer.save_as_reference != 0 || header.duration == 0)) {
         metrics->reference_depth[layer.save_as_reference] = chain_depth;
         ++metrics->saved_reference_count;
+        if (!CheckedAdd(metrics->saved_reference_pixels, pixels, &metrics->saved_reference_pixels)) {
+            *reason = kReasonDecodeWorkOverflow;
+            return kSharedLimitExceeded;
+        }
     }
+    return kSuccess;
+}
+
+Status CalculateDecodeWorkCandidate(
+    const LogicalInfo& logical,
+    StructuralMetrics* metrics,
+    DiagnosticReason* reason) {
+    // Provisional implementation-validation metric. Every term is observable
+    // through the pinned public libjxl decoder API. The all-ones weights are a
+    // deliberately simple baseline for receiver benchmarking; no production
+    // ceiling is enforced until the Phase 5 desktop + Quest/Android evidence
+    // is complete and the second wire reconciliation publishes the final rule.
+    uint64_t work = 0;
+    const uint64_t terms[] = {
+        logical.submitted_pixels,
+        metrics->layer_count,
+        metrics->layer_pixels,
+        metrics->cropped_layer_count,
+        metrics->cropped_layer_pixels,
+        metrics->reference_read_edges,
+        metrics->reference_read_pixels,
+        metrics->saved_reference_count,
+        metrics->saved_reference_pixels,
+        metrics->blend_operations,
+        metrics->blend_operation_pixels,
+        metrics->maximum_reference_chain_depth,
+        metrics->reference_chain_extra_pixels,
+        logical.preview_pixels,
+    };
+    for (uint64_t term : terms) {
+        if (!CheckedAdd(work, term, &work)) {
+            *reason = kReasonDecodeWorkOverflow;
+            return kSharedLimitExceeded;
+        }
+    }
+    metrics->decode_work_candidate = work;
     return kSuccess;
 }
 
@@ -611,6 +682,12 @@ void StoreResult(
     output[kSlotBlendOperationCount] = metrics.blend_operations;
     output[kSlotMaximumReferenceChainDepth] = metrics.maximum_reference_chain_depth;
     output[kSlotPreviewPixels] = logical.preview_pixels;
+    output[kSlotCroppedLayerPixels] = metrics.cropped_layer_pixels;
+    output[kSlotReferenceReadPixels] = metrics.reference_read_pixels;
+    output[kSlotSavedReferencePixels] = metrics.saved_reference_pixels;
+    output[kSlotBlendOperationPixels] = metrics.blend_operation_pixels;
+    output[kSlotReferenceChainExtraPixels] = metrics.reference_chain_extra_pixels;
+    output[kSlotDecodeWorkCandidate] = metrics.decode_work_candidate;
     output[kSlotDurationCount] = logical.frame_count;
     for (uint32_t i = 0; i < logical.frame_count; ++i) {
         output[kSlotDurations + i] = logical.durations[i];
@@ -668,6 +745,9 @@ Status RunStructuralHeaderPreflight(const uint8_t* data, size_t size, uint64_t* 
     DiagnosticReason reason = kReasonNone;
     StructuralMetrics metrics{};
     Status status = RunStructurePass(data, size, &metrics, &reason);
+    if (status == kSuccess) {
+        status = CalculateDecodeWorkCandidate(logical, &metrics, &reason);
+    }
     StoreResult(status, reason, logical, metrics, output);
     return status;
 }
