@@ -1,0 +1,30 @@
+﻿{
+  "name": "com.vrcfury.api",
+  "rootNamespace": "com.vrcfury.api",
+  "references": [
+    "VRCFury-Editor-Common",
+    "VRCFury-Editor-Avatars",
+    "VRCFury"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "VRCSDK3A.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "VRCF_AVATARS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "",
+      "define": "VRCF_AVATARS"
+    }
+  ],
+  "noEngineReferences": false
+}

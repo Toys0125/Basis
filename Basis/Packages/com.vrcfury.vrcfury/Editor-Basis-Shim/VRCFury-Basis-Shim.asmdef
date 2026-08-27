@@ -1,0 +1,38 @@
+{
+  "name": "VRCFury-Basis-Shim",
+  "rootNamespace": "VF.Integration.Basis.Shim",
+  "references": [
+    "VRCFury",
+    "BasisSDK",
+    "BasisSDKEditor",
+    "HVR.Basis.Comms"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true,
+  "defineConstraints": [
+    "VRCF_BASIS_SDK",
+    "VRCF_BASIS_COMMS",
+    "!VRCF_REAL_AVATARS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.basis.sdk",
+      "expression": "",
+      "define": "VRCF_BASIS_SDK"
+    },
+    {
+      "name": "dev.hai-vr.basis.comms",
+      "expression": "",
+      "define": "VRCF_BASIS_COMMS"
+    },
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "",
+      "define": "VRCF_REAL_AVATARS"
+    }
+  ],
+  "noEngineReferences": false
+}

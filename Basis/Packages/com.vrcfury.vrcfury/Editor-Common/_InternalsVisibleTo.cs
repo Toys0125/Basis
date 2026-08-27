@@ -1,0 +1,8 @@
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("VRCFury-Editor-Avatars")]
+[assembly: InternalsVisibleTo("VRCFury-Editor-Worlds")]
+[assembly: InternalsVisibleTo("VRCFury-Tests")]
+[assembly: InternalsVisibleTo("VRCFury-Avatar-Tests")]
+[assembly: InternalsVisibleTo("VRCFury-Basis")]
+[assembly: InternalsVisibleTo("com.vrcfury.api")]

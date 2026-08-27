@@ -1,0 +1,43 @@
+{
+  "name": "VRCFury-Basis",
+  "rootNamespace": "VF.Integration.Basis",
+  "references": [
+    "VRCFury",
+    "VRCFury-Editor-Common",
+    "VRCFury-Editor-Avatars",
+    "BasisSDK",
+    "BasisSDKEditor",
+    "HVR.Basis.Comms",
+    "com.gator-dragon-games.jigglephysics"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true,
+  "defineConstraints": [
+    "VRCF_AVATARS",
+    "VRCF_BASIS_SDK",
+    "VRCF_BASIS_COMMS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "",
+      "define": "VRCF_AVATARS"
+    },
+    {
+      "name": "com.basis.sdk",
+      "expression": "",
+      "define": "VRCF_BASIS_SDK"
+    },
+    {
+      "name": "dev.hai-vr.basis.comms",
+      "expression": "",
+      "define": "VRCF_BASIS_COMMS"
+    }
+  ],
+  "noEngineReferences": false
+}

@@ -1,0 +1,51 @@
+using System;
+using System.Linq;
+using UnityEditor;
+using UnityEngine.SceneManagement;
+using VF.Builder;
+using VF.Utils;
+using VRC.SDK3.Avatars.Components;
+using VRC.SDKBase.Editor.BuildPipeline;
+
+namespace VF.Menu {
+    internal static class VRCFuryTestCopyMenuItem {
+
+        public static void RunBuildTestCopy() {
+            var originalObject = MenuUtils.GetSelectedAvatar();
+            if (originalObject == null || originalObject.GetComponent<VRCAvatarDescriptor>() == null) return;
+            BuildTestCopy(originalObject);
+        }
+        
+        public static void BuildTestCopy(VFGameObject originalObject) {
+            if (originalObject == null || originalObject.GetComponent<VRCAvatarDescriptor>() == null) {
+                throw new ArgumentException("Test copies can only be built for avatars", nameof(originalObject));
+            }
+            VRCFPrefabFixer.Fix(new[] {originalObject});
+
+            var cloneName = "VRCF Test Copy for " + originalObject.name;
+            var exists = originalObject.scene.Roots()
+                .FirstOrDefault(o => o.name == cloneName);
+            if (exists != null) {
+                exists.Destroy();
+            }
+            var clone = originalObject.Clone();
+            clone.name = originalObject.name + "(Clone)";
+            if (!VRCBuildPipelineCallbacks.OnPreprocessAvatar(clone)) {
+                clone.Destroy();
+                return;
+            }
+
+            clone.active = true;
+            if (clone.scene != originalObject.scene) {
+                SceneManager.MoveGameObjectToScene(clone, originalObject.scene);
+            }
+            clone.name = cloneName;
+            Undo.RegisterCreatedObjectUndo(clone, "Create VRCF Test Copy");
+            Selection.SetActiveObjectWithContext(clone, clone);
+        }
+
+        public static bool CheckBuildTestCopy() {
+            return MenuUtils.GetSelectedAvatar()?.GetComponent<VRCAvatarDescriptor>() != null;
+        }
+    }
+}

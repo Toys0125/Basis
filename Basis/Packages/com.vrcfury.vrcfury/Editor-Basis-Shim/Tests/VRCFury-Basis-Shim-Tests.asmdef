@@ -1,0 +1,42 @@
+{
+  "name": "VRCFury-Basis-Shim-Tests",
+  "rootNamespace": "VF.Integration.Basis.Shim.Tests",
+  "references": [
+    "VRCFury",
+    "VRCFury-Basis-Shim",
+    "BasisSDK",
+    "BasisSDKEditor",
+    "HVR.Basis.Comms"
+  ],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_TEST_FRAMEWORK_PRESENT",
+    "VRCF_BASIS_SDK",
+    "VRCF_BASIS_COMMS",
+    "!VRCF_REAL_AVATARS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.test-framework",
+      "expression": "",
+      "define": "UNITY_TEST_FRAMEWORK_PRESENT"
+    },
+    {
+      "name": "com.basis.sdk",
+      "expression": "",
+      "define": "VRCF_BASIS_SDK"
+    },
+    {
+      "name": "dev.hai-vr.basis.comms",
+      "expression": "",
+      "define": "VRCF_BASIS_COMMS"
+    },
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "",
+      "define": "VRCF_REAL_AVATARS"
+    }
+  ]
+}

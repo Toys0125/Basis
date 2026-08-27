@@ -23,7 +23,7 @@
     "com.unity.xr.openxr": "1.17.1",
     "com.valvesoftware.openxr.utils": "https://github.com/ValveSoftware/Unity.git?path=com.valvesoftware.openxr.utils#28c3b8d9a4ecd7a128906e11c398944d3c8524dc",
     "com.valvesoftware.unity.openvr": "file:com.valvesoftware.unity.openvr-1.2.1.tgz",
-    "com.vrcfury.vrcfury": "https://github.com/Toys0125/VRCFury.git?path=com.vrcfury.vrcfury#5e6855041ef0584cd309ca4d0d8a80fe69057185",
+    "com.vrcfury.vrcfury": "file:com.vrcfury.vrcfury",
     "com.xiph.rnnoise": "https://github.com/BasisVR/RNNoise.Net.git",
     "org.basisvr.base128": "file:org.basisvr.base128-1.2.2.tgz",
     "org.basisvr.bouncycastle": "file:org.basisvr.bouncycastle-2.5.0.tgz",
