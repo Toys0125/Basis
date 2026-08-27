@@ -98,6 +98,12 @@ public class BasisCilboxBuildHook
             {
                 SceneManager.MoveGameObjectToScene(prefabRoot, originalScene);
             }
+            else if (prefabRoot != null && prefabRoot.scene == temporaryScene &&
+                     originalActiveScene.IsValid() && originalActiveScene.isLoaded &&
+                     originalActiveScene != temporaryScene)
+            {
+                SceneManager.MoveGameObjectToScene(prefabRoot, originalActiveScene);
+            }
 
             if (detachedFromParent && prefabRoot != null && originalParent != null &&
                 prefabRoot.scene.IsValid() && prefabRoot.scene == originalScene)
