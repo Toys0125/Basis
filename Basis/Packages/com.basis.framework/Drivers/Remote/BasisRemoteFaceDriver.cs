@@ -22,6 +22,8 @@ namespace Basis.Scripts.Drivers
         /// If set to <c>true</c>, overrides and disables the blinking simulation logic.
         /// </summary>
         public bool OverrideBlinking = false;
+        /// <summary>Independent authored-content blocker; unlike OverrideBlinking this is not owned by face tracking.</summary>
+        public bool ExternalOverrideBlinking = false;
         /// <summary>
         /// overrides the eye output
         /// </summary>
@@ -31,6 +33,8 @@ namespace Basis.Scripts.Drivers
         /// networked face tracking (e.g. webcam/VRCFT via comms) can drive the mouth instead.
         /// </summary>
         public bool OverrideViseme = false;
+        /// <summary>Independent authored-content viseme blocker; unlike OverrideViseme this is not owned by face tracking.</summary>
+        public bool ExternalOverrideViseme = false;
         /// <summary>
         /// Renderer containing blink blendshapes referenced by <see cref="blendShapeIndices"/>.
         /// </summary>
@@ -170,7 +174,7 @@ namespace Basis.Scripts.Drivers
 
             if (!BlinkingEnabled && meshRenderer != null)
             {
-                if (OverrideBlinking == false)
+                if (OverrideBlinking == false && ExternalOverrideBlinking == false)
                 {
                     // Bounded by the live list, not the cached count — a destroy-window
                     // notification must never outrun the driver's own state.
@@ -190,6 +194,15 @@ namespace Basis.Scripts.Drivers
         /// <returns>
         /// <c>true</c> if a blink mesh is present and at least one valid blink viseme index exists; otherwise <c>false</c>.
         /// </returns>
+        public void SetExternalBlinkOverride(bool value)
+        {
+            if (ExternalOverrideBlinking == value) return;
+            ExternalOverrideBlinking = value;
+            if (!value) return;
+            int count = blendShapeIndices.Count;
+            for (int i = 0; i < count; i++) SafeSetBlendShape(blendShapeIndices[i], 0f);
+        }
+
         public static bool MeetsRequirements(BasisAvatar avatar)
         {
             if (avatar == null || avatar.FaceBlinkMesh == null || avatar.BlinkViseme == null || avatar.BlinkViseme.Length == 0)

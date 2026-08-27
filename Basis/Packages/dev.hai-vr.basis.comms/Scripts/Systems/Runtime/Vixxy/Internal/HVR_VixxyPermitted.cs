@@ -57,6 +57,8 @@ namespace HVR.Vixxy
             "GatorDragonGames.JigglePhysics.JiggleRig",
             "HVR.Vixxy.HVRVixxyWorldLock",
             "HVR.Vixxy.HVRVixxyJiggleReset",
+            "HVR.Vixxy.HVRVixxyOscillator",
+            "HVR.Vixxy.HVRVixxyFaceBlocker",
             // UI
             "TMPro.TextMeshPro",
             "TMPro.TextMeshProUGUI",
@@ -103,6 +105,10 @@ namespace HVR.Vixxy
             ),
             (
                 new List<string> { "HVR.Vixxy.HVRVixxyJiggleReset" },
+                new List<string> { "Active" }
+            ),
+            (
+                new List<string> { "HVR.Vixxy.HVRVixxyFaceBlocker" },
                 new List<string> { "Active" }
             )
         };

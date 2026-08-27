@@ -23,6 +23,8 @@ namespace Basis.Scripts.Drivers
         /// If set to <c>true</c>, overrides and disables the blinking simulation logic.
         /// </summary>
         public bool Override = false;
+        /// <summary>Independent authored-content blocker (for example Vixxy/VRCFury). Kept separate from face-tracking override state.</summary>
+        public bool ExternalOverride = false;
         /// <summary>
         /// Renderer containing blink blendshapes referenced by <see cref="blendShapeIndices"/>.
         /// </summary>
@@ -177,7 +179,7 @@ namespace Basis.Scripts.Drivers
             {
                 return;
             }
-            if (Override)
+            if (Override || ExternalOverride)
             {
                 return;
             }
@@ -266,7 +268,23 @@ namespace Basis.Scripts.Drivers
                 return;
             }
 
-            SetNextBlinkTime(Time.timeAsDouble);
+            if (!ExternalOverride) SetNextBlinkTime(Time.timeAsDouble);
+        }
+
+        public void SetExternalOverride(bool value)
+        {
+            if (ExternalOverride == value) return;
+            ExternalOverride = value;
+            if (value)
+            {
+                IsClosingBlink = false;
+                IsOpeningBlink = false;
+                for (int i = 0; i < blendShapeCount; i++) SafeSetBlendShape(blendShapeIndices[i], 0f);
+            }
+            else if (!Override)
+            {
+                SetNextBlinkTime(Time.timeAsDouble);
+            }
         }
 
         /// <summary>
@@ -296,7 +314,7 @@ namespace Basis.Scripts.Drivers
                 IsClosingBlink = false;
                 IsOpeningBlink = false;
 
-                if (Override == false)
+                if (Override == false && ExternalOverride == false)
                 {
                     // Bounded by the live list, not the cached count — a destroy-window
                     // notification must never outrun the driver's own state.

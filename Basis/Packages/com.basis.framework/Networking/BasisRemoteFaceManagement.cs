@@ -606,7 +606,7 @@ public static class BasisRemoteFaceManagement
                 // here: that is a native fake-null call per visible face per frame,
                 // and SafeSetBlendShape already guards each actual write — a renderer
                 // destroyed behind our back just no-ops until the next face rebuild.
-                if (Face.BlinkingEnabled && !Face.OverrideBlinking)
+                if (Face.BlinkingEnabled && !Face.OverrideBlinking && !Face.ExternalOverrideBlinking)
                 {
                     float w = pBlinkOut[Index];
                     if (!float.IsFinite(w)) w = 0f;

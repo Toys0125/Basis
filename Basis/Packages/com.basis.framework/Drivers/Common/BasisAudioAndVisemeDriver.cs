@@ -296,14 +296,19 @@ namespace Basis.Scripts.Drivers
         }
 
         private bool _overrideZeroed;
+        /// <summary>Independent authored-content viseme blocker, kept separate from face-tracking policy.</summary>
+        public bool ExternalBlockVisemes;
 
         public void Apply(float DeltaTime)
         {
-            if (Basis.BasisUI.BasisSettingsDefaults.DisableLipSyncForFaceTracking.RawValue
-                && Player is BasisRemotePlayer remote && remote.RemoteFaceDriver != null && remote.RemoteFaceDriver.OverrideViseme)
+            var remote = Player as BasisRemotePlayer;
+            var authoredRemoteBlock = remote?.RemoteFaceDriver?.ExternalOverrideViseme == true;
+            var faceTrackingBlock = Basis.BasisUI.BasisSettingsDefaults.DisableLipSyncForFaceTracking.RawValue
+                                    && remote?.RemoteFaceDriver?.OverrideViseme == true;
+            if (ExternalBlockVisemes || authoredRemoteBlock || faceTrackingBlock)
             {
-                // Developer option (default off): a face-tracked remote drives the mouth via comms,
-                // so suppress the audio-reconstructed visemes. Off = both run combined.
+                // Either authored content explicitly blocks visemes, or the developer option suppresses
+                // audio-reconstructed visemes while a face-tracked remote drives the mouth via comms.
                 if (!_overrideZeroed)
                 {
                     openLipSyncContext?.ZeroVisemes();
