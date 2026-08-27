@@ -761,6 +761,13 @@
       },
       "hash": "28c3b8d9a4ecd7a128906e11c398944d3c8524dc"
     },
+    "com.vrcfury.vrcfury": {
+      "version": "https://github.com/Toys0125/VRCFury.git?path=/com.vrcfury.vrcfury#5e6855041ef0584cd309ca4d0d8a80fe69057185",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "5e6855041ef0584cd309ca4d0d8a80fe69057185"
+    },
     "com.valvesoftware.unity.openvr": {
       "version": "file:com.valvesoftware.unity.openvr",
       "depth": 0,
