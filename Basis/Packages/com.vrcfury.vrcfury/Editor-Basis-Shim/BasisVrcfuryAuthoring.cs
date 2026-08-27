@@ -484,7 +484,7 @@ namespace VF.Integration.Basis.Shim {
         }
 
         private static VisualElement CreateHeaderRow(string title) {
-            var background = EditorGUIUtility.isProSkin
+            Color background = EditorGUIUtility.isProSkin
                 ? new Color32(61, 61, 61, 255)
                 : new Color32(194, 194, 194, 255);
             var row = new VisualElement {
