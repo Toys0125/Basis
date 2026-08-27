@@ -7,11 +7,7 @@ using VF.Model.Feature;
 using VF.Upgradeable;
 
 namespace VF.Model {
-#if VRCF_AVATARS
     [AddComponentMenu("")]
-#else
-    [AddComponentMenu("VRCFury/VRCFury (BasisVR)")]
-#endif
     [HelpURL("https://vrcfury.com")]
     internal class VRCFury : VRCFuryComponent {
 

@@ -23,10 +23,10 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
-        public void BasisOnlyVrcfuryComponent_IsVisibleInAddComponentMenu() {
+        public void BasisOnlyVrcfuryComponent_StaysHiddenLikeUpstreamVrcfury() {
             var attribute = (AddComponentMenu)Attribute.GetCustomAttribute(typeof(VRCFury), typeof(AddComponentMenu));
             Assert.That(attribute, Is.Not.Null);
-            Assert.That(attribute.componentMenu, Is.EqualTo("VRCFury/VRCFury (BasisVR)"));
+            Assert.That(attribute.componentMenu, Is.Empty);
         }
 
         [Test]

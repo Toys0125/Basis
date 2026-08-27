@@ -1,188 +1,523 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Basis.Scripts.BasisSdk;
 using UnityEditor;
+using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.UIElements;
 using VF.Model;
 using VF.Model.Feature;
 
 namespace VF.Integration.Basis.Shim {
     internal static class BasisVrcfuryAuthoringMenus {
+        private const string ComponentRoot = "Component/VRCFury/";
         private const string ToolsRoot = "Tools/VRCFury/BasisVR/";
-        private const string GameObjectRoot = "GameObject/VRCFury/";
 
         [MenuItem(ToolsRoot + "Status", priority = 0)]
         private static void Status() {
             EditorUtility.DisplayDialog(
                 "VRCFury for BasisVR",
-                "The BasisVR auto-shim is active.\n\n" +
-                "Supported authoring in this build:\n" +
+                "The BasisVR compatibility layer is active.\n\n" +
+                "Supported VRCFury authoring in this build:\n" +
                 "• Armature Link\n" +
                 "• Blendshape Optimizer\n\n" +
-                "VRCFury metadata is processed on the temporary Basis build clone and is not included in the uploaded bundle.",
+                "These are normal VRCFury feature components and are processed only on the temporary Basis build clone.",
                 "OK"
             );
         }
 
-        [MenuItem(ToolsRoot + "Add Armature Link To Selected Object", priority = 20)]
-        [MenuItem(GameObjectRoot + "Add Armature Link (BasisVR)", priority = 20)]
+        [MenuItem(ComponentRoot + "Armature Link (VRCFury)", false, 0)]
         private static void AddArmatureLink() {
-            var selected = Selection.activeGameObject;
-            if (selected == null) {
-                EditorUtility.DisplayDialog("VRCFury for BasisVR", "Select the root object of the clothing/prop armature first.", "OK");
-                return;
+            foreach (var selected in Selection.gameObjects) {
+                if (selected == null) continue;
+                var guessed = GuessLinkFrom(selected);
+                var model = new ArmatureLink {
+                    propBone = guessed,
+                    recursive = false,
+                    alignPosition = false,
+                    alignRotation = false,
+                    alignScale = false,
+                    autoScaleFactor = true,
+                    scalingFactorPowersOf10Only = true,
+                    skinRewriteScalingFactor = 1
+                };
+                UpdateOnLinkFromChange(model, null, guessed);
+                AddFeature(selected, model, "Add VRCFury Armature Link");
             }
-
-            AddFeature(selected, new ArmatureLink {
-                propBone = selected,
-                recursive = true,
-                alignPosition = true,
-                alignRotation = true,
-                alignScale = true
-            }, "Add VRCFury Armature Link");
         }
 
-        [MenuItem(ToolsRoot + "Add Armature Link To Selected Object", true)]
-        [MenuItem(GameObjectRoot + "Add Armature Link (BasisVR)", true)]
-        private static bool ValidateAddArmatureLink() => Selection.activeGameObject != null;
+        [MenuItem(ComponentRoot + "Armature Link (VRCFury)", true)]
+        private static bool ValidateAddArmatureLink() => Selection.gameObjects.Any(obj => obj != null);
 
-        [MenuItem(ToolsRoot + "Add Blendshape Optimizer To Selected Avatar", priority = 21)]
-        [MenuItem(GameObjectRoot + "Add Blendshape Optimizer (BasisVR)", priority = 21)]
+        [MenuItem(ComponentRoot + "Blendshape Optimizer (VRCFury)", false, 1)]
         private static void AddBlendshapeOptimizer() {
-            var selected = Selection.activeGameObject;
-            if (selected == null) {
-                EditorUtility.DisplayDialog("VRCFury for BasisVR", "Select a Basis avatar or an object under one first.", "OK");
-                return;
+            foreach (var selected in Selection.gameObjects) {
+                if (selected == null) continue;
+                AddFeature(selected, new BlendshapeOptimizer(), "Add VRCFury Blendshape Optimizer");
             }
-
-            var avatar = selected.GetComponentInParent<BasisAvatar>();
-            var target = avatar != null ? avatar.gameObject : selected;
-            AddFeature(target, new BlendshapeOptimizer(), "Add VRCFury Blendshape Optimizer");
         }
 
-        [MenuItem(ToolsRoot + "Add Blendshape Optimizer To Selected Avatar", true)]
-        [MenuItem(GameObjectRoot + "Add Blendshape Optimizer (BasisVR)", true)]
-        private static bool ValidateAddBlendshapeOptimizer() => Selection.activeGameObject != null;
+        [MenuItem(ComponentRoot + "Blendshape Optimizer (VRCFury)", true)]
+        private static bool ValidateAddBlendshapeOptimizer() => Selection.gameObjects.Any(obj => obj != null);
 
         internal static VRCFury AddFeature(GameObject target, FeatureModel feature, string undoName) {
             if (target == null || feature == null) return null;
-            var component = (VRCFury)Undo.AddComponent(target, typeof(VRCFury));
-            Undo.RecordObject(component, undoName);
-            component.content = feature;
+            var component = Undo.AddComponent<VRCFury>(target);
+            var so = new SerializedObject(component);
+            so.FindProperty("content").managedReferenceValue = feature;
+            so.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(component);
             VRCFury.MarkDirty(component);
             Selection.activeObject = component;
             return component;
         }
+
+        internal static GameObject GuessLinkFrom(GameObject componentObject) {
+            if (componentObject == null) return null;
+
+            var avatar = componentObject.GetComponentInParent<BasisAvatar>();
+            if (avatar != null && avatar.gameObject == componentObject) return null;
+
+            if (avatar != null && avatar.Animator != null) {
+                var avatarHips = avatar.Animator.GetBoneTransform(HumanBodyBones.Hips);
+                if (avatarHips != null) {
+                    var path = GetPath(avatarHips, avatar.transform);
+                    if (!string.IsNullOrEmpty(path)) {
+                        var found = componentObject.transform.Find(path);
+                        if (found != null) return found.gameObject;
+                    }
+                }
+            }
+
+            var possibleArmatures = new List<Transform>();
+            var name = componentObject.name.ToLowerInvariant();
+            if (name.Contains("armature") || name.Contains("skeleton")) possibleArmatures.Add(componentObject.transform);
+            for (var i = 0; i < componentObject.transform.childCount; i++) {
+                var child = componentObject.transform.GetChild(i);
+                var childName = child.name.ToLowerInvariant();
+                if (childName.Contains("armature") || childName.Contains("skeleton")) possibleArmatures.Add(child);
+            }
+
+            foreach (var armature in possibleArmatures) {
+                for (var i = 0; i < armature.childCount; i++) {
+                    var child = armature.GetChild(i);
+                    if (child.name.IndexOf("hip", StringComparison.OrdinalIgnoreCase) >= 0) return child.gameObject;
+                }
+            }
+
+            return componentObject;
+        }
+
+        internal static void UpdateOnLinkFromChange(ArmatureLink model, GameObject before, GameObject after) {
+            if (model == null || after == null) return;
+            var skinAfter = HasExternalSkinBoneReference(after.transform);
+            if (before == null || HasExternalSkinBoneReference(before.transform) != skinAfter) {
+                model.alignPosition = model.alignRotation = model.alignScale = skinAfter;
+                model.recursive = skinAfter;
+                model.autoScaleFactor = true;
+                model.scalingFactorPowersOf10Only = true;
+                model.skinRewriteScalingFactor = 1;
+            }
+        }
+
+        private static bool HasExternalSkinBoneReference(Transform obj) {
+            if (obj == null) return false;
+            var avatar = obj.GetComponentInParent<BasisAvatar>();
+            var root = avatar != null ? avatar.transform : obj.root;
+            foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) {
+                if (skin == null || skin.transform.IsChildOf(obj)) continue;
+                if (skin.rootBone != null && skin.rootBone.IsChildOf(obj)) return true;
+                if (skin.bones != null && skin.bones.Any(bone => bone != null && bone.IsChildOf(obj))) return true;
+            }
+            return false;
+        }
+
+        private static string GetPath(Transform child, Transform root) {
+            if (child == null || root == null || child == root) return string.Empty;
+            var names = new Stack<string>();
+            var current = child;
+            while (current != null && current != root) {
+                names.Push(current.name);
+                current = current.parent;
+            }
+            return current == root ? string.Join("/", names) : string.Empty;
+        }
     }
 
     [CustomEditor(typeof(VRCFury), true)]
     internal sealed class BasisVrcfuryAuthoringEditor : UnityEditor.Editor {
-        public override void OnInspectorGUI() {
+        private bool advancedOptions;
+        private bool superAdvancedOptions;
+        private bool forceAdvancedLinkTargets;
+        private GameObject lastPropBone;
+
+        private void OnEnable() {
+            if (target is VRCFury fury && fury.content is ArmatureLink model) lastPropBone = model.propBone;
+        }
+
+        public override VisualElement CreateInspectorGUI() {
+            var root = new VisualElement();
+            root.Add(BasisVrcfuryHeader.Create(GetFeatureTitle()));
+            root.Add(new IMGUIContainer(DrawInspector));
+            return root;
+        }
+
+        private string GetFeatureTitle() {
+            if (!(target is VRCFury fury) || fury.content == null) return "VRCFury";
+            if (fury.content is ArmatureLink) return "Armature Link";
+            if (fury.content is BlendshapeOptimizer) return "Blendshape Optimizer";
+            return ObjectNames.NicifyVariableName(fury.content.GetType().Name);
+        }
+
+        private void DrawInspector() {
             serializedObject.Update();
             var fury = (VRCFury)target;
             var content = serializedObject.FindProperty("content");
 
-            EditorGUILayout.LabelField("VRCFury for BasisVR", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(
-                "Basis-only authoring UI is active. Armature Link and Blendshape Optimizer are currently supported by the auto-shim.",
-                MessageType.Info
-            );
-
             if (fury.content == null) {
-                DrawFeatureChooser(fury);
+                EditorGUILayout.HelpBox(
+                    "This VRCFury component has no feature configured. VRCFury normally creates feature components from Add Component > VRCFury.",
+                    MessageType.Error
+                );
+                if (GUILayout.Button("Armature Link")) SetFeature(new ArmatureLink { propBone = fury.gameObject });
+                if (GUILayout.Button("Blendshape Optimizer")) SetFeature(new BlendshapeOptimizer());
                 serializedObject.ApplyModifiedProperties();
                 return;
             }
 
-            EditorGUILayout.Space();
-            if (fury.content is ArmatureLink) {
-                DrawArmatureLink(content);
+            if (fury.content is ArmatureLink armatureLink) {
+                DrawArmatureLink(content, armatureLink);
             } else if (fury.content is BlendshapeOptimizer) {
                 DrawBlendshapeOptimizer();
             } else {
-                DrawUnsupported(content, fury.content);
+                EditorGUILayout.HelpBox(
+                    "This VRCFury feature is preserved for source-avatar compatibility, but the Basis compatibility layer does not currently provide its original custom editor/build implementation.",
+                    MessageType.Warning
+                );
+                EditorGUILayout.PropertyField(content, true);
             }
 
             serializedObject.ApplyModifiedProperties();
-
-            EditorGUILayout.Space();
-            if (GUILayout.Button("Remove VRCFury Feature")) {
-                Undo.DestroyObjectImmediate(fury);
-                GUIUtility.ExitGUI();
-            }
         }
 
-        private static void DrawFeatureChooser(VRCFury fury) {
-            EditorGUILayout.HelpBox("This VRCFury component has no feature yet.", MessageType.Warning);
-            if (GUILayout.Button("Armature Link")) {
-                Undo.RecordObject(fury, "Set VRCFury Armature Link");
-                fury.content = new ArmatureLink {
-                    propBone = fury.gameObject,
-                    recursive = true,
-                    alignPosition = true,
-                    alignRotation = true,
-                    alignScale = true
-                };
-                EditorUtility.SetDirty(fury);
-                VRCFury.MarkDirty(fury);
-                GUIUtility.ExitGUI();
-            }
-            if (GUILayout.Button("Blendshape Optimizer")) {
-                Undo.RecordObject(fury, "Set VRCFury Blendshape Optimizer");
-                fury.content = new BlendshapeOptimizer();
-                EditorUtility.SetDirty(fury);
-                VRCFury.MarkDirty(fury);
-                GUIUtility.ExitGUI();
-            }
+        private void SetFeature(FeatureModel feature) {
+            Undo.RecordObject(target, "Set VRCFury Feature");
+            var property = serializedObject.FindProperty("content");
+            property.managedReferenceValue = feature;
+            serializedObject.ApplyModifiedProperties();
+            EditorUtility.SetDirty(target);
+            VRCFury.MarkDirty((VRCFury)target);
         }
 
-        private static void DrawArmatureLink(SerializedProperty content) {
-            EditorGUILayout.LabelField("Armature Link", EditorStyles.boldLabel);
+        private void DrawArmatureLink(SerializedProperty prop, ArmatureLink model) {
             EditorGUILayout.HelpBox(
-                "Attach this feature to the clothing/prop armature root. During the Basis build, matching bones are rebound to the avatar armature on the temporary build clone.",
-                MessageType.None
+                "This feature will attach a prop (with or without an armature) to the avatar. If 'Link From' is an armature matching the avatar's, the armatures will be merged and the extra bones will not count toward performance rank.",
+                MessageType.Info
             );
 
-            Draw(content, "propBone", "Prop Armature Root");
-            Draw(content, "linkTo", "Link To", true);
-            Draw(content, "recursive", "Match Armature Recursively");
-            Draw(content, "removeBoneSuffix", "Remove Bone Suffix");
+            var propBoneProp = prop.FindPropertyRelative("propBone");
+            EditorGUI.BeginChangeCheck();
+            EditorGUILayout.PropertyField(
+                propBoneProp,
+                new GUIContent(
+                    "Link From (Prop / Clothing)",
+                    "For clothing, this should be the Hips bone in the clothing's Armature (or the main bone if it doesn't have Hips). For non-clothing objects, this should be the object you want moved."
+                )
+            );
+            if (EditorGUI.EndChangeCheck()) {
+                serializedObject.ApplyModifiedProperties();
+                var newValue = propBoneProp.objectReferenceValue as GameObject;
+                if (lastPropBone != newValue) {
+                    BasisVrcfuryAuthoringMenus.UpdateOnLinkFromChange(model, lastPropBone, newValue);
+                    EditorUtility.SetDirty(target);
+                    serializedObject.Update();
+                    lastPropBone = newValue;
+                }
+            }
 
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Alignment", EditorStyles.boldLabel);
-            Draw(content, "alignPosition", "Align Position");
-            Draw(content, "alignRotation", "Align Rotation");
-            Draw(content, "alignScale", "Align Scale");
-            Draw(content, "autoScaleFactor", "Automatic Scale Factor");
-            Draw(content, "scalingFactorPowersOf10Only", "Scale Factor Powers Of 10 Only");
-            Draw(content, "skinRewriteScalingFactor", "Scale Factor");
-            Draw(content, "forceOneWorldScale", "Force World Scale To One");
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("Link To (Avatar):", EditorStyles.boldLabel);
+            var linkTo = prop.FindPropertyRelative("linkTo");
+            var simpleLinkToMode = IsSimpleLinkTo(linkTo) && !forceAdvancedLinkTargets;
+            if (simpleLinkToMode) {
+                EditorGUILayout.PropertyField(linkTo.GetArrayElementAtIndex(0).FindPropertyRelative("bone"), GUIContent.none);
+            } else {
+                DrawAdvancedLinkTargets(linkTo);
+            }
 
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Advanced", EditorStyles.boldLabel);
-            Draw(content, "removeParentConstraints", "Remove Parent Constraints");
-            Draw(content, "forceMergedName", "Force Merged Name");
+            EditorGUILayout.Space(2);
+            advancedOptions = EditorGUILayout.Foldout(advancedOptions, "Advanced Options", true);
+            if (!advancedOptions) return;
+
+            EditorGUI.indentLevel++;
+            DrawSectionHeader("Search / Matching");
+            if (IsSimpleLinkTo(linkTo) && !forceAdvancedLinkTargets) {
+                if (GUILayout.Button("Enable Advanced Link Target Mode")) forceAdvancedLinkTargets = true;
+            }
+
+            EditorGUILayout.PropertyField(
+                prop.FindPropertyRelative("recursive"),
+                new GUIContent("Recursive", "If enabled, child objects with matching object names on the avatar will also be linked")
+            );
+            EditorGUILayout.PropertyField(
+                prop.FindPropertyRelative("removeBoneSuffix"),
+                new GUIContent(
+                    "Ignore name suffix/prefix",
+                    "If set, this substring will be ignored when matching object names against the avatar. If empty, the suffix is predicted from the difference between the root bone names."
+                )
+            );
+
+            DrawSectionHeader("Transform Alignment", "Snap merged objects to the existing transform on the avatar");
+            EditorGUILayout.PropertyField(prop.FindPropertyRelative("alignPosition"), new GUIContent("Align Position"));
+            EditorGUILayout.PropertyField(prop.FindPropertyRelative("alignRotation"), new GUIContent("Align Rotation"));
+            var alignScale = prop.FindPropertyRelative("alignScale");
+            EditorGUILayout.PropertyField(alignScale, new GUIContent("Align Scale"));
+
+            if (alignScale.boolValue) {
+                EditorGUI.indentLevel++;
+                var recursive = prop.FindPropertyRelative("recursive").boolValue;
+                var autoScale = prop.FindPropertyRelative("autoScaleFactor");
+                if (recursive) {
+                    EditorGUILayout.PropertyField(
+                        autoScale,
+                        new GUIContent(
+                            "Automatic Scale Multiplier",
+                            "Uses the Link From object's world scale divided by the Link To object's world scale."
+                        )
+                    );
+                    if (autoScale.boolValue) {
+                        EditorGUILayout.PropertyField(
+                            prop.FindPropertyRelative("scalingFactorPowersOf10Only"),
+                            new GUIContent("Restrict multiplier to powers of 10")
+                        );
+                    } else {
+                        EditorGUILayout.PropertyField(prop.FindPropertyRelative("skinRewriteScalingFactor"), new GUIContent("Multiplier"));
+                    }
+                } else {
+                    EditorGUILayout.PropertyField(prop.FindPropertyRelative("skinRewriteScalingFactor"), new GUIContent("Multiplier"));
+                }
+                EditorGUI.indentLevel--;
+            }
+
+            superAdvancedOptions = EditorGUILayout.Foldout(superAdvancedOptions, "Super Advanced Options", true);
+            if (superAdvancedOptions) {
+                EditorGUI.indentLevel++;
+                EditorGUILayout.HelpBox("Danger, changing these options may break things.", MessageType.Warning);
+                EditorGUILayout.PropertyField(
+                    prop.FindPropertyRelative("removeParentConstraints"),
+                    new GUIContent("Remove parent constraints from merged objects")
+                );
+                EditorGUILayout.PropertyField(
+                    prop.FindPropertyRelative("forceMergedName"),
+                    new GUIContent(
+                        "Force Merged Name",
+                        "Force the name of the object at the merged target location. Offset animations and toggles for the merged object may not work when this is used."
+                    )
+                );
+                EditorGUILayout.PropertyField(
+                    prop.FindPropertyRelative("forceOneWorldScale"),
+                    new GUIContent("Force world scale to 1,1,1")
+                );
+                EditorGUI.indentLevel--;
+            }
+            EditorGUI.indentLevel--;
+
+            DrawArmatureWarnings(model);
+        }
+
+        private static bool IsSimpleLinkTo(SerializedProperty linkTo) {
+            if (linkTo == null || !linkTo.isArray || linkTo.arraySize != 1) return false;
+            var entry = linkTo.GetArrayElementAtIndex(0);
+            return entry.FindPropertyRelative("useBone").boolValue
+                   && !entry.FindPropertyRelative("useObj").boolValue
+                   && string.IsNullOrWhiteSpace(entry.FindPropertyRelative("offset").stringValue);
+        }
+
+        private static void DrawAdvancedLinkTargets(SerializedProperty linkTo) {
+            EditorGUILayout.HelpBox("If multiple targets are provided, the first valid target found on the avatar will be used.", MessageType.Info);
+            using (new EditorGUILayout.HorizontalScope()) {
+                EditorGUILayout.LabelField("Target Object", EditorStyles.miniBoldLabel);
+                EditorGUILayout.LabelField("Offset Path", EditorStyles.miniBoldLabel);
+                GUILayout.Space(22);
+            }
+
+            for (var i = 0; i < linkTo.arraySize; i++) {
+                var entry = linkTo.GetArrayElementAtIndex(i);
+                var useBone = entry.FindPropertyRelative("useBone");
+                var useObj = entry.FindPropertyRelative("useObj");
+                var bone = entry.FindPropertyRelative("bone");
+                var obj = entry.FindPropertyRelative("obj");
+                var offset = entry.FindPropertyRelative("offset");
+
+                using (new EditorGUILayout.HorizontalScope()) {
+                    if (useObj.boolValue) {
+                        EditorGUILayout.PropertyField(obj, GUIContent.none);
+                    } else if (useBone.boolValue) {
+                        EditorGUILayout.PropertyField(bone, GUIContent.none);
+                    } else {
+                        EditorGUILayout.LabelField("Avatar Root");
+                    }
+                    EditorGUILayout.PropertyField(offset, GUIContent.none);
+                    if (GUILayout.Button("−", GUILayout.Width(22))) {
+                        linkTo.DeleteArrayElementAtIndex(i);
+                        break;
+                    }
+                }
+            }
+
+            if (GUILayout.Button("+", GUILayout.Width(28))) {
+                var menu = new GenericMenu();
+                menu.AddItem(new GUIContent("Bone"), false, () => AddLinkTarget(linkTo, true, false));
+                menu.AddItem(new GUIContent("GameObject"), false, () => AddLinkTarget(linkTo, false, true));
+                menu.AddItem(new GUIContent("Avatar Root"), false, () => AddLinkTarget(linkTo, false, false));
+                menu.ShowAsContext();
+            }
+        }
+
+        private static void AddLinkTarget(SerializedProperty linkTo, bool useBone, bool useObj) {
+            linkTo.serializedObject.Update();
+            var index = linkTo.arraySize;
+            linkTo.InsertArrayElementAtIndex(index);
+            var entry = linkTo.GetArrayElementAtIndex(index);
+            entry.FindPropertyRelative("useBone").boolValue = useBone;
+            entry.FindPropertyRelative("bone").enumValueIndex = (int)HumanBodyBones.Hips;
+            entry.FindPropertyRelative("useObj").boolValue = useObj;
+            entry.FindPropertyRelative("obj").objectReferenceValue = null;
+            entry.FindPropertyRelative("offset").stringValue = string.Empty;
+            linkTo.serializedObject.ApplyModifiedProperties();
+        }
+
+        private void DrawArmatureWarnings(ArmatureLink model) {
+            if (model.propBone == null) return;
+            var guess = BasisVrcfuryAuthoringMenus.GuessLinkFrom(model.propBone);
+            if (guess != null && guess != model.propBone) {
+                EditorGUILayout.HelpBox(
+                    "It appears this object contains clothing with an Armature and Hips bone. If you are linking clothing, Link From should usually be that Hips object rather than the main clothing object.",
+                    MessageType.Warning
+                );
+            }
         }
 
         private static void DrawBlendshapeOptimizer() {
-            EditorGUILayout.LabelField("Blendshape Optimizer", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "During the Basis build, blendshapes that are not required by Basis face animation or Vixxy are baked into the mesh at their authored weights. Required blendshapes remain live and their Basis indices are remapped by name.",
-                MessageType.None
+                "This feature will automatically bake all non-animated blendshapes into the mesh, saving VRAM for free!",
+                MessageType.Info
             );
         }
 
-        private static void DrawUnsupported(SerializedProperty content, FeatureModel feature) {
-            EditorGUILayout.LabelField(feature.GetType().Name, EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(
-                "This VRCFury feature is preserved for source-avatar compatibility, but this Basis auto-shim does not currently provide a supported authoring/build implementation for it. Its serialized data is shown below for inspection.",
-                MessageType.Warning
-            );
-            EditorGUILayout.PropertyField(content, true);
+        private static void DrawSectionHeader(string title, string subtitle = null) {
+            EditorGUILayout.Space(6);
+            EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
+            if (!string.IsNullOrWhiteSpace(subtitle)) EditorGUILayout.LabelField(subtitle, EditorStyles.wordWrappedMiniLabel);
+        }
+    }
+
+    internal static class BasisVrcfuryHeader {
+        internal static VisualElement Create(string title) {
+            var anchor = new VisualElement();
+            anchor.RegisterCallback<AttachToPanelEvent>(_ => AttachOverlay(anchor, title));
+            return anchor;
         }
 
-        private static void Draw(SerializedProperty parent, string name, string label, bool includeChildren = false) {
-            var property = parent?.FindPropertyRelative(name);
-            if (property != null) EditorGUILayout.PropertyField(property, new GUIContent(label), includeChildren);
+        private static void AttachOverlay(VisualElement anchor, string title) {
+            var inspector = FindInspector(anchor);
+            if (inspector == null) {
+                anchor.Add(CreateInlineHeader(title));
+                return;
+            }
+
+            var parent = inspector.parent;
+            if (parent == null) {
+                anchor.Add(CreateInlineHeader(title));
+                return;
+            }
+
+            var headerIndex = -1;
+            var index = 0;
+            foreach (var child in parent.Children()) {
+                if (!string.IsNullOrEmpty(child.name) && child.name.EndsWith("Header", StringComparison.Ordinal)) {
+                    headerIndex = index;
+                    break;
+                }
+                index++;
+            }
+            if (headerIndex < 0) {
+                anchor.Add(CreateInlineHeader(title));
+                return;
+            }
+
+            var overlay = CreateOverlayHeader(title);
+            parent.Insert(headerIndex + 1, overlay);
+            anchor.RegisterCallback<DetachFromPanelEvent>(_ => overlay.parent?.Remove(overlay));
+        }
+
+        private static VisualElement FindInspector(VisualElement element) {
+            for (var current = element; current != null; current = current.parent) {
+                if (current is InspectorElement) return current;
+            }
+            return null;
+        }
+
+        private static VisualElement CreateInlineHeader(string title) {
+            var row = CreateHeaderRow(title);
+            row.style.marginTop = 4;
+            row.style.marginBottom = 6;
+            return row;
+        }
+
+        private static VisualElement CreateOverlayHeader(string title) {
+            var area = new VisualElement {
+                pickingMode = PickingMode.Ignore,
+                style = {
+                    height = 20,
+                    width = Length.Percent(100),
+                    top = -21,
+                    position = Position.Absolute
+                }
+            };
+            var row = CreateHeaderRow(title);
+            row.style.marginLeft = 18;
+            row.style.marginRight = 60;
+            area.Add(row);
+            return area;
+        }
+
+        private static VisualElement CreateHeaderRow(string title) {
+            var background = EditorGUIUtility.isProSkin
+                ? new Color32(61, 61, 61, 255)
+                : new Color32(194, 194, 194, 255);
+            var row = new VisualElement {
+                pickingMode = PickingMode.Ignore,
+                style = {
+                    flexDirection = FlexDirection.Row,
+                    height = 20,
+                    backgroundColor = background
+                }
+            };
+            var badge = new Label("VRCFury") {
+                pickingMode = PickingMode.Ignore,
+                style = {
+                    color = new Color(0.8f, 0.4f, 0f),
+                    backgroundColor = new Color(0.05f, 0.05f, 0.05f),
+                    paddingLeft = 6,
+                    paddingRight = 6,
+                    unityTextAlign = TextAnchor.MiddleCenter,
+                    unityFontStyleAndWeight = FontStyle.Bold
+                }
+            };
+            row.Add(badge);
+            var name = new Label(title) {
+                pickingMode = PickingMode.Ignore,
+                style = {
+                    unityTextAlign = TextAnchor.MiddleLeft,
+                    unityFontStyleAndWeight = FontStyle.Bold,
+                    paddingLeft = 6,
+                    flexGrow = 1
+                }
+            };
+            row.Add(name);
+            return row;
         }
     }
 }
