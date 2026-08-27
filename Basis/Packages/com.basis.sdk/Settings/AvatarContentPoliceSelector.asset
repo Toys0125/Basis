@@ -172,4 +172,6 @@ MonoBehaviour:
   - HVR.Vixxy.HVRVixxyControl
   - HVR.Vixxy.HVRVixxyMenuItem
   - HVR.Vixxy.HVRVixxyAggregator
+  - HVR.Vixxy.HVRVixxyWorldLock
+  - HVR.Vixxy.HVRVixxyJiggleReset
   - HVR.Basis.Comms.HVRMeasure

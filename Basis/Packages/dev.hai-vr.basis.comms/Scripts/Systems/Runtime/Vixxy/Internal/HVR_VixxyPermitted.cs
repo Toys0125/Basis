@@ -55,6 +55,8 @@ namespace HVR.Vixxy
             "UnityEngine.Rendering.Universal.DecalProjector",
             // Jiggle
             "GatorDragonGames.JigglePhysics.JiggleRig",
+            "HVR.Vixxy.HVRVixxyWorldLock",
+            "HVR.Vixxy.HVRVixxyJiggleReset",
             // UI
             "TMPro.TextMeshPro",
             "TMPro.TextMeshProUGUI",
@@ -98,6 +100,10 @@ namespace HVR.Vixxy
             (
                 new List<string> { typeof(Transform).FullName },
                 new List<string> { "rotation", "localRotation", "position", "localPosition", "localScale" }
+            ),
+            (
+                new List<string> { "HVR.Vixxy.HVRVixxyJiggleReset" },
+                new List<string> { "Active" }
             )
         };
 
@@ -117,6 +123,7 @@ namespace HVR.Vixxy
                 or HVRVixxyPropertyVector4
                 or HVRVixxyPropertyVector3
                 or HVRVixxyPropertyMaterial
+                or HVRVixxyPropertyMaterialSlot
                 or HVRVixxyPropertyQuaternion
                 or HVRVixxyPropertyBool
                 or HVRVixxyPropertyColor

@@ -30,6 +30,77 @@ namespace HVR.Basis.Comms
 
                 [NonSerialized] public static readonly HVRSystemAddress VoiceGain = new() { address = UserAddressPrefix + nameof(VoiceGain), localizationName = "address.system.user.voicegain", min = 0f, max = 1f };
 
+                public enum HandGestureSign
+                {
+                    Neutral = 0,
+                    Fist = 1,
+                    HandOpen = 2,
+                    FingerPoint = 3,
+                    Victory = 4,
+                    RockNRoll = 5,
+                    HandGun = 6,
+                    ThumbsUp = 7
+                }
+
+                public static class Gesture
+                {
+                    [NonSerialized] public const string GestureAddressPrefix = UserAddressPrefix + "Gesture/";
+                    [NonSerialized] public static readonly HVRSystemAddress Left = new() { address = GestureAddressPrefix + "Left", min = 0f, max = 7f };
+                    [NonSerialized] public static readonly HVRSystemAddress Right = new() { address = GestureAddressPrefix + "Right", min = 0f, max = 7f };
+                    [NonSerialized] public static readonly HVRSystemAddress Pair = new() { address = GestureAddressPrefix + "Pair", min = 0f, max = 63f };
+                    [NonSerialized] public static readonly HVRSystemAddress LeftWeight = new() { address = GestureAddressPrefix + "LeftWeight", min = 0f, max = 1f };
+                    [NonSerialized] public static readonly HVRSystemAddress RightWeight = new() { address = GestureAddressPrefix + "RightWeight", min = 0f, max = 1f };
+
+                    private static readonly HVRSystemAddress[] LeftSigns = BuildSigns("Left/");
+                    private static readonly HVRSystemAddress[] RightSigns = BuildSigns("Right/");
+                    private static readonly HVRSystemAddress[] EitherSigns = BuildSigns("Either/");
+                    private static readonly HVRSystemAddress[,] ComboSigns = BuildCombos();
+
+                    public static HVRSystemAddress ForLeft(HandGestureSign sign) => LeftSigns[(int)sign];
+                    public static HVRSystemAddress ForRight(HandGestureSign sign) => RightSigns[(int)sign];
+                    public static HVRSystemAddress ForEither(HandGestureSign sign) => EitherSigns[(int)sign];
+                    public static HVRSystemAddress ForCombo(HandGestureSign left, HandGestureSign right) => ComboSigns[(int)left, (int)right];
+                    public static string WeightForLeft(HandGestureSign sign) => ForLeft(sign).address + "/Weight";
+                    public static string WeightForRight(HandGestureSign sign) => ForRight(sign).address + "/Weight";
+                    public static string WeightForEither(HandGestureSign sign) => ForEither(sign).address + "/Weight";
+                    public static string WeightForCombo(HandGestureSign left, HandGestureSign right) => ForCombo(left, right).address + "/Weight";
+
+                    private static HVRSystemAddress[] BuildSigns(string prefix)
+                    {
+                        return Enum.GetValues(typeof(HandGestureSign)).Cast<HandGestureSign>()
+                            .Select(sign => new HVRSystemAddress {
+                                address = GestureAddressPrefix + prefix + sign,
+                                min = 0f,
+                                max = 1f
+                            })
+                            .ToArray();
+                    }
+
+                    private static HVRSystemAddress[,] BuildCombos()
+                    {
+                        var signs = Enum.GetValues(typeof(HandGestureSign)).Cast<HandGestureSign>().ToArray();
+                        var result = new HVRSystemAddress[signs.Length, signs.Length];
+                        foreach (var left in signs)
+                        foreach (var right in signs)
+                            result[(int)left, (int)right] = new HVRSystemAddress {
+                                address = GestureAddressPrefix + "Combo/" + left + "/" + right,
+                                min = 0f,
+                                max = 1f
+                            };
+                        return result;
+                    }
+
+                    public static HVRSystemAddress[] All()
+                    {
+                        var output = new List<HVRSystemAddress> { Left, Right, Pair, LeftWeight, RightWeight };
+                        output.AddRange(LeftSigns);
+                        output.AddRange(RightSigns);
+                        output.AddRange(EitherSigns);
+                        foreach (var combo in ComboSigns) output.Add(combo);
+                        return output.ToArray();
+                    }
+                }
+
                 public static class Viseme
                 {
                     [NonSerialized] public const string VisemeAddressPrefix = UserAddressPrefix + "Viseme/";
@@ -54,7 +125,7 @@ namespace HVR.Basis.Comms
                     public static HVRSystemAddress[] All() => new[] { sil, PP, FF, TH, DD, kk, CH, SS, nn, RR, aa, E, ih, oh, ou };
                 }
 
-                public static HVRSystemAddress[] All() => Viseme.All().Concat(new [] { VoiceGain }).ToArray();
+                public static HVRSystemAddress[] All() => Viseme.All().Concat(Gesture.All()).Concat(new [] { VoiceGain }).ToArray();
             }
 
             /// System addresses tied specifically to the scene that the user is in.

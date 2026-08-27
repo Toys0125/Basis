@@ -122,6 +122,7 @@ namespace HVR.Vixxy
             // UGC Rule: Sanitize arrays.
             activations ??= Array.Empty<HVRVixxyActivation>();
             subjects ??= Array.Empty<HVRVixxySubject>();
+            addressDrives ??= Array.Empty<HVRVixxyAddressDrive>();
             filters ??= new List<HVRVixxyFilterBase>();
             HVR_VixxyUtil.SanitizeFieldOfTypeSerializeReference(filters);
             if (transition == HVRVixxyTransitionMode.None)
@@ -149,6 +150,7 @@ namespace HVR.Vixxy
                 Filters = newFilters;
             }
             BakeControlSubjectsAndActivationsForRuntime();
+            BakeAddressDrivesForRuntime();
 
             if (_avatarNullable != null)
             {
@@ -254,6 +256,51 @@ namespace HVR.Vixxy
             }
 
             BakeControlSubjectsAndActivationsForRuntime();
+        }
+
+        private void BakeAddressDrivesForRuntime()
+        {
+            foreach (var drive in addressDrives)
+            {
+                if (drive == null || !drive.address.TryResolvePath(out var targetAddress) || string.IsNullOrWhiteSpace(targetAddress))
+                {
+                    if (drive != null) drive.IsApplicable = false;
+                    continue;
+                }
+
+                drive.choices ??= Array.Empty<float>();
+                drive.applyChoices ??= Array.Empty<bool>();
+                if (drive.choices.Length != ActualNumberOfChoices)
+                {
+                    var previous = drive.choices;
+                    Array.Resize(ref drive.choices, ActualNumberOfChoices);
+                    for (var i = previous.Length; i < drive.choices.Length; i++)
+                    {
+                        drive.choices[i] = previous.Length > 0 ? previous[^1] : 0f;
+                    }
+                }
+                if (drive.applyChoices.Length != ActualNumberOfChoices)
+                {
+                    var previous = drive.applyChoices;
+                    Array.Resize(ref drive.applyChoices, ActualNumberOfChoices);
+                    for (var i = previous.Length; i < drive.applyChoices.Length; i++)
+                    {
+                        drive.applyChoices[i] = previous.Length > 0 ? previous[^1] : true;
+                    }
+                }
+
+                drive.AddressId = HVRAddress.AddressToId(targetAddress);
+                drive.IsApplicable = drive.AddressId != AddressId;
+                if (drive.IsApplicable && drive.networked && !HVRAddress.IsSystemAddressName(targetAddress) && !orchestrator.IsMeasurementAddress(drive.AddressId))
+                {
+                    var min = drive.choices.Length > 0 ? drive.choices.Min() : 0f;
+                    var max = drive.choices.Length > 0 ? drive.choices.Max() : 0f;
+                    min = Mathf.Min(0f, min);
+                    max = Mathf.Max(0f, max);
+                    var def = drive.choices.Length > 0 ? drive.choices[0] : 0f;
+                    orchestrator.RequireNetworked(drive.AddressId, HVRVixxyNetworkingType.Automatic, def, min, max);
+                }
+            }
         }
 
         private void BakeControlSubjectsAndActivationsForRuntime()
@@ -432,6 +479,7 @@ namespace HVR.Vixxy
 
             var affectsMaterialPropertyBlock = property.variant == HVRVixxyPropertyVariant.MaterialProperty;
             var affectsBlendShape = property.variant == HVRVixxyPropertyVariant.BlendShape;
+            var affectsRendererMaterialSlot = property.variant == HVRVixxyPropertyVariant.RendererMaterialSlot;
 
             // UGC: Detect misconfiguration oddities
             if (affectsMaterialPropertyBlock && !typeof(Renderer).IsAssignableFrom(foundType))
@@ -441,6 +489,10 @@ namespace HVR.Vixxy
             if (affectsBlendShape && foundType != typeof(SkinnedMeshRenderer))
             {
                 return HVRVixxyPropertyBakeResult.BlendShapeCanOnlyBeUsedOnSkinnedMeshRenderers;
+            }
+            if (affectsRendererMaterialSlot && !typeof(Renderer).IsAssignableFrom(foundType))
+            {
+                return HVRVixxyPropertyBakeResult.RendererMaterialSlotCanOnlyBeUsedOnRenderers;
             }
 
             var useSkinnedMeshRendererLeniency = affectsMaterialPropertyBlock && (foundType == typeof(SkinnedMeshRenderer) || foundType == typeof(MeshRenderer));
@@ -468,6 +520,21 @@ namespace HVR.Vixxy
             {
                 property.ShaderMaterialProperty = Shader.PropertyToID(property.propertyName);
                 property.KindMarker = HVRKindMarker.AffectsMaterialPropertyBlock;
+            }
+            else if (affectsRendererMaterialSlot)
+            {
+                if (property is not HVRVixxyPropertyMaterialSlot materialSlot || materialSlot.slot < 0)
+                {
+                    return HVRVixxyPropertyBakeResult.InvalidRendererMaterialSlot;
+                }
+
+                foundComponents.RemoveAll(component =>
+                {
+                    var renderer = component as Renderer;
+                    return renderer == null || materialSlot.slot >= renderer.sharedMaterials.Length;
+                });
+                if (foundComponents.Count == 0) return HVRVixxyPropertyBakeResult.InvalidRendererMaterialSlot;
+                property.KindMarker = HVRKindMarker.RendererMaterialSlot;
             }
             else if (affectsBlendShape)
             {
@@ -642,6 +709,12 @@ namespace HVR.Vixxy
 
         public void Actuate()
         {
+            if (WasAvatarReadyApplied)
+            {
+                if (locality == HVRVixxyLocality.WearerOnly && !IsWearer) return;
+                if (locality == HVRVixxyLocality.RemoteOnly && IsWearer) return;
+            }
+
             if (!HasMoreThanTwoChoices)
             {
                 // FIXME: We really need to figure out how actuators sample values from their dependents.
@@ -649,9 +722,30 @@ namespace HVR.Vixxy
                 var active01 = linear01;
                 ActuateActivations(active01);
                 ActuateSubjects(active01, HVRVixxyPropertyBase.InactiveIndex, HVRVixxyPropertyBase.ActiveIndex);
+                ActuateAddressDrives(active01, HVRVixxyPropertyBase.InactiveIndex, HVRVixxyPropertyBase.ActiveIndex);
             }
             else
             {
+                if (snapToClosestChoice)
+                {
+                    var closest = ChoiceIndexOrderedByValue[0];
+                    var closestDistance = Mathf.Abs(_actuatedValue - choices[closest].value);
+                    for (var i = 1; i < ChoiceIndexOrderedByValue.Count; i++)
+                    {
+                        var candidate = ChoiceIndexOrderedByValue[i];
+                        var distance = Mathf.Abs(_actuatedValue - choices[candidate].value);
+                        if (distance < closestDistance)
+                        {
+                            closest = candidate;
+                            closestDistance = distance;
+                        }
+                    }
+                    SetActivation(closest);
+                    SetSubjects(closest);
+                    ActuateAddressDrives(0f, closest, closest);
+                    return;
+                }
+
                 if (!InterpolateFromChoiceApplies)
                 {
                     var lerpFromChoiceIndex = -1;
@@ -690,11 +784,13 @@ namespace HVR.Vixxy
                         var amount01 = Mathf.InverseLerp(choices[lerpFromChoiceIndex].value, choices[lerpToChoiceIndex].value, _actuatedValue);
                         ActuateActivationsBasedOnChoices(amount01, lerpFromChoiceIndex, lerpToChoiceIndex);
                         ActuateSubjects(amount01, lerpFromChoiceIndex, lerpToChoiceIndex);
+                        ActuateAddressDrives(amount01, lerpFromChoiceIndex, lerpToChoiceIndex);
                     }
                     else
                     {
                         SetActivation(lerpFromChoiceIndex);
                         SetSubjects(lerpFromChoiceIndex);
+                        ActuateAddressDrives(0f, lerpFromChoiceIndex, lerpFromChoiceIndex);
                     }
                 }
                 else
@@ -707,7 +803,37 @@ namespace HVR.Vixxy
 
                     ActuateActivationsBasedOnChoices(InterpolateFromChoiceAmount01, InterpolateFromChoice, outValue);
                     ActuateSubjects(InterpolateFromChoiceAmount01, InterpolateFromChoice, outValue);
+                    ActuateAddressDrives(InterpolateFromChoiceAmount01, InterpolateFromChoice, outValue);
                 }
+            }
+        }
+
+        private void ActuateAddressDrives(float active01, int inactiveIndex, int activeIndex)
+        {
+            foreach (var drive in addressDrives)
+            {
+                if (drive == null || !drive.IsApplicable) continue;
+
+                int selectedIndex;
+                float value;
+                if (inactiveIndex == activeIndex)
+                {
+                    selectedIndex = inactiveIndex;
+                    value = drive.choices[selectedIndex];
+                }
+                else if (drive.interpolate && drive.applyChoices[inactiveIndex] && drive.applyChoices[activeIndex])
+                {
+                    selectedIndex = active01 >= 0.5f ? activeIndex : inactiveIndex;
+                    value = Mathf.Lerp(drive.choices[inactiveIndex], drive.choices[activeIndex], active01);
+                }
+                else
+                {
+                    selectedIndex = active01 >= 0.5f ? activeIndex : inactiveIndex;
+                    value = drive.choices[selectedIndex];
+                }
+
+                if (!drive.applyChoices[selectedIndex]) continue;
+                _variableStore.SubmitOrDefineDefaultValue(drive.AddressId, value);
             }
         }
 
@@ -857,6 +983,19 @@ namespace HVR.Vixxy
                             orchestrator.StagePropertyBlock(bakedObject);
                             break;
                         }
+                        case HVRKindMarker.RendererMaterialSlot:
+                        {
+                            if (property is HVRVixxyPropertyMaterialSlot materialSlot && component is Renderer renderer)
+                            {
+                                var materials = renderer.sharedMaterials;
+                                if (materialSlot.slot >= 0 && materialSlot.slot < materials.Length)
+                                {
+                                    materials[materialSlot.slot] = resolvedValue as Material;
+                                    renderer.sharedMaterials = materials;
+                                }
+                            }
+                            break;
+                        }
                         case HVRKindMarker.BlendShape:
                         {
                             if (resolvedValue is float lerpFloatValue)
@@ -968,6 +1107,7 @@ namespace HVR.Vixxy
         Undefined,
         AffectsMaterialPropertyBlock,
         BlendShape,
+        RendererMaterialSlot,
         FieldAccess,
         PropertyAccess
     }
@@ -987,6 +1127,8 @@ namespace HVR.Vixxy
         NoObjectsHasThatComponent,
         MaterialPropertyBlockCanOnlyBeUsedOnRenderers,
         BlendShapeCanOnlyBeUsedOnSkinnedMeshRenderers,
+        RendererMaterialSlotCanOnlyBeUsedOnRenderers,
+        InvalidRendererMaterialSlot,
         NoSkinnedMeshRendererHasThisBlendShape,
         NoFieldNorPropertyMatches,
         FieldAccessIsNotPermitted,

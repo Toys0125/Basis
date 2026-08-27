@@ -21,6 +21,9 @@ namespace HVR.Basis.Comms
 
         private HVRBasisBuiltInAddressesVisemeFlags requiredFlags = 0;
         private HVRBasisBuiltInAddressesVisemeFlags aggregatedFlags = 0;
+        private readonly HashSet<int> requiredGestureIds = new();
+        private HashSet<int> aggregatedGestureIds = new();
+        private readonly Dictionary<int, float> lastGestureValues = new();
 
         private HVRAvatarComms _comms;
         private BasisAvatar _avatar;
@@ -89,9 +92,15 @@ namespace HVR.Basis.Comms
             {
                 aggregate |= list[index].requiredFlags;
             }
+            var gestures = new HashSet<int>();
+            for (var index = 0; index < list.Count; index++)
+            {
+                gestures.UnionWith(list[index].requiredGestureIds);
+            }
             for (var index = 0; index < list.Count; index++)
             {
                 list[index].aggregatedFlags = aggregate;
+                list[index].aggregatedGestureIds = gestures;
             }
         }
 
@@ -110,6 +119,7 @@ namespace HVR.Basis.Comms
                 _remoteReceiver = netReceiver;
             }
             ProcessViseme(comms);
+            ProcessGestures(comms);
         }
 
         private void ProcessViseme(HVRAvatarComms comms)
@@ -146,9 +156,188 @@ namespace HVR.Basis.Comms
             return remoteAudioDriver.BasisAudioAndVisemeDriver;
         }
 
+        private readonly struct GesturePose
+        {
+            public readonly float Thumb;
+            public readonly float Index;
+            public readonly float Middle;
+            public readonly float Ring;
+            public readonly float Little;
+
+            public GesturePose(float thumb, float index, float middle, float ring, float little)
+            {
+                Thumb = NormalizeCurl(thumb);
+                Index = NormalizeCurl(index);
+                Middle = NormalizeCurl(middle);
+                Ring = NormalizeCurl(ring);
+                Little = NormalizeCurl(little);
+            }
+
+            public float FistWeight => (Thumb + Index + Middle + Ring + Little) * 0.2f;
+
+            private static float NormalizeCurl(float value) => Mathf.Clamp01((value + 1f) * 0.5f);
+        }
+
+        private void ProcessGestures(HVRAvatarComms comms)
+        {
+            if (comms == null || aggregatedGestureIds.Count == 0) return;
+            var variableStore = comms.VariableStore;
+            if (variableStore == null || !TryGetGesturePoses(out var left, out var right)) return;
+
+            var leftSign = ClassifyGesture(left);
+            var rightSign = ClassifyGesture(right);
+            foreach (var addressId in aggregatedGestureIds)
+            {
+                var address = HVRAddress.ResolveKnownAddressFromId(addressId);
+                if (!TryEvaluateGestureAddress(address, leftSign, rightSign, left.FistWeight, right.FistWeight, out var value)) continue;
+                if (lastGestureValues.TryGetValue(addressId, out var previous) && Mathf.Approximately(previous, value)) continue;
+                variableStore.SubmitOrDefineDefaultValue(addressId, value);
+                lastGestureValues[addressId] = value;
+            }
+        }
+
+        private bool TryGetGesturePoses(out GesturePose left, out GesturePose right)
+        {
+            left = default;
+            right = default;
+            if (_isWearer)
+            {
+                var player = BasisLocalPlayer.Instance;
+                var handDriver = player?.LocalHandDriver;
+                if (handDriver?.LeftHand == null || handDriver.RightHand == null) return false;
+                left = FromFingerPose(handDriver.LeftHand);
+                right = FromFingerPose(handDriver.RightHand);
+                return true;
+            }
+
+            var buffer = _remoteReceiver?.Current;
+            if (buffer == null || !buffer.FingerPercentages.IsCreated || buffer.FingerPercentages.Length < 10) return false;
+            left = new GesturePose(
+                buffer.FingerPercentages[0].x,
+                buffer.FingerPercentages[1].x,
+                buffer.FingerPercentages[2].x,
+                buffer.FingerPercentages[3].x,
+                buffer.FingerPercentages[4].x);
+            right = new GesturePose(
+                buffer.FingerPercentages[5].x,
+                buffer.FingerPercentages[6].x,
+                buffer.FingerPercentages[7].x,
+                buffer.FingerPercentages[8].x,
+                buffer.FingerPercentages[9].x);
+            return true;
+        }
+
+        private static GesturePose FromFingerPose(BasisFingerPose pose)
+        {
+            return new GesturePose(
+                pose.ThumbPercentage.x,
+                pose.IndexPercentage.x,
+                pose.MiddlePercentage.x,
+                pose.RingPercentage.x,
+                pose.LittlePercentage.x);
+        }
+
+        private static HVRAddress.System.User.HandGestureSign ClassifyGesture(GesturePose pose)
+        {
+            var best = HVRAddress.System.User.HandGestureSign.Neutral;
+            var bestScore = GestureScore(pose, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f);
+
+            Consider(HVRAddress.System.User.HandGestureSign.Fist, 1f, 1f, 1f, 1f, 1f);
+            Consider(HVRAddress.System.User.HandGestureSign.HandOpen, 0f, 0f, 0f, 0f, 0f);
+            Consider(HVRAddress.System.User.HandGestureSign.FingerPoint, 1f, 0f, 1f, 1f, 1f);
+            Consider(HVRAddress.System.User.HandGestureSign.Victory, 1f, 0f, 0f, 1f, 1f);
+            Consider(HVRAddress.System.User.HandGestureSign.RockNRoll, 0f, 0f, 1f, 1f, 0f);
+            Consider(HVRAddress.System.User.HandGestureSign.HandGun, 0f, 0f, 1f, 1f, 1f);
+            Consider(HVRAddress.System.User.HandGestureSign.ThumbsUp, 0f, 1f, 1f, 1f, 1f);
+            return best;
+
+            void Consider(HVRAddress.System.User.HandGestureSign sign, float thumb, float index, float middle, float ring, float little)
+            {
+                var score = GestureScore(pose, thumb, index, middle, ring, little);
+                if (score >= bestScore) return;
+                bestScore = score;
+                best = sign;
+            }
+        }
+
+        private static float GestureScore(GesturePose pose, float thumb, float index, float middle, float ring, float little)
+        {
+            var dt = pose.Thumb - thumb;
+            var di = pose.Index - index;
+            var dm = pose.Middle - middle;
+            var dr = pose.Ring - ring;
+            var dl = pose.Little - little;
+            return dt * dt + di * di + dm * dm + dr * dr + dl * dl;
+        }
+
+        private static bool TryEvaluateGestureAddress(
+            string address,
+            HVRAddress.System.User.HandGestureSign left,
+            HVRAddress.System.User.HandGestureSign right,
+            float leftWeight,
+            float rightWeight,
+            out float value)
+        {
+            value = 0f;
+            if (address == HVRAddress.System.User.Gesture.Left.address) { value = (float)left; return true; }
+            if (address == HVRAddress.System.User.Gesture.Right.address) { value = (float)right; return true; }
+            if (address == HVRAddress.System.User.Gesture.Pair.address) { value = (int)left * 8 + (int)right; return true; }
+            if (address == HVRAddress.System.User.Gesture.LeftWeight.address) { value = leftWeight; return true; }
+            if (address == HVRAddress.System.User.Gesture.RightWeight.address) { value = rightWeight; return true; }
+
+            var prefix = HVRAddress.System.User.Gesture.GestureAddressPrefix;
+            if (!address.StartsWith(prefix, StringComparison.Ordinal)) return false;
+            var suffix = address.Substring(prefix.Length);
+            if (suffix.StartsWith("Left/", StringComparison.Ordinal)) {
+                var remainder = suffix.Substring(5);
+                var weighted = remainder.EndsWith("/Weight", StringComparison.Ordinal);
+                if (weighted) remainder = remainder.Substring(0, remainder.Length - 7);
+                if (!TryGestureName(remainder, out var leftExpected)) return false;
+                value = left == leftExpected ? (weighted ? leftWeight : 1f) : 0f;
+                return true;
+            }
+            if (suffix.StartsWith("Right/", StringComparison.Ordinal)) {
+                var remainder = suffix.Substring(6);
+                var weighted = remainder.EndsWith("/Weight", StringComparison.Ordinal);
+                if (weighted) remainder = remainder.Substring(0, remainder.Length - 7);
+                if (!TryGestureName(remainder, out var rightExpected)) return false;
+                value = right == rightExpected ? (weighted ? rightWeight : 1f) : 0f;
+                return true;
+            }
+            if (suffix.StartsWith("Either/", StringComparison.Ordinal)) {
+                var remainder = suffix.Substring(7);
+                var weighted = remainder.EndsWith("/Weight", StringComparison.Ordinal);
+                if (weighted) remainder = remainder.Substring(0, remainder.Length - 7);
+                if (!TryGestureName(remainder, out var eitherExpected)) return false;
+                if (left != eitherExpected && right != eitherExpected) { value = 0f; return true; }
+                value = weighted
+                    ? Mathf.Max(left == eitherExpected ? leftWeight : 0f, right == eitherExpected ? rightWeight : 0f)
+                    : 1f;
+                return true;
+            }
+            if (!suffix.StartsWith("Combo/", StringComparison.Ordinal)) return false;
+            var comboRemainder = suffix.Substring(6);
+            var comboWeighted = comboRemainder.EndsWith("/Weight", StringComparison.Ordinal);
+            if (comboWeighted) comboRemainder = comboRemainder.Substring(0, comboRemainder.Length - 7);
+            var pieces = comboRemainder.Split('/');
+            if (pieces.Length != 2 || !TryGestureName(pieces[0], out var comboLeft) || !TryGestureName(pieces[1], out var comboRight)) return false;
+            if (left != comboLeft || right != comboRight) { value = 0f; return true; }
+            if (!comboWeighted) { value = 1f; return true; }
+            var leftContribution = comboLeft == HVRAddress.System.User.HandGestureSign.Fist ? leftWeight : 0f;
+            var rightContribution = comboRight == HVRAddress.System.User.HandGestureSign.Fist ? rightWeight : 0f;
+            value = Mathf.Max(leftContribution, rightContribution);
+            return true;
+        }
+
+        private static bool TryGestureName(string value, out HVRAddress.System.User.HandGestureSign sign)
+        {
+            return Enum.TryParse(value, false, out sign);
+        }
+
         public void DeclareAllRequired(HashSet<int> systemAddresses)
         {
             requiredFlags = 0;
+            requiredGestureIds.Clear();
             if (systemAddresses.Contains(_addressIds[0])) requiredFlags |= HVRBasisBuiltInAddressesVisemeFlags.sil;
             if (systemAddresses.Contains(_addressIds[1])) requiredFlags |= HVRBasisBuiltInAddressesVisemeFlags.PP;
             if (systemAddresses.Contains(_addressIds[2])) requiredFlags |= HVRBasisBuiltInAddressesVisemeFlags.FF;
@@ -165,6 +354,12 @@ namespace HVR.Basis.Comms
             if (systemAddresses.Contains(_addressIds[13])) requiredFlags |= HVRBasisBuiltInAddressesVisemeFlags.oh;
             if (systemAddresses.Contains(_addressIds[14])) requiredFlags |= HVRBasisBuiltInAddressesVisemeFlags.ou;
             if (systemAddresses.Contains(_addressMax)) requiredFlags |= HVRBasisBuiltInAddressesVisemeFlags.Gain;
+            foreach (var addressId in systemAddresses)
+            {
+                var address = HVRAddress.ResolveKnownAddressFromId(addressId);
+                if (address.StartsWith(HVRAddress.System.User.Gesture.GestureAddressPrefix, StringComparison.Ordinal))
+                    requiredGestureIds.Add(addressId);
+            }
             ReaggregateFlags();
         }
     }

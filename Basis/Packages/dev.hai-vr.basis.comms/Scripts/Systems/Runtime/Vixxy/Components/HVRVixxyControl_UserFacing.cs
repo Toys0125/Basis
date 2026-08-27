@@ -32,13 +32,16 @@ namespace HVR.Vixxy
             new() { title = "ON", icon = null, value = 1f }
         };
         [SerializeField] public float defaultValue = 0f;
+        [SerializeField] internal bool snapToClosestChoice;
 
         [SerializeField] internal HVRVixxyActivation[] activations = Array.Empty<HVRVixxyActivation>();
         [SerializeField] internal HVRVixxySubject[] subjects = Array.Empty<HVRVixxySubject>();
+        [SerializeField] internal HVRVixxyAddressDrive[] addressDrives = Array.Empty<HVRVixxyAddressDrive>();
         [SerializeReference] internal List<HVRVixxyFilterBase> filters = new();
 
         [SerializeField] internal bool networked = true;
         [SerializeField] internal HVRVixxyNetworkingType advancedNetworking = HVRVixxyNetworkingType.Automatic;
+        [SerializeField] internal HVRVixxyLocality locality = HVRVixxyLocality.Both;
 
         [SerializeField] internal HVRVixxyTransitionMode transition;
         [SerializeField] internal float transitionDuration = 0.5f;
@@ -88,6 +91,19 @@ namespace HVR.Vixxy
 
         [NonSerialized] internal bool IsApplicable;
         [NonSerialized] internal HVRVixxyActivationBakeResult BakeResult = HVRVixxyActivationBakeResult.WasNotEvaluated;
+    }
+
+    [Serializable]
+    public class HVRVixxyAddressDrive
+    {
+        public HVRAddressSelector address;
+        public float[] choices = new float[2];
+        public bool[] applyChoices = { true, true };
+        public bool interpolate;
+        public bool networked = true;
+
+        [NonSerialized] internal int AddressId;
+        [NonSerialized] internal bool IsApplicable;
     }
 
     [Serializable]
@@ -146,6 +162,14 @@ namespace HVR.Vixxy
         RememberInThisTag,
         /// We remember the value for this address across all avatars.
         RememberAcrossAvatars
+    }
+
+    [Serializable]
+    public enum HVRVixxyLocality
+    {
+        Both,
+        WearerOnly,
+        RemoteOnly
     }
 
     [Serializable]
@@ -279,7 +303,8 @@ namespace HVR.Vixxy
     {
         Standard,
         MaterialProperty,
-        BlendShape
+        BlendShape,
+        RendererMaterialSlot
     }
 
     interface IHVRVixxyProperty
@@ -347,6 +372,18 @@ namespace HVR.Vixxy
     [Serializable]
     public class HVRVixxyPropertyMaterial : HVRVixxyProperty<Material>
     {
+        public float threshold;
+
+        public override object CalculateLerpValue(float active01, int inactiveIndex, int activeIndex, float absoluteValue)
+        {
+            return ApplyThresholdFunction(active01, inactiveIndex, activeIndex, threshold);
+        }
+    }
+
+    [Serializable]
+    public class HVRVixxyPropertyMaterialSlot : HVRVixxyProperty<Material>
+    {
+        public int slot;
         public float threshold;
 
         public override object CalculateLerpValue(float active01, int inactiveIndex, int activeIndex, float absoluteValue)
