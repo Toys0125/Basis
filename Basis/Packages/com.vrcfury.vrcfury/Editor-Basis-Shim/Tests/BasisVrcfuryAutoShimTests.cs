@@ -35,6 +35,28 @@ namespace VF.Integration.Basis.Shim.Tests {
             Assert.That(BasisVrcfuryAuthoringMenus.BlendshapeOptimizerMenuPath, Is.EqualTo("Component/VRCFury/Blendshape Optimizer (VRCFury)"));
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void BasisAuthoring_UsesCustomVrcfuryInspector(bool armatureLink) {
+            var root = new GameObject("Avatar");
+            try {
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = armatureLink
+                    ? (FeatureModel)new ArmatureLink { propBone = root }
+                    : new BlendshapeOptimizer();
+
+                var editor = UnityEditor.Editor.CreateEditor(fury);
+                try {
+                    Assert.That(editor, Is.TypeOf<BasisVrcfuryAuthoringEditor>());
+                    Assert.That(editor.CreateInspectorGUI(), Is.Not.Null);
+                } finally {
+                    UnityEngine.Object.DestroyImmediate(editor);
+                }
+            } finally {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         [Test]
         public void BasisAuthoring_AddFeatureCreatesNormalVrcfuryComponent() {
             var root = new GameObject("Avatar");
