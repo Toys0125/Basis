@@ -7,10 +7,14 @@ using VF.Model.Feature;
 using VF.Upgradeable;
 
 namespace VF.Model {
+#if VRCF_AVATARS
     [AddComponentMenu("")]
+#else
+    [AddComponentMenu("VRCFury/VRCFury (BasisVR)")]
+#endif
     [HelpURL("https://vrcfury.com")]
     internal class VRCFury : VRCFuryComponent {
-        
+
         [Header("VRCFury failed to load")]
         [Header("Something is really broken. Do not edit anything in here, or you may make it worse.")]
         [Header("You probably have script errors in the console caused by some other plugin. Please fix them.")]
@@ -38,7 +42,7 @@ namespace VF.Model {
             }
             return output;
         }
-        
+
         public override bool Upgrade(int fromVersion) {
 #pragma warning disable 0612
             IList<FeatureModel> Migrate(FeatureModel input) {

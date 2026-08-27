@@ -23,6 +23,26 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void BasisOnlyVrcfuryComponent_IsVisibleInAddComponentMenu() {
+            var attribute = (AddComponentMenu)Attribute.GetCustomAttribute(typeof(VRCFury), typeof(AddComponentMenu));
+            Assert.That(attribute, Is.Not.Null);
+            Assert.That(attribute.componentMenu, Is.EqualTo("VRCFury/VRCFury (BasisVR)"));
+        }
+
+        [Test]
+        public void BasisAuthoring_AddFeatureCreatesNormalVrcfuryComponent() {
+            var root = new GameObject("Avatar");
+            try {
+                var fury = BasisVrcfuryAuthoringMenus.AddFeature(root, new BlendshapeOptimizer(), "Test VRCFury Authoring");
+                Assert.That(fury, Is.Not.Null);
+                Assert.That(root.GetComponent<VRCFury>(), Is.SameAs(fury));
+                Assert.That(fury.content, Is.TypeOf<BlendshapeOptimizer>());
+            } finally {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void ArmatureLink_ReparentsSimpleLinkOnBasisClone() {
             var root = new GameObject("Avatar");
             try {
