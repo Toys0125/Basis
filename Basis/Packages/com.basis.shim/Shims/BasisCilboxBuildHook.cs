@@ -216,13 +216,23 @@ public class BasisCilboxBuildHook
         Cilbox.Cilbox temporarySceneCilbox,
         Dictionary<Cilbox.Cilbox, string> snapshot)
     {
-        if (temporarySceneCilbox == null || !string.IsNullOrEmpty(temporarySceneCilbox.assemblyData))
+        if (temporarySceneCilbox == null)
         {
+            return;
+        }
+
+        snapshot.TryGetValue(temporarySceneCilbox, out string originalTemporaryAssembly);
+        if (!string.IsNullOrEmpty(temporarySceneCilbox.assemblyData) &&
+            temporarySceneCilbox.assemblyData != originalTemporaryAssembly)
+        {
+            // Cilbox selected the content's own host and updated it directly.
             return;
         }
 
         // Cilbox's postprocessor currently chooses an assembly host globally. If it selected a host
         // from another loaded scene, copy the newly generated data onto the isolated content's Cilbox.
+        // Compare against the snapshot rather than checking whether the content host is empty: an
+        // authored Cilbox can legitimately contain older assembly data that must be replaced.
         Cilbox.Cilbox[] allCilboxes = Resources.FindObjectsOfTypeAll<Cilbox.Cilbox>();
         for (int i = 0; i < allCilboxes.Length; i++)
         {
