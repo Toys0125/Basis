@@ -30,6 +30,12 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void BasisAuthoring_UsesUpstreamStyleFeatureMenuPaths() {
+            Assert.That(BasisVrcfuryAuthoringMenus.ArmatureLinkMenuPath, Is.EqualTo("Component/VRCFury/Armature Link (VRCFury)"));
+            Assert.That(BasisVrcfuryAuthoringMenus.BlendshapeOptimizerMenuPath, Is.EqualTo("Component/VRCFury/Blendshape Optimizer (VRCFury)"));
+        }
+
+        [Test]
         public void BasisAuthoring_AddFeatureCreatesNormalVrcfuryComponent() {
             var root = new GameObject("Avatar");
             try {

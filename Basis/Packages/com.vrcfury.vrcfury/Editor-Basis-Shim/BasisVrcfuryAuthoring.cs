@@ -13,6 +13,8 @@ namespace VF.Integration.Basis.Shim {
     internal static class BasisVrcfuryAuthoringMenus {
         private const string ComponentRoot = "Component/VRCFury/";
         private const string ToolsRoot = "Tools/VRCFury/BasisVR/";
+        internal const string ArmatureLinkMenuPath = ComponentRoot + "Armature Link (VRCFury)";
+        internal const string BlendshapeOptimizerMenuPath = ComponentRoot + "Blendshape Optimizer (VRCFury)";
 
         [MenuItem(ToolsRoot + "Status", priority = 0)]
         private static void Status() {
@@ -27,7 +29,7 @@ namespace VF.Integration.Basis.Shim {
             );
         }
 
-        [MenuItem(ComponentRoot + "Armature Link (VRCFury)", false, 0)]
+        [MenuItem(ArmatureLinkMenuPath, false, 0)]
         private static void AddArmatureLink() {
             foreach (var selected in Selection.gameObjects) {
                 if (selected == null) continue;
@@ -47,10 +49,10 @@ namespace VF.Integration.Basis.Shim {
             }
         }
 
-        [MenuItem(ComponentRoot + "Armature Link (VRCFury)", true)]
+        [MenuItem(ArmatureLinkMenuPath, true)]
         private static bool ValidateAddArmatureLink() => Selection.gameObjects.Any(obj => obj != null);
 
-        [MenuItem(ComponentRoot + "Blendshape Optimizer (VRCFury)", false, 1)]
+        [MenuItem(BlendshapeOptimizerMenuPath, false, 1)]
         private static void AddBlendshapeOptimizer() {
             foreach (var selected in Selection.gameObjects) {
                 if (selected == null) continue;
@@ -58,7 +60,7 @@ namespace VF.Integration.Basis.Shim {
             }
         }
 
-        [MenuItem(ComponentRoot + "Blendshape Optimizer (VRCFury)", true)]
+        [MenuItem(BlendshapeOptimizerMenuPath, true)]
         private static bool ValidateAddBlendshapeOptimizer() => Selection.gameObjects.Any(obj => obj != null);
 
         internal static VRCFury AddFeature(GameObject target, FeatureModel feature, string undoName) {
