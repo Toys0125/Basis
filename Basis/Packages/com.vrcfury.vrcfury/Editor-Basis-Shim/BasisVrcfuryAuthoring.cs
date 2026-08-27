@@ -248,9 +248,8 @@ namespace VF.Integration.Basis.Shim {
 
             EditorGUILayout.Space(2);
             advancedOptions = EditorGUILayout.Foldout(advancedOptions, "Advanced Options", true);
-            if (!advancedOptions) return;
-
-            EditorGUI.indentLevel++;
+            if (advancedOptions) {
+                EditorGUI.indentLevel++;
             DrawSectionHeader("Search / Matching");
             if (IsSimpleLinkTo(linkTo) && !forceAdvancedLinkTargets) {
                 if (GUILayout.Button("Enable Advanced Link Target Mode")) forceAdvancedLinkTargets = true;
@@ -321,7 +320,8 @@ namespace VF.Integration.Basis.Shim {
                 );
                 EditorGUI.indentLevel--;
             }
-            EditorGUI.indentLevel--;
+                EditorGUI.indentLevel--;
+            }
 
             DrawArmatureWarnings(model);
         }
