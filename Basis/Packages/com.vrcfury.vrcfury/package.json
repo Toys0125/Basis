@@ -1,11 +1,13 @@
 {
-  "name": "com.vrcfury.vrcfury",
-  "displayName": "VRCFury",
-  "version": "0.0.0",
-  "description": "Non-Destructive Tools for VRChat Avatars",
+  "name": "com.toys0125.vrcfury-basis",
+  "displayName": "VRCFury for BasisVR",
+  "version": "1.0.1",
+  "description": "BasisVR compatibility port of VRCFury with Armature Link and Blendshape Optimizer support.",
+  "url": "https://github.com/Toys0125/VRCFury",
   "unity" : "2022.3",
   "author": {
-    "name": "VRCFury"
+    "name": "Toys0125",
+    "email": "marcus.g.stange@gmail.com"
   },
   "legacyFolders" : {
     "Assets\\VRCFury": "00b990f230095454f82c345d433841ae",
