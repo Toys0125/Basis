@@ -17,7 +17,6 @@ namespace Basis.Tests.Sync
 
         public void TouchMarker()
         {
-            Marker = Marker + string.Empty;
         }
     }
 
