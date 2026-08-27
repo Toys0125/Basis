@@ -711,12 +711,15 @@ public partial class BasisAvatarSDKInspector : Editor
             }
 
             inSceneItem = GameObject.Instantiate(originalObject);
-            inSceneItem.SetActive(true);
+            // Keep authoring behaviours inert until all build processors, including Cilbox conversion,
+            // have finished. The runtime proxy becomes active only after the native script is gone.
+            inSceneItem.SetActive(false);
 
             BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(inSceneItem);
             OnBeforeTestInEditor?.Invoke(inSceneItem);
             OnBeforeTestInEditorFinalize?.Invoke(inSceneItem);
             BasisAssetBundlePipeline.PostProcessAvatar(inSceneItem);
+            inSceneItem.SetActive(true);
 
             BasisLoadableBundle LoadableBundle = new BasisLoadableBundle
             {
