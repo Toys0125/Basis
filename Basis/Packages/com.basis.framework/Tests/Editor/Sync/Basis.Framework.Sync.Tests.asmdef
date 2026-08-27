@@ -10,6 +10,7 @@
         "Unity.Mathematics",
         "UnityEngine.TestRunner",
         "BasisSDK",
+        "BasisSDKEditor",
         "BasisShims",
         "Cilbox"
     ],

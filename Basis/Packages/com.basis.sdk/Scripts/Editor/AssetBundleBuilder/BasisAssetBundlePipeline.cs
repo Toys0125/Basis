@@ -19,6 +19,12 @@ public static class BasisAssetBundlePipeline
 
     // Static delegates
     public static BeforeBuildGameobjectHandler OnBeforeBuildPrefab;
+    /// <summary>
+    /// Final prefab preparation stage. Runs after normal prefab processors and immediately before
+    /// Basis post-processing/staging. Consumers that replace authoring components during build
+    /// should subscribe here so earlier processors can finish mutating the isolated clone first.
+    /// </summary>
+    public static BeforeBuildGameobjectHandler OnBeforeBuildPrefabFinalize;
     public static AfterBuildHandler OnAfterBuildPrefab;
     public static BuildErrorHandler OnBuildErrorPrefab;
 
@@ -101,6 +107,7 @@ public static class BasisAssetBundlePipeline
                 prefab = Object.Instantiate(asset);
                 DestroyEditorOnlyInAvatar(prefab);
                 OnBeforeBuildPrefab?.Invoke(prefab, settings);
+                OnBeforeBuildPrefabFinalize?.Invoke(prefab, settings);
                 PostProcessAvatar(prefab);
                 meta = BasisBundleBuild.GenerateMetaData(prefab);
 
