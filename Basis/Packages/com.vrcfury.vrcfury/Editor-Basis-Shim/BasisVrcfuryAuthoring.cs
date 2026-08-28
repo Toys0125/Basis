@@ -468,7 +468,11 @@ namespace VF.Integration.Basis.Shim {
             return row;
         }
 
-        private static VisualElement CreateOverlayHeader(string title) {
+        internal static VisualElement CreateOverlayHeader(string title) {
+            // Match VRCFuryComponentHeader: the absolute overlay must be positioned relative to a
+            // zero-height wrapper inserted immediately after Unity's real component header.
+            // Inserting the absolute element directly makes top=-21 relative to the whole inspector,
+            // which causes it to overlap a neighboring component and breaks collapse click-through.
             var area = new VisualElement {
                 pickingMode = PickingMode.Ignore,
                 style = {
@@ -482,7 +486,10 @@ namespace VF.Integration.Basis.Shim {
             row.style.marginLeft = 18;
             row.style.marginRight = 60;
             area.Add(row);
-            return area;
+
+            var wrapper = new VisualElement();
+            wrapper.Add(area);
+            return wrapper;
         }
 
         private static VisualElement CreateHeaderRow(string title) {

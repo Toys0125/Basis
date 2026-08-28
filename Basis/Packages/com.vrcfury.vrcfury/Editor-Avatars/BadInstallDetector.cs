@@ -1,17 +1,25 @@
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using UnityEditor;
+using UnityEditor.PackageManager;
 using VF.Utils;
 
 namespace VF {
     internal static class BadInstallDetector {
         [VFInit]
         private static void Init() {
-            var isLocalPackage = Directory.Exists("Packages/com.vrcfury.vrcfury") &&
-                                 Path.GetFullPath("Packages/com.vrcfury.vrcfury").StartsWith(Path.GetFullPath("Packages"));
+            var packageInfo = PackageInfo.FindForAssembly(Assembly.GetExecutingAssembly());
+            if (packageInfo == null || packageInfo.name != "com.vrcfury.vrcfury") {
+                return;
+            }
+
+            var packagePath = packageInfo.assetPath;
+            var isLocalPackage = Directory.Exists(packagePath) &&
+                                 Path.GetFullPath(packagePath).StartsWith(Path.GetFullPath("Packages"));
             var manifestPath = "Packages/manifest.json";
             var manifestContainsVrcfury = File.Exists(manifestPath) && File.ReadLines(manifestPath)
-                .Any(line => line.Contains("com.vrcfury.vrcfury"));
+                .Any(line => line.Contains(packageInfo.name));
 
             if (isLocalPackage && manifestContainsVrcfury) {
                 DialogUtils.DisplayDialog(

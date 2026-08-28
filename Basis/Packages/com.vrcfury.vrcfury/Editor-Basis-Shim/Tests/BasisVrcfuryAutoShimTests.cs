@@ -3,6 +3,7 @@ using NUnit.Framework;
 using Basis.Scripts.BasisSdk;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UIElements;
 using VF.Model;
 using VF.Model.Feature;
 
@@ -55,6 +56,17 @@ namespace VF.Integration.Basis.Shim.Tests {
             } finally {
                 UnityEngine.Object.DestroyImmediate(root);
             }
+        }
+
+        [Test]
+        public void BasisAuthoring_HeaderOverlayUsesUpstreamRelativeWrapper() {
+            var wrapper = BasisVrcfuryHeader.CreateOverlayHeader("Blendshape Optimizer");
+            Assert.That(wrapper.childCount, Is.EqualTo(1));
+
+            var area = wrapper[0];
+            Assert.That(area.style.position.value, Is.EqualTo(Position.Absolute));
+            Assert.That(area.style.top.value.value, Is.EqualTo(-21f));
+            Assert.That(wrapper.style.position.value, Is.Not.EqualTo(Position.Absolute));
         }
 
         [Test]
