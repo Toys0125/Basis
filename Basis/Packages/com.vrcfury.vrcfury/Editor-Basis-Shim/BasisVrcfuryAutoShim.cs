@@ -18,16 +18,46 @@ namespace VF.Integration.Basis.Shim {
     /// </summary>
     [InitializeOnLoad]
     internal static class BasisVrcfuryAutoShim {
+        private const string TestInEditorStorageRoot = "Assets/__VRCFuryBasisTestInEditor";
         private static bool running;
         private static readonly BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
         static BasisVrcfuryAutoShim() {
             BasisAssetBundlePipeline.OnBeforeBuildPrefab -= OnBeforeBuildPrefab;
             BasisAssetBundlePipeline.OnBeforeBuildPrefab += OnBeforeBuildPrefab;
+            BasisAvatarSDKInspector.OnBeforeTestInEditor -= OnBeforeTestInEditor;
+            BasisAvatarSDKInspector.OnBeforeTestInEditor += OnBeforeTestInEditor;
+            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+
+            if (!Application.isPlaying) CleanupTestInEditorStorage();
         }
 
         private static void OnBeforeBuildPrefab(GameObject buildRoot, BasisAssetBundleObject settings) {
             ProcessBuildClone(buildRoot, settings);
+        }
+
+        internal static void OnBeforeTestInEditor(GameObject buildRoot) {
+            if (buildRoot == null) return;
+
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            settings.hideFlags = HideFlags.HideAndDontSave;
+            settings.TemporaryStorage = $"{TestInEditorStorageRoot}/{Guid.NewGuid():N}";
+            try {
+                ProcessBuildClone(buildRoot, settings);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+        }
+
+        private static void OnPlayModeStateChanged(PlayModeStateChange state) {
+            if (state == PlayModeStateChange.EnteredEditMode) CleanupTestInEditorStorage();
+        }
+
+        internal static void CleanupTestInEditorStorage() {
+            if (AssetDatabase.IsValidFolder(TestInEditorStorageRoot)) {
+                AssetDatabase.DeleteAsset(TestInEditorStorageRoot);
+            }
         }
 
         internal static void ProcessBuildClone(GameObject buildRoot, BasisAssetBundleObject settings) {

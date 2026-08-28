@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using NUnit.Framework;
 using Basis.Scripts.BasisSdk;
 using UnityEditor;
@@ -21,6 +23,7 @@ namespace VF.Integration.Basis.Shim.Tests {
         [TearDown]
         public void TearDown() {
             AssetDatabase.DeleteAsset(TempFolder);
+            BasisVrcfuryAutoShim.CleanupTestInEditorStorage();
         }
 
         [Test]
@@ -83,6 +86,46 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void TestInEditorHook_IsRegisteredWithBasis() {
+            RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
+            var callbacks = BasisAvatarSDKInspector.OnBeforeTestInEditor?.GetInvocationList() ?? Array.Empty<Delegate>();
+            Assert.That(callbacks.Any(callback => callback.Method.DeclaringType == typeof(BasisVrcfuryAutoShim)
+                                                  && callback.Method.Name == nameof(BasisVrcfuryAutoShim.OnBeforeTestInEditor)), Is.True);
+        }
+
+        [Test]
+        public void TestInEditor_AppliesArmatureLinkAndStripsAuthoringComponent() {
+            var root = new GameObject("Avatar");
+            try {
+                root.AddComponent<BasisAvatar>();
+                var target = new GameObject("Target");
+                target.transform.SetParent(root.transform, false);
+                var source = new GameObject("Prop");
+                source.transform.SetParent(root.transform, false);
+
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = new ArmatureLink {
+                    propBone = source,
+                    recursive = false,
+                    linkTo = {
+                        new ArmatureLink.LinkTo {
+                            useBone = false,
+                            useObj = true,
+                            obj = target
+                        }
+                    }
+                };
+
+                BasisVrcfuryAutoShim.OnBeforeTestInEditor(root);
+
+                Assert.That(source.transform.parent, Is.EqualTo(target.transform));
+                Assert.That(root.GetComponent<VRCFury>(), Is.Null);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void ArmatureLink_ReparentsSimpleLinkOnBasisClone() {
             var root = new GameObject("Avatar");
             try {
@@ -107,6 +150,38 @@ namespace VF.Integration.Basis.Shim.Tests {
                 BasisArmatureLinkShim.Apply(root, avatar, null, model);
 
                 Assert.That(source.transform.parent, Is.EqualTo(target.transform));
+            } finally {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void TestInEditor_AppliesBlendshapeOptimizerWithTemporaryStorage() {
+            var root = new GameObject("Avatar");
+            try {
+                var avatar = root.AddComponent<BasisAvatar>();
+                var renderObject = new GameObject("Face");
+                renderObject.transform.SetParent(root.transform, false);
+                var renderer = renderObject.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = MakeBlendshapeMesh();
+                renderer.SetBlendShapeWeight(0, 0f);
+                renderer.SetBlendShapeWeight(1, 50f);
+
+                avatar.FaceVisemeMesh = renderer;
+                avatar.FaceVisemeMovement = new int[15];
+                for (var i = 0; i < avatar.FaceVisemeMovement.Length; i++) avatar.FaceVisemeMovement[i] = -1;
+                avatar.FaceVisemeMovement[0] = 0;
+
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = new BlendshapeOptimizer();
+
+                BasisVrcfuryAutoShim.OnBeforeTestInEditor(root);
+
+                Assert.That(renderer.sharedMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh.blendShapeCount, Is.EqualTo(1));
+                Assert.That(renderer.sharedMesh.GetBlendShapeName(0), Is.EqualTo("KeepMe"));
+                Assert.That(avatar.FaceVisemeMovement[0], Is.EqualTo(0));
+                Assert.That(root.GetComponent<VRCFury>(), Is.Null);
             } finally {
                 UnityEngine.Object.DestroyImmediate(root);
             }
