@@ -164,6 +164,60 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void TestInEditor_DefaultHumanoidHipsTargetWorksOnRealBasisAvatar() {
+            const string prefabPath = "Packages/com.basis.sdk/Prefabs/Loadins/LoadingAvatar.prefab";
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            Assert.That(prefab, Is.Not.Null, $"Expected Basis humanoid test prefab at {prefabPath}");
+
+            GameObject authored = null;
+            GameObject clone = null;
+            try {
+                authored = UnityEngine.Object.Instantiate(prefab);
+                authored.name = "VRCFury Humanoid Armature Link Authored Avatar";
+                var authoredAvatar = authored.GetComponent<BasisAvatar>();
+                Assert.That(authoredAvatar, Is.Not.Null);
+                Assert.That(authoredAvatar.Animator, Is.Not.Null);
+                Assert.That(authoredAvatar.Animator.avatar, Is.Not.Null);
+                Assert.That(authoredAvatar.Animator.isHuman, Is.True);
+                var authoredHips = authoredAvatar.Animator.GetBoneTransform(HumanBodyBones.Hips);
+                Assert.That(authoredHips, Is.Not.Null);
+
+                var wearable = new GameObject("VRCFuryWearable");
+                wearable.transform.SetParent(authored.transform, false);
+                var source = new GameObject("VRCFuryProp");
+                source.transform.SetParent(wearable.transform, false);
+                BasisVrcfuryAuthoringMenus.AddFeature(wearable, new ArmatureLink {
+                    propBone = source,
+                    recursive = false
+                    // Use the model's normal default linkTo: Humanoid Hips.
+                }, "Create VRCFury Humanoid Armature Link Test Feature");
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                var cloneAvatar = clone.GetComponent<BasisAvatar>();
+                Assert.That(cloneAvatar.Animator, Is.Not.Null);
+                var cloneHips = cloneAvatar.Animator.GetBoneTransform(HumanBodyBones.Hips);
+                Assert.That(cloneHips, Is.Not.Null);
+                var cloneSourceBefore = clone.transform.Find("VRCFuryWearable/VRCFuryProp");
+                Assert.That(cloneSourceBefore, Is.Not.Null);
+
+                BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(clone);
+                BasisAvatarSDKInspector.OnBeforeTestInEditor?.Invoke(clone);
+                BasisAssetBundlePipeline.PostProcessAvatar(clone);
+
+                var cloneSourceAfter = cloneHips.Find("VRCFuryProp");
+                Assert.That(cloneSourceAfter, Is.Not.Null,
+                    "The default VRCFury Armature Link should resolve BasisAvatar.Animator Humanoid Hips during Test in Editor.");
+                Assert.That(cloneSourceAfter.parent, Is.SameAs(cloneHips));
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty);
+                Assert.That(source.transform.parent, Is.SameAs(wearable.transform),
+                    "Processing the Test in Editor clone must leave the authored wearable unchanged.");
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                if (authored != null) UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
         public void TestInEditor_FullBasisCallbackPipelineAppliesArmatureLinkOnlyToClone() {
             var authored = CreateSimpleArmatureLinkAvatar();
             GameObject clone = null;
@@ -557,8 +611,7 @@ namespace VF.Integration.Basis.Shim.Tests {
             var source = new GameObject("Prop");
             source.transform.SetParent(wearable.transform, false);
 
-            var fury = wearable.AddComponent<VRCFury>();
-            fury.content = new ArmatureLink {
+            BasisVrcfuryAuthoringMenus.AddFeature(wearable, new ArmatureLink {
                 propBone = source,
                 recursive = false,
                 linkTo = {
@@ -568,7 +621,7 @@ namespace VF.Integration.Basis.Shim.Tests {
                         obj = target
                     }
                 }
-            };
+            }, "Create VRCFury Armature Link Test Feature");
             return root;
         }
 
@@ -603,8 +656,7 @@ namespace VF.Integration.Basis.Shim.Tests {
             renderer.rootBone = sourceHips.transform;
             renderer.bones = new[] { sourceHips.transform, sourceSpine.transform };
 
-            var fury = wearable.AddComponent<VRCFury>();
-            fury.content = new ArmatureLink {
+            BasisVrcfuryAuthoringMenus.AddFeature(wearable, new ArmatureLink {
                 propBone = sourceHips,
                 recursive = true,
                 linkTo = {
@@ -614,7 +666,7 @@ namespace VF.Integration.Basis.Shim.Tests {
                         obj = targetHips
                     }
                 }
-            };
+            }, "Create VRCFury Recursive Armature Link Test Feature");
             return root;
         }
 
