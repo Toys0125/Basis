@@ -142,6 +142,34 @@ namespace VF.Integration.Basis.Shim.Tests {
             yield return new ExitPlayMode();
         }
 
+        [UnityTest]
+        public IEnumerator TestInEditor_ArmatureLinkProcessesCloneWhileInPlayMode() {
+            yield return new EnterPlayMode();
+            Assert.That(Application.isPlaying, Is.True);
+
+            var authored = CreateSimpleArmatureLinkAvatar();
+            GameObject clone = null;
+            try {
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(clone);
+                BasisAvatarSDKInspector.OnBeforeTestInEditor?.Invoke(clone);
+                BasisAssetBundlePipeline.PostProcessAvatar(clone);
+
+                var clonedTarget = clone.transform.Find("Target");
+                var clonedSource = clonedTarget?.Find("Prop");
+                Assert.That(clonedSource, Is.Not.Null,
+                    "Armature Link must process the Basis clone when OnBeforeTestInEditor runs after Play Mode has already started.");
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty);
+                Assert.That(authored.transform.Find("Wearable/Prop"), Is.Not.Null,
+                    "Processing the Play Mode clone must leave the authored avatar unchanged.");
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+
+            yield return new ExitPlayMode();
+        }
+
         [Test]
         public void TestInEditorHook_CoexistsWithNdmfHookWhenInstalled() {
             RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
