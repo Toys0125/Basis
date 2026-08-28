@@ -121,8 +121,196 @@ namespace VF.Integration.Basis.Shim.Tests {
         public void TestInEditorHook_IsRegisteredWithBasis() {
             RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
             var callbacks = BasisAvatarSDKInspector.OnBeforeTestInEditor?.GetInvocationList() ?? Array.Empty<Delegate>();
-            Assert.That(callbacks.Any(callback => callback.Method.DeclaringType == typeof(BasisVrcfuryAutoShim)
-                                                  && callback.Method.Name == nameof(BasisVrcfuryAutoShim.OnBeforeTestInEditor)), Is.True);
+            var vrcfuryCallbacks = callbacks.Where(callback => callback.Method.DeclaringType == typeof(BasisVrcfuryAutoShim)
+                                                               && callback.Method.Name == nameof(BasisVrcfuryAutoShim.OnBeforeTestInEditor)).ToArray();
+            Assert.That(vrcfuryCallbacks, Has.Length.EqualTo(1), "VRCFury should be registered exactly once on the Basis Test in Editor pipeline.");
+        }
+
+        [Test]
+        public void TestInEditorHook_CoexistsWithNdmfHookWhenInstalled() {
+            RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
+            var ndmfHookType = AppDomain.CurrentDomain.GetAssemblies()
+                .Select(assembly => assembly.GetType("HVR.Basis.NDMF.BasisNDMFBuildHook", false))
+                .FirstOrDefault(type => type != null);
+            if (ndmfHookType == null) Assert.Ignore("The Basis NDMF hook is not installed in this test project.");
+
+            RuntimeHelpers.RunClassConstructor(ndmfHookType.TypeHandle);
+            var callbacks = BasisAvatarSDKInspector.OnBeforeTestInEditor?.GetInvocationList() ?? Array.Empty<Delegate>();
+            Assert.That(callbacks.Any(callback => callback.Method.DeclaringType == typeof(BasisVrcfuryAutoShim)), Is.True);
+            Assert.That(callbacks.Any(callback => callback.Method.DeclaringType == ndmfHookType), Is.True,
+                "Basis NDMF and VRCFury must both remain subscribed to the shared Test in Editor clone callback.");
+        }
+
+        [Test]
+        public void TestInEditor_InstantiateRemapsArmatureLinkReferencesIntoClone() {
+            var authored = CreateSimpleArmatureLinkAvatar();
+            GameObject clone = null;
+            try {
+                clone = UnityEngine.Object.Instantiate(authored);
+                var clonedFury = clone.GetComponentInChildren<VRCFury>(true);
+                var clonedModel = clonedFury.content as ArmatureLink;
+                var clonedSource = clone.transform.Find("Wearable/Prop").gameObject;
+                var clonedTarget = clone.transform.Find("Target").gameObject;
+
+                Assert.That(clonedModel, Is.Not.Null);
+                Assert.That(clonedModel.propBone, Is.SameAs(clonedSource));
+                Assert.That(clonedModel.propBone, Is.Not.SameAs(authored.transform.Find("Wearable/Prop").gameObject));
+                Assert.That(clonedModel.linkTo[0].obj, Is.SameAs(clonedTarget));
+                Assert.That(clonedModel.linkTo[0].obj, Is.Not.SameAs(authored.transform.Find("Target").gameObject));
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
+        public void TestInEditor_FullBasisCallbackPipelineAppliesArmatureLinkOnlyToClone() {
+            var authored = CreateSimpleArmatureLinkAvatar();
+            GameObject clone = null;
+            try {
+                var authoredSource = authored.transform.Find("Wearable/Prop");
+                var authoredParentBefore = authoredSource.parent;
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(clone);
+                BasisAvatarSDKInspector.OnBeforeTestInEditor?.Invoke(clone);
+                BasisAssetBundlePipeline.PostProcessAvatar(clone);
+
+                var clonedTarget = clone.transform.Find("Target");
+                var clonedSource = clonedTarget.Find("Prop");
+                Assert.That(clonedSource, Is.Not.Null, "Armature Link should be applied by the actual shared Basis Test in Editor callback chain.");
+                Assert.That(clonedSource.parent, Is.SameAs(clonedTarget));
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty,
+                    "VRCFury authoring metadata must not survive on the Test in Editor clone.");
+                Assert.That(authoredSource.parent, Is.SameAs(authoredParentBefore),
+                    "Test in Editor must not destructively modify the authored avatar.");
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
+        public void Build_FullBasisCallbackPipelineAppliesArmatureLinkOnlyToClone() {
+            var authored = CreateSimpleArmatureLinkAvatar();
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            GameObject clone = null;
+            try {
+                settings.TemporaryStorage = TempFolder;
+                var authoredSource = authored.transform.Find("Wearable/Prop");
+                var authoredParentBefore = authoredSource.parent;
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(clone);
+                BasisAssetBundlePipeline.OnBeforeBuildPrefab?.Invoke(clone, settings);
+                BasisAssetBundlePipeline.PostProcessAvatar(clone);
+
+                var clonedTarget = clone.transform.Find("Target");
+                var clonedSource = clonedTarget.Find("Prop");
+                Assert.That(clonedSource, Is.Not.Null, "Armature Link should be applied by the actual Basis build callback chain.");
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty);
+                Assert.That(authoredSource.parent, Is.SameAs(authoredParentBefore));
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(settings);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
+        public void TestInEditor_FullBasisCallbackPipelineRewritesRecursiveSkinnedArmature() {
+            var authored = CreateRecursiveSkinnedArmatureLinkAvatar();
+            GameObject clone = null;
+            try {
+                var authoredRenderer = authored.transform.Find("Wearable/Mesh").GetComponent<SkinnedMeshRenderer>();
+                var authoredHips = authored.transform.Find("Wearable/Armature/Hips");
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(clone);
+                BasisAvatarSDKInspector.OnBeforeTestInEditor?.Invoke(clone);
+                BasisAssetBundlePipeline.PostProcessAvatar(clone);
+
+                var targetHips = clone.transform.Find("TargetArmature/Hips");
+                var targetSpine = targetHips.Find("Spine");
+                var renderer = clone.transform.Find("Wearable/Mesh").GetComponent<SkinnedMeshRenderer>();
+                Assert.That(renderer.bones, Has.Length.EqualTo(2));
+                Assert.That(renderer.bones[0], Is.SameAs(targetHips));
+                Assert.That(renderer.bones[1], Is.SameAs(targetSpine));
+                Assert.That(clone.transform.Find("Wearable/Armature/Hips"), Is.Null,
+                    "Matched clothing bones should be collapsed after the skin references are rewritten.");
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty);
+                Assert.That(authoredRenderer.bones[0], Is.SameAs(authoredHips),
+                    "The authored skinned mesh must retain its original clothing bones.");
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
+        public void ArmatureLink_UsesFirstValidFallbackTargetAndOffset() {
+            var root = new GameObject("Avatar");
+            try {
+                var avatar = root.AddComponent<BasisAvatar>();
+                var target = new GameObject("Target");
+                target.transform.SetParent(root.transform, false);
+                var offset = new GameObject("Offset");
+                offset.transform.SetParent(target.transform, false);
+                var source = new GameObject("Prop");
+                source.transform.SetParent(root.transform, false);
+                var invalidExternalTarget = new GameObject("External");
+                try {
+                    var model = new ArmatureLink {
+                        propBone = source,
+                        recursive = false,
+                        linkTo = {
+                            new ArmatureLink.LinkTo { useBone = false, useObj = true, obj = invalidExternalTarget },
+                            new ArmatureLink.LinkTo { useBone = false, useObj = true, obj = target, offset = "Offset" }
+                        }
+                    };
+
+                    BasisArmatureLinkShim.Apply(root, avatar, null, model);
+                    Assert.That(source.transform.parent, Is.SameAs(offset.transform));
+                } finally {
+                    UnityEngine.Object.DestroyImmediate(invalidExternalTarget);
+                }
+            } finally {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void ArmatureLink_RecursiveKeepsMappedBoneWithExtraComponent() {
+            var root = new GameObject("Avatar");
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            try {
+                settings.TemporaryStorage = TempFolder;
+                var avatar = root.AddComponent<BasisAvatar>();
+                var target = new GameObject("Hips");
+                target.transform.SetParent(root.transform, false);
+                var targetSpine = new GameObject("Spine");
+                targetSpine.transform.SetParent(target.transform, false);
+                var source = new GameObject("Hips");
+                source.transform.SetParent(root.transform, false);
+                var sourceSpine = new GameObject("Spine");
+                sourceSpine.transform.SetParent(source.transform, false);
+                sourceSpine.AddComponent<BoxCollider>();
+
+                var model = new ArmatureLink {
+                    propBone = source,
+                    recursive = true,
+                    linkTo = { new ArmatureLink.LinkTo { useBone = false, useObj = true, obj = target } }
+                };
+
+                BasisArmatureLinkShim.Apply(root, avatar, settings, model);
+
+                Assert.That(sourceSpine, Is.Not.Null);
+                Assert.That(sourceSpine.transform.parent, Is.SameAs(targetSpine.transform),
+                    "Mapped bones with non-Transform components must be retained and parented to their mapped target.");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(settings);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
         }
 
         [Test]
@@ -355,6 +543,79 @@ namespace VF.Integration.Basis.Shim.Tests {
             } finally {
                 UnityEngine.Object.DestroyImmediate(root);
             }
+        }
+
+        private static GameObject CreateSimpleArmatureLinkAvatar() {
+            var root = new GameObject("Avatar");
+            root.AddComponent<BasisAvatar>();
+
+            var target = new GameObject("Target");
+            target.transform.SetParent(root.transform, false);
+
+            var wearable = new GameObject("Wearable");
+            wearable.transform.SetParent(root.transform, false);
+            var source = new GameObject("Prop");
+            source.transform.SetParent(wearable.transform, false);
+
+            var fury = wearable.AddComponent<VRCFury>();
+            fury.content = new ArmatureLink {
+                propBone = source,
+                recursive = false,
+                linkTo = {
+                    new ArmatureLink.LinkTo {
+                        useBone = false,
+                        useObj = true,
+                        obj = target
+                    }
+                }
+            };
+            return root;
+        }
+
+        private static GameObject CreateRecursiveSkinnedArmatureLinkAvatar() {
+            var root = new GameObject("Avatar");
+            root.AddComponent<BasisAvatar>();
+
+            var targetArmature = new GameObject("TargetArmature");
+            targetArmature.transform.SetParent(root.transform, false);
+            var targetHips = new GameObject("Hips");
+            targetHips.transform.SetParent(targetArmature.transform, false);
+            var targetSpine = new GameObject("Spine");
+            targetSpine.transform.SetParent(targetHips.transform, false);
+
+            var wearable = new GameObject("Wearable");
+            wearable.transform.SetParent(root.transform, false);
+            var sourceArmature = new GameObject("Armature");
+            sourceArmature.transform.SetParent(wearable.transform, false);
+            var sourceHips = new GameObject("Hips");
+            sourceHips.transform.SetParent(sourceArmature.transform, false);
+            var sourceSpine = new GameObject("Spine");
+            sourceSpine.transform.SetParent(sourceHips.transform, false);
+
+            var meshObject = new GameObject("Mesh");
+            meshObject.transform.SetParent(wearable.transform, false);
+            var renderer = meshObject.AddComponent<SkinnedMeshRenderer>();
+            var mesh = new Mesh { name = "VRCFuryArmatureLinkSkinTestMesh" };
+            mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up };
+            mesh.triangles = new[] { 0, 1, 2 };
+            mesh.bindposes = new[] { sourceHips.transform.worldToLocalMatrix, sourceSpine.transform.worldToLocalMatrix };
+            renderer.sharedMesh = mesh;
+            renderer.rootBone = sourceHips.transform;
+            renderer.bones = new[] { sourceHips.transform, sourceSpine.transform };
+
+            var fury = wearable.AddComponent<VRCFury>();
+            fury.content = new ArmatureLink {
+                propBone = sourceHips,
+                recursive = true,
+                linkTo = {
+                    new ArmatureLink.LinkTo {
+                        useBone = false,
+                        useObj = true,
+                        obj = targetHips
+                    }
+                }
+            };
+            return root;
         }
 
         private static void SetField(object target, string name, object value) {
