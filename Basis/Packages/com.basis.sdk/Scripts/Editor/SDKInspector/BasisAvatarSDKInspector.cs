@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.UIElements;
 using static BasisAvatarValidator;
 using Basis.Scripts.BasisSdk.Players;
@@ -17,10 +18,20 @@ public partial class BasisAvatarSDKInspector : Editor
     private const string PendingTestInEditorAvatarIdSessionKey = "BasisAvatarSDKInspector.PendingTestInEditorAvatarId";
 
     public delegate void BeforeTestInEditorHandler(GameObject clone);
+    /// <summary>
+    /// Legacy Test in Editor preparation stage. The clone is active when this runs, matching the
+    /// historical contract for consumers that expect initialized Animator/renderer state.
+    /// </summary>
     public static BeforeTestInEditorHandler OnBeforeTestInEditor;
     /// <summary>
-    /// Final Test in Editor preparation stage. Runs after normal clone processors and immediately
-    /// before Basis post-processing/loading. Build-time component replacement belongs here.
+    /// Structural Test in Editor preparation stage. The clone is intentionally inactive here so
+    /// authoring-only behaviours cannot execute before final build-time conversion has completed.
+    /// Processors registered here must support inactive hierarchies.
+    /// </summary>
+    public static BeforeTestInEditorHandler OnBeforeTestInEditorPrepareInactive;
+    /// <summary>
+    /// Final inactive Test in Editor preparation stage. Runs after structural clone processors and
+    /// immediately before the clone is activated. Build-time component replacement belongs here.
     /// </summary>
     public static BeforeTestInEditorHandler OnBeforeTestInEditorFinalize;
     private static BasisAvatar ScheduledTestInEditorAvatar;
@@ -660,6 +671,55 @@ public partial class BasisAvatarSDKInspector : Editor
         LoadAvatar(avatar);
     }
 
+    private static GameObject InstantiateInactiveClone(GameObject originalObject)
+    {
+        GameObject stagingRoot = new GameObject("Basis Test In Editor Clone Staging")
+        {
+            hideFlags = HideFlags.HideAndDontSave
+        };
+        stagingRoot.SetActive(false);
+
+        if (!EditorUtility.IsPersistent(originalObject) && originalObject.scene.IsValid() && originalObject.scene.isLoaded)
+        {
+            SceneManager.MoveGameObjectToScene(stagingRoot, originalObject.scene);
+        }
+
+        try
+        {
+            GameObject clone = GameObject.Instantiate(originalObject, stagingRoot.transform, true);
+            // The inactive parent prevents Awake/OnEnable from running even when the source is an
+            // active persistent prefab asset. Make activeSelf false before removing that parent.
+            clone.SetActive(false);
+            clone.transform.SetParent(null, true);
+            return clone;
+        }
+        finally
+        {
+            if (Application.isPlaying)
+            {
+                GameObject.Destroy(stagingRoot);
+            }
+            else
+            {
+                GameObject.DestroyImmediate(stagingRoot);
+            }
+        }
+    }
+
+    private static void ProcessTestInEditorClone(GameObject inSceneItem)
+    {
+        BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(inSceneItem);
+        OnBeforeTestInEditorPrepareInactive?.Invoke(inSceneItem);
+        OnBeforeTestInEditorFinalize?.Invoke(inSceneItem);
+
+        // Finalization has removed/replaced authoring-only runtime scripts. Activate before the
+        // legacy hook and PostProcessAvatar so consumers see the same initialized hierarchy they
+        // historically received and active-only bone traversal remains valid.
+        inSceneItem.SetActive(true);
+        OnBeforeTestInEditor?.Invoke(inSceneItem);
+        BasisAssetBundlePipeline.PostProcessAvatar(inSceneItem);
+    }
+
     private static async void LoadAvatar(BasisAvatar avatar)
     {
         if (avatar == null || avatar.gameObject == null)
@@ -673,6 +733,7 @@ public partial class BasisAvatarSDKInspector : Editor
         GameObject originalObject = avatar.gameObject;
         bool originalWasActive = originalObject.activeSelf;
         bool disabledOriginal = false;
+        bool cloneHandedToPlayer = false;
         GameObject inSceneItem = null;
 
         try
@@ -710,16 +771,9 @@ public partial class BasisAvatarSDKInspector : Editor
                 await Awaitable.NextFrameAsync();
             }
 
-            inSceneItem = GameObject.Instantiate(originalObject);
-            // Keep authoring behaviours inert until all build processors, including Cilbox conversion,
-            // have finished. The runtime proxy becomes active only after the native script is gone.
-            inSceneItem.SetActive(false);
+            inSceneItem = InstantiateInactiveClone(originalObject);
 
-            BasisAssetBundlePipeline.DestroyEditorOnlyInAvatar(inSceneItem);
-            OnBeforeTestInEditor?.Invoke(inSceneItem);
-            OnBeforeTestInEditorFinalize?.Invoke(inSceneItem);
-            BasisAssetBundlePipeline.PostProcessAvatar(inSceneItem);
-            inSceneItem.SetActive(true);
+            ProcessTestInEditorClone(inSceneItem);
 
             BasisLoadableBundle LoadableBundle = new BasisLoadableBundle
             {
@@ -731,7 +785,16 @@ public partial class BasisAvatarSDKInspector : Editor
                 RemoteBeeFileLocation = BasisGenerateUniqueID.GenerateUniqueID()
             };
             BasisDebug.Log("Requesting Avatar Load", BasisDebug.LogTag.Editor);
-            await BasisLocalPlayerData.Instance.CreateAvatarFromMode(BasisLoadMode.ByGameobjectReference, LoadableBundle);
+            IBasisLocalPlayer localPlayer = BasisLocalPlayerData.Instance;
+            if (localPlayer == null)
+            {
+                throw new InvalidOperationException("The local player disappeared before Test In Editor could load the prepared avatar.");
+            }
+
+            // From this point the local-player avatar path owns the clone. Do not destroy it from the
+            // editor catch path if loading fails after ownership has been accepted.
+            cloneHandedToPlayer = true;
+            await localPlayer.CreateAvatarFromMode(BasisLoadMode.ByGameobjectReference, LoadableBundle);
             BasisDebug.Log("Avatar Load Complete", BasisDebug.LogTag.Editor);
 
             // The in-scene object is now the local player's avatar. Keep the authored scene instance
@@ -741,7 +804,7 @@ public partial class BasisAvatarSDKInspector : Editor
         catch (Exception ex)
         {
             BasisDebug.LogError($"Test In Editor failed while preparing the avatar clone: {ex}", BasisDebug.LogTag.Editor);
-            if (inSceneItem != null)
+            if (inSceneItem != null && !cloneHandedToPlayer)
             {
                 if (Application.isPlaying)
                 {
