@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -7,6 +8,7 @@ using Basis.Scripts.BasisSdk;
 using HVR.Basis.Comms;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 using UnityEngine.UIElements;
 using VF.Model;
 using VF.Model.Feature;
@@ -126,6 +128,20 @@ namespace VF.Integration.Basis.Shim.Tests {
             Assert.That(vrcfuryCallbacks, Has.Length.EqualTo(1), "VRCFury should be registered exactly once on the Basis Test in Editor pipeline.");
         }
 
+        [UnityTest]
+        public IEnumerator TestInEditorHook_RemainsRegisteredAfterEnteringPlayMode() {
+            RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
+            Assert.That(GetVrcfuryTestInEditorCallbacks(), Has.Length.EqualTo(1),
+                "VRCFury should start with exactly one Test in Editor callback before entering Play Mode.");
+
+            yield return new EnterPlayMode();
+
+            Assert.That(GetVrcfuryTestInEditorCallbacks(), Has.Length.EqualTo(1),
+                "Basis enters Play Mode before cloning the avatar, so VRCFury's Test in Editor hook must survive the domain transition.");
+
+            yield return new ExitPlayMode();
+        }
+
         [Test]
         public void TestInEditorHook_CoexistsWithNdmfHookWhenInstalled() {
             RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
@@ -139,6 +155,13 @@ namespace VF.Integration.Basis.Shim.Tests {
             Assert.That(callbacks.Any(callback => callback.Method.DeclaringType == typeof(BasisVrcfuryAutoShim)), Is.True);
             Assert.That(callbacks.Any(callback => callback.Method.DeclaringType == ndmfHookType), Is.True,
                 "Basis NDMF and VRCFury must both remain subscribed to the shared Test in Editor clone callback.");
+        }
+
+        private static Delegate[] GetVrcfuryTestInEditorCallbacks() {
+            return (BasisAvatarSDKInspector.OnBeforeTestInEditor?.GetInvocationList() ?? Array.Empty<Delegate>())
+                .Where(callback => callback.Method.DeclaringType == typeof(BasisVrcfuryAutoShim)
+                                   && callback.Method.Name == nameof(BasisVrcfuryAutoShim.OnBeforeTestInEditor))
+                .ToArray();
         }
 
         [Test]
@@ -155,8 +178,9 @@ namespace VF.Integration.Basis.Shim.Tests {
                 Assert.That(clonedModel, Is.Not.Null);
                 Assert.That(clonedModel.propBone, Is.SameAs(clonedSource));
                 Assert.That(clonedModel.propBone, Is.Not.SameAs(authored.transform.Find("Wearable/Prop").gameObject));
-                Assert.That(clonedModel.linkTo[0].obj, Is.SameAs(clonedTarget));
-                Assert.That(clonedModel.linkTo[0].obj, Is.Not.SameAs(authored.transform.Find("Target").gameObject));
+                var clonedObjectTarget = clonedModel.linkTo.Single(link => link.useObj);
+                Assert.That(clonedObjectTarget.obj, Is.SameAs(clonedTarget));
+                Assert.That(clonedObjectTarget.obj, Is.Not.SameAs(authored.transform.Find("Target").gameObject));
             } finally {
                 if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
                 UnityEngine.Object.DestroyImmediate(authored);
