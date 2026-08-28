@@ -9,6 +9,7 @@
         "Unity.Collections",
         "Unity.Mathematics",
         "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner",
         "BasisSDK",
         "BasisSDKEditor",
         "BasisShims",
