@@ -1,8 +1,10 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
 using Basis.Scripts.BasisSdk;
+using HVR.Basis.Comms;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -38,6 +40,7 @@ namespace VF.Integration.Basis.Shim.Tests {
         public void BasisAuthoring_UsesUpstreamStyleFeatureMenuPaths() {
             Assert.That(BasisVrcfuryAuthoringMenus.ArmatureLinkMenuPath, Is.EqualTo("Component/VRCFury/Armature Link (VRCFury)"));
             Assert.That(BasisVrcfuryAuthoringMenus.BlendshapeOptimizerMenuPath, Is.EqualTo("Component/VRCFury/Blendshape Optimizer (VRCFury)"));
+            Assert.That(BasisVrcfuryAuthoringMenus.MmdCompatibilityMenuPath, Is.EqualTo("Component/VRCFury/MMD Compatibility (VRCFury)"));
         }
 
         [TestCase(true)]
@@ -49,6 +52,25 @@ namespace VF.Integration.Basis.Shim.Tests {
                 fury.content = armatureLink
                     ? (FeatureModel)new ArmatureLink { propBone = root }
                     : new BlendshapeOptimizer();
+
+                var editor = UnityEditor.Editor.CreateEditor(fury);
+                try {
+                    Assert.That(editor, Is.TypeOf<BasisVrcfuryAuthoringEditor>());
+                    Assert.That(editor.CreateInspectorGUI(), Is.Not.Null);
+                } finally {
+                    UnityEngine.Object.DestroyImmediate(editor);
+                }
+            } finally {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void BasisAuthoring_UsesCustomVrcfuryInspectorForMmdCompatibility() {
+            var root = new GameObject("Avatar");
+            try {
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = new MmdCompatibility();
 
                 var editor = UnityEditor.Editor.CreateEditor(fury);
                 try {
@@ -166,6 +188,106 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void BlendshapeOptimizer_PreservesAutomaticFaceTrackingTargets() {
+            var root = new GameObject("Avatar");
+            var definitionFile = ScriptableObject.CreateInstance<BlendshapeActuationDefinitionFile>();
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            try {
+                root.AddComponent<BasisAvatar>();
+                var renderObject = new GameObject("Face");
+                renderObject.transform.SetParent(root.transform, false);
+                var renderer = renderObject.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = MakeBlendshapeMesh("FaceTrackMe", "BakeMe");
+
+                definitionFile.definitions = new[] {
+                    new BlendshapeActuationDefinition {
+                        address = "FT/Test",
+                        inStart = 0,
+                        inEnd = 1,
+                        outStart = 0,
+                        outEnd = 100,
+                        blendshapes = new[] { "FaceTrackMe" },
+                        onlyFirstMatch = true
+                    }
+                };
+
+                var automatic = root.AddComponent<AutomaticFaceTracking>();
+                SetField(automatic, "useOverrideDefinitionFiles", true);
+                SetField(automatic, "overrideDefinitionFiles", new[] { definitionFile });
+
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = new BlendshapeOptimizer();
+
+                settings.TemporaryStorage = TempFolder;
+                BasisVrcfuryAutoShim.ProcessBuildClone(root, settings);
+
+                Assert.That(renderer.sharedMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh.blendShapeCount, Is.EqualTo(1));
+                Assert.That(renderer.sharedMesh.GetBlendShapeName(0), Is.EqualTo("FaceTrackMe"));
+            } finally {
+                UnityEngine.Object.DestroyImmediate(settings);
+                UnityEngine.Object.DestroyImmediate(definitionFile);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void BlendshapeOptimizer_PreservesDefaultUnifiedExpressionsFaceTrackingTargets() {
+            var root = new GameObject("Avatar");
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            try {
+                root.AddComponent<BasisAvatar>();
+                var renderObject = new GameObject("Face");
+                renderObject.transform.SetParent(root.transform, false);
+                var renderer = renderObject.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = MakeBlendshapeMesh("MouthRaiserLower", "BakeMe");
+
+                root.AddComponent<AutomaticFaceTracking>();
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = new BlendshapeOptimizer();
+
+                settings.TemporaryStorage = TempFolder;
+                BasisVrcfuryAutoShim.ProcessBuildClone(root, settings);
+
+                Assert.That(renderer.sharedMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh.blendShapeCount, Is.EqualTo(1));
+                Assert.That(renderer.sharedMesh.GetBlendShapeName(0), Is.EqualTo("MouthRaiserLower"));
+            } finally {
+                UnityEngine.Object.DestroyImmediate(settings);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void BlendshapeOptimizer_MmdCompatibilityPreservesKnownMmdShapesOnBody() {
+            var root = new GameObject("Avatar");
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            try {
+                root.AddComponent<BasisAvatar>();
+                var body = new GameObject("Body");
+                body.transform.SetParent(root.transform, false);
+                var renderer = body.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = MakeBlendshapeMesh("あ２", "BakeMe");
+
+                var optimizer = root.AddComponent<VRCFury>();
+                optimizer.content = new BlendshapeOptimizer();
+                var mmd = root.AddComponent<VRCFury>();
+                mmd.content = new MmdCompatibility();
+
+                settings.TemporaryStorage = TempFolder;
+                BasisVrcfuryAutoShim.ProcessBuildClone(root, settings);
+
+                Assert.That(renderer.sharedMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh.blendShapeCount, Is.EqualTo(1));
+                Assert.That(renderer.sharedMesh.GetBlendShapeName(0), Is.EqualTo("あ２"));
+                Assert.That(root.GetComponents<VRCFury>(), Is.Empty);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(settings);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void TestInEditor_AppliesBlendshapeOptimizerWithTemporaryStorage() {
             var root = new GameObject("Avatar");
             try {
@@ -235,7 +357,15 @@ namespace VF.Integration.Basis.Shim.Tests {
             }
         }
 
-        private static Mesh MakeBlendshapeMesh() {
+        private static void SetField(object target, string name, object value) {
+            var field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            Assert.That(field, Is.Not.Null, $"Expected field '{name}' on {target.GetType().Name}");
+            field.SetValue(target, value);
+        }
+
+        private static Mesh MakeBlendshapeMesh() => MakeBlendshapeMesh("KeepMe", "BakeMe");
+
+        private static Mesh MakeBlendshapeMesh(params string[] names) {
             var mesh = new Mesh { name = "VRCFuryBasisShimTestMesh" };
             mesh.vertices = new[] {
                 Vector3.zero,
@@ -245,19 +375,15 @@ namespace VF.Integration.Basis.Shim.Tests {
             mesh.triangles = new[] { 0, 1, 2 };
             mesh.RecalculateNormals();
 
-            var keepDelta = new[] {
-                new Vector3(0.01f, 0f, 0f),
-                Vector3.zero,
-                Vector3.zero
-            };
-            var bakeDelta = new[] {
-                Vector3.zero,
-                new Vector3(0f, 0.02f, 0f),
-                Vector3.zero
-            };
             var zeros = new Vector3[3];
-            mesh.AddBlendShapeFrame("KeepMe", 100f, keepDelta, zeros, zeros);
-            mesh.AddBlendShapeFrame("BakeMe", 100f, bakeDelta, zeros, zeros);
+            for (var i = 0; i < names.Length; i++) {
+                var delta = new[] {
+                    i % 3 == 0 ? new Vector3(0.01f * (i + 1), 0f, 0f) : Vector3.zero,
+                    i % 3 == 1 ? new Vector3(0f, 0.01f * (i + 1), 0f) : Vector3.zero,
+                    i % 3 == 2 ? new Vector3(0f, 0f, 0.01f * (i + 1)) : Vector3.zero
+                };
+                mesh.AddBlendShapeFrame(names[i], 100f, delta, zeros, zeros);
+            }
             return mesh;
         }
     }

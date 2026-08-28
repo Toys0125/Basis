@@ -4,6 +4,7 @@ using System.Linq;
 using System.IO;
 using System.Reflection;
 using Basis.Scripts.BasisSdk;
+using HVR.Basis.Comms;
 using HVR.Vixxy;
 using UnityEditor;
 using UnityEngine;
@@ -114,8 +115,12 @@ namespace VF.Integration.Basis.Shim {
                 }
 
                 if (features.Any(feature => feature is BlendshapeOptimizer)) {
-                    Action<Dictionary<SkinnedMeshRenderer, HashSet<string>>> collect = requirements =>
+                    var keepMmdShapes = features.Any(feature => feature is MmdCompatibility);
+                    Action<Dictionary<SkinnedMeshRenderer, HashSet<string>>> collect = requirements => {
                         CollectVixxyBlendshapeRequirements(buildRoot, requirements);
+                        CollectFaceTrackingBlendshapeRequirements(buildRoot, requirements);
+                        if (keepMmdShapes) CollectMmdBlendshapeRequirements(buildRoot, requirements);
+                    };
                     BasisBlendshapeBuildHooks.OnCollectRequirements += collect;
                     try {
                         BasisBuildBlendshapeStripper.StripForBuild(settings, buildRoot, avatar);
@@ -195,6 +200,104 @@ namespace VF.Integration.Basis.Shim {
                     }
                 }
             }
+        }
+
+        private static void CollectFaceTrackingBlendshapeRequirements(
+            GameObject root,
+            Dictionary<SkinnedMeshRenderer, HashSet<string>> requirements
+        ) {
+            var allRenderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true)
+                .Where(renderer => renderer != null && renderer.sharedMesh != null)
+                .ToArray();
+            if (allRenderers.Length == 0) return;
+
+            foreach (var automatic in root.GetComponentsInChildren<AutomaticFaceTracking>(true)) {
+                if (automatic == null) continue;
+
+                BlendshapeActuationDefinitionFile[] definitionFiles;
+                List<SkinnedMeshRenderer> trackedRenderers;
+                try {
+                    definitionFiles = automatic.ResolveFilesOrNull(allRenderers, out _);
+                    if (definitionFiles == null || definitionFiles.Length == 0) continue;
+                    trackedRenderers = automatic.FindSkinnedMeshes(definitionFiles, allRenderers);
+                } catch (Exception ex) {
+                    // Face tracking correctness is more important than stripping a few extra shapes.
+                    // If its definition resolver cannot run in the editor build context, preserve all
+                    // blendshapes rather than silently baking shapes that the runtime may drive.
+                    Debug.LogWarning($"VRCFury Basis Blendshape Optimizer could not resolve Automatic Face Tracking requirements; preserving avatar blendshapes. {ex.Message}");
+                    PreserveAllBlendshapes(allRenderers, requirements);
+                    continue;
+                }
+
+                if (trackedRenderers == null || trackedRenderers.Count == 0) continue;
+                var targetMap = BlendshapeActuation.ResolveSmrToBlendshapeIndices(trackedRenderers.ToArray());
+
+                foreach (var file in definitionFiles) {
+                    if (file?.definitions == null) continue;
+                    foreach (var definition in file.definitions) {
+                        if (definition.blendshapes == null || definition.blendshapes.Length == 0) continue;
+                        foreach (var target in BlendshapeActuation.ComputeTargets(
+                                     targetMap,
+                                     definition.blendshapes,
+                                     definition.onlyFirstMatch)) {
+                            var renderer = target?.Renderer;
+                            var mesh = renderer != null ? renderer.sharedMesh : null;
+                            if (mesh == null || target.BlendshapeIndices == null) continue;
+                            var set = GetOrCreateRequirement(requirements, renderer);
+                            foreach (var index in target.BlendshapeIndices) {
+                                if (index >= 0 && index < mesh.blendShapeCount) {
+                                    set.Add(mesh.GetBlendShapeName(index));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void CollectMmdBlendshapeRequirements(
+            GameObject root,
+            Dictionary<SkinnedMeshRenderer, HashSet<string>> requirements
+        ) {
+            foreach (var renderer in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) {
+                if (renderer == null || renderer.sharedMesh == null) continue;
+
+                // Match normal VRCFury exactly: MMD compatibility only protects recognized MMD
+                // names on the renderer at avatar-relative path "Body".
+                if (AnimationUtility.CalculateTransformPath(renderer.transform, root.transform) != "Body") continue;
+
+                var mesh = renderer.sharedMesh;
+                HashSet<string> set = null;
+                for (var i = 0; i < mesh.blendShapeCount; i++) {
+                    var name = mesh.GetBlendShapeName(i);
+                    if (!MmdCompatibility.IsMaybeMmdBlendshape(name)) continue;
+                    set ??= GetOrCreateRequirement(requirements, renderer);
+                    set.Add(name);
+                }
+            }
+        }
+
+        private static void PreserveAllBlendshapes(
+            IEnumerable<SkinnedMeshRenderer> renderers,
+            Dictionary<SkinnedMeshRenderer, HashSet<string>> requirements
+        ) {
+            foreach (var renderer in renderers) {
+                var mesh = renderer != null ? renderer.sharedMesh : null;
+                if (mesh == null) continue;
+                var set = GetOrCreateRequirement(requirements, renderer);
+                for (var i = 0; i < mesh.blendShapeCount; i++) set.Add(mesh.GetBlendShapeName(i));
+            }
+        }
+
+        private static HashSet<string> GetOrCreateRequirement(
+            Dictionary<SkinnedMeshRenderer, HashSet<string>> requirements,
+            SkinnedMeshRenderer renderer
+        ) {
+            if (!requirements.TryGetValue(renderer, out var set)) {
+                set = new HashSet<string>();
+                requirements[renderer] = set;
+            }
+            return set;
         }
 
         private static IEnumerable<GameObject> ExpandSubjectTargets(Transform root, HVRVixxySubject subject) {

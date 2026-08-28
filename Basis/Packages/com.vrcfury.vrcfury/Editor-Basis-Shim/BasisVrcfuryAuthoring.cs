@@ -15,6 +15,7 @@ namespace VF.Integration.Basis.Shim {
         private const string ToolsRoot = "Tools/VRCFury/BasisVR/";
         internal const string ArmatureLinkMenuPath = ComponentRoot + "Armature Link (VRCFury)";
         internal const string BlendshapeOptimizerMenuPath = ComponentRoot + "Blendshape Optimizer (VRCFury)";
+        internal const string MmdCompatibilityMenuPath = ComponentRoot + "MMD Compatibility (VRCFury)";
 
         [MenuItem(ToolsRoot + "Status", priority = 0)]
         private static void Status() {
@@ -23,7 +24,8 @@ namespace VF.Integration.Basis.Shim {
                 "The BasisVR compatibility layer is active.\n\n" +
                 "Supported VRCFury authoring in this build:\n" +
                 "• Armature Link\n" +
-                "• Blendshape Optimizer\n\n" +
+                "• Blendshape Optimizer\n" +
+                "• MMD Compatibility\n\n" +
                 "These are normal VRCFury feature components and are processed only on the temporary Basis build clone.",
                 "OK"
             );
@@ -62,6 +64,17 @@ namespace VF.Integration.Basis.Shim {
 
         [MenuItem(BlendshapeOptimizerMenuPath, true)]
         private static bool ValidateAddBlendshapeOptimizer() => Selection.gameObjects.Any(obj => obj != null);
+
+        [MenuItem(MmdCompatibilityMenuPath, false, 2)]
+        private static void AddMmdCompatibility() {
+            foreach (var selected in Selection.gameObjects) {
+                if (selected == null) continue;
+                AddFeature(selected, new MmdCompatibility(), "Add VRCFury MMD Compatibility");
+            }
+        }
+
+        [MenuItem(MmdCompatibilityMenuPath, true)]
+        private static bool ValidateAddMmdCompatibility() => Selection.gameObjects.Any(obj => obj != null);
 
         internal static VRCFury AddFeature(GameObject target, FeatureModel feature, string undoName) {
             if (target == null || feature == null) return null;
@@ -169,6 +182,7 @@ namespace VF.Integration.Basis.Shim {
             if (!(target is VRCFury fury) || fury.content == null) return "VRCFury";
             if (fury.content is ArmatureLink) return "Armature Link";
             if (fury.content is BlendshapeOptimizer) return "Blendshape Optimizer";
+            if (fury.content is MmdCompatibility) return "MMD Compatibility";
             return ObjectNames.NicifyVariableName(fury.content.GetType().Name);
         }
 
@@ -184,6 +198,7 @@ namespace VF.Integration.Basis.Shim {
                 );
                 if (GUILayout.Button("Armature Link")) SetFeature(new ArmatureLink { propBone = fury.gameObject });
                 if (GUILayout.Button("Blendshape Optimizer")) SetFeature(new BlendshapeOptimizer());
+                if (GUILayout.Button("MMD Compatibility")) SetFeature(new MmdCompatibility());
                 serializedObject.ApplyModifiedProperties();
                 return;
             }
@@ -192,6 +207,8 @@ namespace VF.Integration.Basis.Shim {
                 DrawArmatureLink(content, armatureLink);
             } else if (fury.content is BlendshapeOptimizer) {
                 DrawBlendshapeOptimizer();
+            } else if (fury.content is MmdCompatibility) {
+                DrawMmdCompatibility();
             } else {
                 EditorGUILayout.HelpBox(
                     "This VRCFury feature is preserved for source-avatar compatibility, but the Basis compatibility layer does not currently provide its original custom editor/build implementation.",
@@ -405,6 +422,17 @@ namespace VF.Integration.Basis.Shim {
             EditorGUILayout.HelpBox(
                 "This feature will automatically bake all non-animated blendshapes into the mesh, saving VRAM for free!",
                 MessageType.Info
+            );
+        }
+
+        private static void DrawMmdCompatibility() {
+            EditorGUILayout.HelpBox(
+                "This component improves MMD compatibility by preserving VRCFury's known MMD blendshapes when Blendshape Optimizer runs.",
+                MessageType.Info
+            );
+            EditorGUILayout.HelpBox(
+                "VRCFury's advanced MMD layer-detection settings control VRChat FX animator layers. BasisVR does not use those VRChat layers, so those settings are preserved in the component data but are not applied by the Basis backend.",
+                MessageType.None
             );
         }
 
