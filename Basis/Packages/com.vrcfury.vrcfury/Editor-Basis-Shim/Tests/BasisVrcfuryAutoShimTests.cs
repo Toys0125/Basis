@@ -13,17 +13,18 @@ namespace VF.Integration.Basis.Shim.Tests {
     internal class BasisVrcfuryAutoShimTests {
         private const string TempFolder = "Assets/__VRCFuryBasisShimTests";
 
-        [SetUp]
-        public void SetUp() {
+        [OneTimeSetUp]
+        public void OneTimeSetUp() {
             if (!AssetDatabase.IsValidFolder(TempFolder)) {
                 AssetDatabase.CreateFolder("Assets", "__VRCFuryBasisShimTests");
             }
         }
 
-        [TearDown]
-        public void TearDown() {
-            AssetDatabase.DeleteAsset(TempFolder);
+        [OneTimeTearDown]
+        public void OneTimeTearDown() {
             BasisVrcfuryAutoShim.CleanupTestInEditorStorage();
+            if (System.IO.Directory.Exists(TempFolder)) System.IO.Directory.Delete(TempFolder, true);
+            if (System.IO.File.Exists(TempFolder + ".meta")) System.IO.File.Delete(TempFolder + ".meta");
         }
 
         [Test]

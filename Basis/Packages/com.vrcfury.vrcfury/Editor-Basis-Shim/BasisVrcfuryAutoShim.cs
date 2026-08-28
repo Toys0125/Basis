@@ -82,9 +82,9 @@ namespace VF.Integration.Basis.Shim {
             if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path) || !IsOwnedTestInEditorStorage(path)) return false;
 
             path = path.Replace('\\', '/');
-            if (AssetDatabase.IsValidFolder(path)) return AssetDatabase.DeleteAsset(path);
-
             Directory.Delete(path, true);
+            var meta = path + ".meta";
+            if (File.Exists(meta)) File.Delete(meta);
             return true;
         }
 
