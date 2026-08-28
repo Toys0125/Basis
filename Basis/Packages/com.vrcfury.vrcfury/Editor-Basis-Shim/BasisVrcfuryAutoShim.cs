@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
 using System.Reflection;
 using Basis.Scripts.BasisSdk;
 using HVR.Vixxy;
@@ -19,6 +20,8 @@ namespace VF.Integration.Basis.Shim {
     [InitializeOnLoad]
     internal static class BasisVrcfuryAutoShim {
         private const string TestInEditorStorageRoot = "Assets/__VRCFuryBasisTestInEditor";
+        private const string TestInEditorStorageMarker = ".vrcfury-basis-test-in-editor";
+        private const string TestInEditorStorageMarkerContents = "com.toys0125.vrcfury-basis:test-in-editor:v1";
         private static bool running;
         private static readonly BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
@@ -38,11 +41,12 @@ namespace VF.Integration.Basis.Shim {
         }
 
         internal static void OnBeforeTestInEditor(GameObject buildRoot) {
-            if (buildRoot == null) return;
+            if (buildRoot == null || buildRoot.GetComponentsInChildren<VRCFury>(true).Length == 0) return;
 
             var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
             settings.hideFlags = HideFlags.HideAndDontSave;
-            settings.TemporaryStorage = $"{TestInEditorStorageRoot}/{Guid.NewGuid():N}";
+            var storageRoot = CreateOwnedTestInEditorStorageRoot();
+            settings.TemporaryStorage = $"{storageRoot}/{Guid.NewGuid():N}";
             try {
                 ProcessBuildClone(buildRoot, settings);
             } finally {
@@ -54,9 +58,41 @@ namespace VF.Integration.Basis.Shim {
             if (state == PlayModeStateChange.EnteredEditMode) CleanupTestInEditorStorage();
         }
 
+        private static string CreateOwnedTestInEditorStorageRoot() {
+            var root = TestInEditorStorageRoot;
+            if (Directory.Exists(root) && !IsOwnedTestInEditorStorage(root)) {
+                root = $"{TestInEditorStorageRoot}_{Guid.NewGuid():N}";
+            }
+
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, TestInEditorStorageMarker), TestInEditorStorageMarkerContents);
+            return root.Replace('\\', '/');
+        }
+
+        private static bool IsOwnedTestInEditorStorage(string path) {
+            try {
+                var marker = Path.Combine(path, TestInEditorStorageMarker);
+                return File.Exists(marker) && File.ReadAllText(marker) == TestInEditorStorageMarkerContents;
+            } catch {
+                return false;
+            }
+        }
+
+        internal static bool TryDeleteOwnedTestInEditorStorage(string path) {
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path) || !IsOwnedTestInEditorStorage(path)) return false;
+
+            path = path.Replace('\\', '/');
+            if (AssetDatabase.IsValidFolder(path)) return AssetDatabase.DeleteAsset(path);
+
+            Directory.Delete(path, true);
+            return true;
+        }
+
         internal static void CleanupTestInEditorStorage() {
-            if (AssetDatabase.IsValidFolder(TestInEditorStorageRoot)) {
-                AssetDatabase.DeleteAsset(TestInEditorStorageRoot);
+            if (!Directory.Exists("Assets")) return;
+
+            foreach (var path in Directory.GetDirectories("Assets", "__VRCFuryBasisTestInEditor*")) {
+                TryDeleteOwnedTestInEditorStorage(path);
             }
         }
 

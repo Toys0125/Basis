@@ -86,6 +86,15 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void TestInEditorCleanup_PreservesUnownedFolders() {
+            var unowned = $"{TempFolder}/UnownedTestInEditorStorage";
+            AssetDatabase.CreateFolder(TempFolder, "UnownedTestInEditorStorage");
+
+            Assert.That(BasisVrcfuryAutoShim.TryDeleteOwnedTestInEditorStorage(unowned), Is.False);
+            Assert.That(AssetDatabase.IsValidFolder(unowned), Is.True);
+        }
+
+        [Test]
         public void TestInEditorHook_IsRegisteredWithBasis() {
             RuntimeHelpers.RunClassConstructor(typeof(BasisVrcfuryAutoShim).TypeHandle);
             var callbacks = BasisAvatarSDKInspector.OnBeforeTestInEditor?.GetInvocationList() ?? Array.Empty<Delegate>();
