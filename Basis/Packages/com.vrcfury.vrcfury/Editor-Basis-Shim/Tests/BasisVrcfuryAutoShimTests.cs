@@ -12,6 +12,7 @@ using UnityEngine.TestTools;
 using UnityEngine.UIElements;
 using VF.Model;
 using VF.Model.Feature;
+using VF.Model.StateAction;
 
 namespace VF.Integration.Basis.Shim.Tests {
     internal class BasisVrcfuryAutoShimTests {
@@ -43,6 +44,7 @@ namespace VF.Integration.Basis.Shim.Tests {
             Assert.That(BasisVrcfuryAuthoringMenus.ArmatureLinkMenuPath, Is.EqualTo("Component/VRCFury/Armature Link (VRCFury)"));
             Assert.That(BasisVrcfuryAuthoringMenus.BlendshapeOptimizerMenuPath, Is.EqualTo("Component/VRCFury/Blendshape Optimizer (VRCFury)"));
             Assert.That(BasisVrcfuryAuthoringMenus.MmdCompatibilityMenuPath, Is.EqualTo("Component/VRCFury/MMD Compatibility (VRCFury)"));
+            Assert.That(BasisVrcfuryAuthoringMenus.ApplyDuringUploadMenuPath, Is.EqualTo("Component/VRCFury/Apply During Upload (VRCFury)"));
         }
 
         [TestCase(true)]
@@ -140,6 +142,120 @@ namespace VF.Integration.Basis.Shim.Tests {
             } finally {
                 if (material != null) UnityEngine.Object.DestroyImmediate(material);
                 UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void ApplyDuringUpload_BuildCloneAppliesObjectBlendshapeAndScaleWithoutChangingSource() {
+            var authored = new GameObject("Avatar");
+            GameObject clone = null;
+            try {
+                authored.AddComponent<BasisAvatar>();
+                var target = new GameObject("Target");
+                target.transform.SetParent(authored.transform, false);
+                target.SetActive(false);
+                target.transform.localScale = new Vector3(2, 3, 4);
+
+                var face = new GameObject("Face");
+                face.transform.SetParent(authored.transform, false);
+                var skin = face.AddComponent<SkinnedMeshRenderer>();
+                skin.sharedMesh = MakeBlendshapeMesh("Smile");
+
+                var feature = new ApplyDuringUpload { action = new State() };
+                feature.action.actions.Add(new ObjectToggleAction { obj = target, mode = ObjectToggleAction.Mode.TurnOn });
+                feature.action.actions.Add(new ScaleAction { obj = target, scale = 0.5f });
+                feature.action.actions.Add(new BlendShapeAction {
+                    blendShape = "Smile",
+                    blendShapeValue = 72,
+                    renderer = skin,
+                    allRenderers = false
+                });
+                BasisVrcfuryAuthoringMenus.AddFeature(authored, feature, "Create Apply During Upload regression feature");
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisVrcfuryAutoShim.ProcessBuildClone(clone, null);
+
+                var clonedTarget = clone.transform.Find("Target").gameObject;
+                var clonedSkin = clone.transform.Find("Face").GetComponent<SkinnedMeshRenderer>();
+                Assert.That(clonedTarget.activeSelf, Is.True);
+                Assert.That(clonedTarget.transform.localScale, Is.EqualTo(new Vector3(1, 1.5f, 2)));
+                Assert.That(clonedSkin.GetBlendShapeWeight(0), Is.EqualTo(72).Within(0.001f));
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty);
+
+                Assert.That(target.activeSelf, Is.False, "Apply During Upload must not mutate the authored avatar.");
+                Assert.That(target.transform.localScale, Is.EqualTo(new Vector3(2, 3, 4)));
+                Assert.That(skin.GetBlendShapeWeight(0), Is.EqualTo(0).Within(0.001f));
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
+        public void ApplyDuringUpload_MaterialPropertyUsesCloneMaterialAndPreservesSourceAsset() {
+            var authored = new GameObject("Avatar");
+            GameObject clone = null;
+            Material sourceMaterial = null;
+            try {
+                authored.AddComponent<BasisAvatar>();
+                var meshObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                meshObject.transform.SetParent(authored.transform, false);
+                var renderer = meshObject.GetComponent<Renderer>();
+                var shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
+                Assert.That(shader, Is.Not.Null);
+                sourceMaterial = new Material(shader);
+                var propertyName = sourceMaterial.HasProperty("_Glossiness") ? "_Glossiness" : "_Smoothness";
+                Assert.That(sourceMaterial.HasProperty(propertyName), Is.True);
+                sourceMaterial.SetFloat(propertyName, 0.1f);
+                renderer.sharedMaterial = sourceMaterial;
+
+                var feature = new ApplyDuringUpload { action = new State() };
+                feature.action.actions.Add(new MaterialPropertyAction {
+                    renderer2 = meshObject,
+                    affectAllMeshes = false,
+                    propertyName = propertyName,
+                    propertyType = MaterialPropertyAction.Type.Float,
+                    value = 0.85f
+                });
+                BasisVrcfuryAuthoringMenus.AddFeature(authored, feature, "Create material Apply During Upload regression feature");
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisVrcfuryAutoShim.ProcessBuildClone(clone, null);
+
+                var clonedMaterial = clone.GetComponentInChildren<Renderer>().sharedMaterial;
+                Assert.That(clonedMaterial, Is.Not.SameAs(sourceMaterial));
+                Assert.That(clonedMaterial.GetFloat(propertyName), Is.EqualTo(0.85f).Within(0.001f));
+                Assert.That(sourceMaterial.GetFloat(propertyName), Is.EqualTo(0.1f).Within(0.001f),
+                    "Baking a material property must not mutate the authored/shared material asset.");
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                if (sourceMaterial != null) UnityEngine.Object.DestroyImmediate(sourceMaterial);
+                UnityEngine.Object.DestroyImmediate(authored);
+            }
+        }
+
+        [Test]
+        public void ApplyDuringUpload_TestInEditorUsesSameBuildCloneBehavior() {
+            var authored = new GameObject("Avatar");
+            GameObject clone = null;
+            try {
+                authored.AddComponent<BasisAvatar>();
+                var target = new GameObject("InitiallyOff");
+                target.transform.SetParent(authored.transform, false);
+                target.SetActive(false);
+                var feature = new ApplyDuringUpload { action = new State() };
+                feature.action.actions.Add(new ObjectToggleAction { obj = target, mode = ObjectToggleAction.Mode.TurnOn });
+                BasisVrcfuryAuthoringMenus.AddFeature(authored, feature, "Create Test in Editor Apply During Upload regression feature");
+
+                clone = UnityEngine.Object.Instantiate(authored);
+                BasisVrcfuryAutoShim.OnBeforeTestInEditor(clone);
+
+                Assert.That(clone.transform.Find("InitiallyOff").gameObject.activeSelf, Is.True);
+                Assert.That(clone.GetComponentsInChildren<VRCFury>(true), Is.Empty);
+                Assert.That(target.activeSelf, Is.False);
+            } finally {
+                if (clone != null) UnityEngine.Object.DestroyImmediate(clone);
+                UnityEngine.Object.DestroyImmediate(authored);
             }
         }
 

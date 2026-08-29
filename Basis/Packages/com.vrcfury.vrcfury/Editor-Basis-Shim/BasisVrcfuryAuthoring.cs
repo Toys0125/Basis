@@ -8,6 +8,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using VF.Model;
 using VF.Model.Feature;
+using VF.Model.StateAction;
 
 namespace VF.Integration.Basis.Shim {
     internal static class BasisVrcfuryAuthoringMenus {
@@ -16,6 +17,7 @@ namespace VF.Integration.Basis.Shim {
         internal const string ArmatureLinkMenuPath = ComponentRoot + "Armature Link (VRCFury)";
         internal const string BlendshapeOptimizerMenuPath = ComponentRoot + "Blendshape Optimizer (VRCFury)";
         internal const string MmdCompatibilityMenuPath = ComponentRoot + "MMD Compatibility (VRCFury)";
+        internal const string ApplyDuringUploadMenuPath = ComponentRoot + "Apply During Upload (VRCFury)";
 
         [MenuItem(ToolsRoot + "Status", priority = 0)]
         private static void Status() {
@@ -25,7 +27,8 @@ namespace VF.Integration.Basis.Shim {
                 "Supported VRCFury authoring in this build:\n" +
                 "• Armature Link\n" +
                 "• Blendshape Optimizer\n" +
-                "• MMD Compatibility\n\n" +
+                "• MMD Compatibility\n" +
+                "• Apply During Upload\n\n" +
                 "These are normal VRCFury feature components and are processed only on the temporary Basis build clone.",
                 "OK"
             );
@@ -75,6 +78,17 @@ namespace VF.Integration.Basis.Shim {
 
         [MenuItem(MmdCompatibilityMenuPath, true)]
         private static bool ValidateAddMmdCompatibility() => Selection.gameObjects.Any(obj => obj != null);
+
+        [MenuItem(ApplyDuringUploadMenuPath, false, 3)]
+        private static void AddApplyDuringUpload() {
+            foreach (var selected in Selection.gameObjects) {
+                if (selected == null) continue;
+                AddFeature(selected, new ApplyDuringUpload { action = new State() }, "Add VRCFury Apply During Upload");
+            }
+        }
+
+        [MenuItem(ApplyDuringUploadMenuPath, true)]
+        private static bool ValidateAddApplyDuringUpload() => Selection.gameObjects.Any(obj => obj != null);
 
         internal static VRCFury AddFeature(GameObject target, FeatureModel feature, string undoName) {
             if (target == null || feature == null) return null;
@@ -183,6 +197,7 @@ namespace VF.Integration.Basis.Shim {
             if (fury.content is ArmatureLink) return "Armature Link";
             if (fury.content is BlendshapeOptimizer) return "Blendshape Optimizer";
             if (fury.content is MmdCompatibility) return "MMD Compatibility";
+            if (fury.content is ApplyDuringUpload) return "Apply During Upload";
             return ObjectNames.NicifyVariableName(fury.content.GetType().Name);
         }
 
@@ -199,6 +214,7 @@ namespace VF.Integration.Basis.Shim {
                 if (GUILayout.Button("Armature Link")) SetFeature(new ArmatureLink { propBone = fury.gameObject });
                 if (GUILayout.Button("Blendshape Optimizer")) SetFeature(new BlendshapeOptimizer());
                 if (GUILayout.Button("MMD Compatibility")) SetFeature(new MmdCompatibility());
+                if (GUILayout.Button("Apply During Upload")) SetFeature(new ApplyDuringUpload { action = new State() });
                 serializedObject.ApplyModifiedProperties();
                 return;
             }
@@ -209,6 +225,8 @@ namespace VF.Integration.Basis.Shim {
                 DrawBlendshapeOptimizer();
             } else if (fury.content is MmdCompatibility) {
                 DrawMmdCompatibility();
+            } else if (fury.content is ApplyDuringUpload) {
+                DrawApplyDuringUpload(content);
             } else {
                 EditorGUILayout.HelpBox(
                     "This VRCFury feature is preserved for source-avatar compatibility, but the Basis compatibility layer does not currently provide its original custom editor/build implementation.",
@@ -434,6 +452,67 @@ namespace VF.Integration.Basis.Shim {
                 "VRCFury's advanced MMD layer-detection settings control VRChat FX animator layers. BasisVR does not use those VRChat layers, so those settings are preserved in the component data but are not applied by the Basis backend.",
                 MessageType.None
             );
+        }
+
+        private static void DrawApplyDuringUpload(SerializedProperty prop) {
+            EditorGUILayout.HelpBox(
+                "These actions are baked into the temporary Basis build/Test-in-Editor clone before Armature Link and other hierarchy-changing features run. The authored avatar is not modified.",
+                MessageType.Info
+            );
+            EditorGUILayout.HelpBox(
+                "Basis supports upload-state actions that map to static avatar state. VRChat-only controller, PhysBone, SPS, and world-drop actions are preserved but skipped during Basis processing.",
+                MessageType.None
+            );
+
+            var state = prop.FindPropertyRelative("action");
+            var actions = state?.FindPropertyRelative("actions");
+            if (actions == null) {
+                EditorGUILayout.HelpBox("Apply During Upload state data is missing.", MessageType.Error);
+                return;
+            }
+
+            for (var i = 0; i < actions.arraySize; i++) {
+                var action = actions.GetArrayElementAtIndex(i);
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox)) {
+                    using (new EditorGUILayout.HorizontalScope()) {
+                        var value = action.managedReferenceValue;
+                        EditorGUILayout.LabelField(
+                            value != null ? ObjectNames.NicifyVariableName(value.GetType().Name.Replace("Action", "")) : "Missing Action",
+                            EditorStyles.boldLabel
+                        );
+                        if (GUILayout.Button("Remove", GUILayout.Width(64))) {
+                            actions.DeleteArrayElementAtIndex(i);
+                            break;
+                        }
+                    }
+                    EditorGUILayout.PropertyField(action, GUIContent.none, true);
+                }
+            }
+
+            if (GUILayout.Button("Add Action")) {
+                var menu = new GenericMenu();
+                AddActionMenuItem<ObjectToggleAction>(menu, actions, "Object Toggle");
+                AddActionMenuItem<BlendShapeAction>(menu, actions, "Blendshape");
+                AddActionMenuItem<ScaleAction>(menu, actions, "Scale");
+                AddActionMenuItem<MaterialAction>(menu, actions, "Material Swap");
+                AddActionMenuItem<MaterialPropertyAction>(menu, actions, "Material Property");
+                AddActionMenuItem<AnimationClipAction>(menu, actions, "Animation Clip");
+                AddActionMenuItem<FlipbookAction>(menu, actions, "Poiyomi Flipbook Frame");
+                AddActionMenuItem<PoiyomiUVTileAction>(menu, actions, "Poiyomi UV Tile");
+                AddActionMenuItem<ShaderInventoryAction>(menu, actions, "SCSS Shader Inventory");
+                menu.ShowAsContext();
+            }
+        }
+
+        private static void AddActionMenuItem<T>(GenericMenu menu, SerializedProperty actions, string label)
+            where T : VF.Model.StateAction.Action, new() {
+            menu.AddItem(new GUIContent(label), false, () => {
+                actions.serializedObject.Update();
+                var index = actions.arraySize;
+                actions.InsertArrayElementAtIndex(index);
+                actions.GetArrayElementAtIndex(index).managedReferenceValue = new T();
+                actions.serializedObject.ApplyModifiedProperties();
+            });
         }
 
         private static void DrawSectionHeader(string title, string subtitle = null) {

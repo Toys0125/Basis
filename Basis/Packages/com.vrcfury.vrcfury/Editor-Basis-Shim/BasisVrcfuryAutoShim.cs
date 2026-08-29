@@ -11,6 +11,8 @@ using UnityEngine;
 using VF.Component;
 using VF.Model;
 using VF.Model.Feature;
+using VF.Model.StateAction;
+using StateAction = VF.Model.StateAction.Action;
 
 namespace VF.Integration.Basis.Shim {
     /// <summary>
@@ -107,6 +109,15 @@ namespace VF.Integration.Basis.Shim {
 
             running = true;
             try {
+                // Match VRCFury's normal feature order: Apply During Upload is evaluated before
+                // hierarchy-changing features such as Armature Link.
+                foreach (var component in vrcfury) {
+                    if (component == null) continue;
+                    foreach (var feature in ExpandFeatures(new[] { component }).OfType<ApplyDuringUpload>()) {
+                        BasisApplyDuringUploadShim.Apply(buildRoot, component.gameObject, feature);
+                    }
+                }
+
                 var features = ExpandFeatures(vrcfury).ToArray();
 
                 // Armature Link must run before mesh optimization, exactly as in VRCFury's normal build order.
@@ -322,6 +333,192 @@ namespace VF.Integration.Basis.Shim {
                     }
                     break;
             }
+        }
+    }
+
+    internal static class BasisApplyDuringUploadShim {
+        public static void Apply(GameObject root, GameObject componentObject, ApplyDuringUpload model) {
+            if (root == null || model?.action?.actions == null) return;
+
+            var materialCopies = new Dictionary<(Renderer renderer, int slot), Material>();
+            foreach (var action in model.action.actions) {
+                if (action == null || !IsActiveForCurrentBuild(action)) continue;
+                ApplyAction(root, componentObject, action, materialCopies);
+            }
+        }
+
+        private static bool IsActiveForCurrentBuild(StateAction action) {
+            if (!action.desktopActive && !action.androidActive) return true;
+            var isAndroid = EditorUserBuildSettings.activeBuildTarget == BuildTarget.Android;
+            return isAndroid ? action.androidActive : action.desktopActive;
+        }
+
+        private static void ApplyAction(
+            GameObject root,
+            GameObject componentObject,
+            StateAction action,
+            Dictionary<(Renderer renderer, int slot), Material> materialCopies
+        ) {
+            switch (action) {
+                case ObjectToggleAction toggle when toggle.obj != null:
+                    var state = toggle.mode == ObjectToggleAction.Mode.TurnOn
+                        || toggle.mode == ObjectToggleAction.Mode.Toggle && !toggle.obj.activeSelf;
+                    toggle.obj.SetActive(state);
+                    break;
+
+                case BlendShapeAction blend:
+                    foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) {
+                        if (!blend.allRenderers && blend.renderer != skin) continue;
+                        var mesh = skin.sharedMesh;
+                        if (mesh == null) continue;
+                        var index = mesh.GetBlendShapeIndex(blend.blendShape);
+                        if (index >= 0) skin.SetBlendShapeWeight(index, blend.blendShapeValue);
+                    }
+                    break;
+
+                case ScaleAction scale when scale.obj != null:
+                    scale.obj.transform.localScale *= scale.scale;
+                    break;
+
+                case MaterialAction swap when swap.renderer != null:
+                    var material = swap.mat?.objRef as Material;
+                    if (material == null) break;
+                    var shared = swap.renderer.sharedMaterials;
+                    if (swap.materialIndex < 0 || swap.materialIndex >= shared.Length) break;
+                    shared[swap.materialIndex] = material;
+                    swap.renderer.sharedMaterials = shared;
+                    break;
+
+                case MaterialPropertyAction property:
+                    if (string.IsNullOrWhiteSpace(property.propertyName) || property.propertyName.Contains(".")) break;
+                    foreach (var renderer in FindRenderers(root, property)) {
+                        ApplyMaterialProperty(renderer, property, materialCopies);
+                    }
+                    break;
+
+                case FlipbookAction flipbook when flipbook.renderer != null:
+                    SetFloatOnRendererMaterials(
+                        flipbook.renderer,
+                        "_FlipbookCurrentFrame",
+                        (float)Math.Floor(flipbook.frame) + 0.5f,
+                        materialCopies
+                    );
+                    break;
+
+                case PoiyomiUVTileAction tile when tile.renderer != null:
+                    if (tile.row < 0 || tile.row > 3 || tile.column < 0 || tile.column > 3) break;
+                    var tileProperty = tile.dissolve ? "_UVTileDissolveAlpha_Row" : "_UDIMDiscardRow";
+                    tileProperty += $"{tile.row}_{tile.column}";
+                    if (!string.IsNullOrEmpty(tile.renamedMaterial)) tileProperty += $"_{tile.renamedMaterial}";
+                    SetFloatOnRendererMaterials(tile.renderer, tileProperty, 0, materialCopies);
+                    break;
+
+                case ShaderInventoryAction inventory when inventory.renderer != null:
+                    SetFloatOnRendererMaterials(
+                        inventory.renderer,
+                        $"_InventoryItem{inventory.slot:D2}Animated",
+                        1,
+                        materialCopies
+                    );
+                    break;
+
+                case AnimationClipAction clipAction:
+                    var clip = clipAction.clip?.objRef as AnimationClip;
+                    if (clip != null) {
+                        var target = componentObject != null ? componentObject : root;
+                        clip.SampleAnimation(target, Mathf.Max(0, clip.length));
+                    }
+                    break;
+
+                default:
+                    Debug.LogWarning($"VRCFury Basis Apply During Upload does not support action type {action.GetType().Name}; action was skipped.");
+                    break;
+            }
+        }
+
+        private static IEnumerable<Renderer> FindRenderers(GameObject root, MaterialPropertyAction property) {
+            if (property.affectAllMeshes) return root.GetComponentsInChildren<Renderer>(true);
+            var renderer = property.renderer2 != null ? property.renderer2.GetComponent<Renderer>() : null;
+            return renderer != null ? new[] { renderer } : Array.Empty<Renderer>();
+        }
+
+        private static void ApplyMaterialProperty(
+            Renderer renderer,
+            MaterialPropertyAction property,
+            Dictionary<(Renderer renderer, int slot), Material> materialCopies
+        ) {
+            var shared = renderer.sharedMaterials;
+            for (var i = 0; i < shared.Length; i++) {
+                var mat = GetWritableMaterial(renderer, i, materialCopies);
+                if (mat == null || !mat.HasProperty(property.propertyName)) continue;
+
+                var type = property.propertyType;
+                if (type == MaterialPropertyAction.Type.LegacyAuto) {
+                    type = DetectPropertyType(mat.shader, property.propertyName);
+                }
+
+                switch (type) {
+                    case MaterialPropertyAction.Type.Float:
+                        mat.SetFloat(property.propertyName, property.value);
+                        break;
+                    case MaterialPropertyAction.Type.Color:
+                        mat.SetColor(property.propertyName, property.valueColor);
+                        break;
+                    case MaterialPropertyAction.Type.Vector:
+                    case MaterialPropertyAction.Type.St:
+                        mat.SetVector(property.propertyName, property.valueVector);
+                        break;
+                }
+            }
+        }
+
+        private static MaterialPropertyAction.Type DetectPropertyType(Shader shader, string propertyName) {
+            if (shader == null) return MaterialPropertyAction.Type.Float;
+            var count = shader.GetPropertyCount();
+            for (var i = 0; i < count; i++) {
+                if (shader.GetPropertyName(i) != propertyName) continue;
+                switch (shader.GetPropertyType(i)) {
+                    case UnityEngine.Rendering.ShaderPropertyType.Color:
+                        return MaterialPropertyAction.Type.Color;
+                    case UnityEngine.Rendering.ShaderPropertyType.Vector:
+                        return propertyName.EndsWith("_ST", StringComparison.Ordinal)
+                            ? MaterialPropertyAction.Type.St
+                            : MaterialPropertyAction.Type.Vector;
+                    default:
+                        return MaterialPropertyAction.Type.Float;
+                }
+            }
+            return MaterialPropertyAction.Type.Float;
+        }
+
+        private static void SetFloatOnRendererMaterials(
+            Renderer renderer,
+            string propertyName,
+            float value,
+            Dictionary<(Renderer renderer, int slot), Material> materialCopies
+        ) {
+            var materials = renderer.sharedMaterials;
+            for (var i = 0; i < materials.Length; i++) {
+                var mat = GetWritableMaterial(renderer, i, materialCopies);
+                if (mat != null && mat.HasProperty(propertyName)) mat.SetFloat(propertyName, value);
+            }
+        }
+
+        private static Material GetWritableMaterial(
+            Renderer renderer,
+            int slot,
+            Dictionary<(Renderer renderer, int slot), Material> materialCopies
+        ) {
+            if (materialCopies.TryGetValue((renderer, slot), out var existing)) return existing;
+            var materials = renderer.sharedMaterials;
+            if (slot < 0 || slot >= materials.Length || materials[slot] == null) return null;
+            var copy = new Material(materials[slot]) {
+                name = materials[slot].name + " (VRCFury Apply During Upload)"
+            };
+            materials[slot] = copy;
+            renderer.sharedMaterials = materials;
+            materialCopies[(renderer, slot)] = copy;
+            return copy;
         }
     }
 
