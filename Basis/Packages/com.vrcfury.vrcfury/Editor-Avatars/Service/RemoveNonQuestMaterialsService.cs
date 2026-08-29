@@ -12,9 +12,14 @@ namespace VF.Service {
     internal class RemoveNonQuestMaterialsService {
         [VFAutowired] private readonly ControllersService controllers;
         [VFAutowired] private readonly VFGameObject avatarObject;
-        
+
         [FeatureBuilderAction(FeatureOrder.RemoveNonQuestMaterials)]
         public void Apply() {
+            // Basis supports custom shaders on mobile/Quest targets. VRChat's mobile shader
+            // whitelist must never be applied to an actual Basis avatar build, or valid Basis
+            // materials and lights would be destructively stripped from the build clone.
+            if (IsBasisAvatar()) return;
+
             if (BuildTargetUtils.IsDesktop()) {
                 return;
             }
@@ -48,19 +53,26 @@ namespace VF.Service {
             foreach (var light in avatarObject.GetComponentsInSelfAndChildren<Light>()) {
                 Object.DestroyImmediate(light);
             }
-            
+
             if (removedFromActiveRootRenderer) {
                 var sorted = removedMats.OrderBy(a => a.Length).Take(10).ToArray();
                 var more = removedMats.Count - sorted.Length;
                 var moreText = more > 0 ? $"\n... and {more} more" : "";
-                EditorUtility.DisplayDialog("Invalid Mobile Materials", 
-                                            "You are currently building an avatar for Android/Quest/iOS and are using shaders that are not mobile compatible. " + 
-                                            "You have likely switched build target by mistake and simply need to switch back to Windows mode using the VRChat SDK Control Panel. " + 
+                EditorUtility.DisplayDialog("Invalid Mobile Materials",
+                                            "You are currently building an avatar for Android/Quest/iOS and are using shaders that are not mobile compatible. " +
+                                            "You have likely switched build target by mistake and simply need to switch back to Windows mode using the VRChat SDK Control Panel. " +
                                             "If you have not switched by mistake and want to build for mobile, you will need to change your materials to use shaders found in VRChat/Mobile.\n" +
                                             "\n" +
-                                            sorted.Join('\n') + moreText, 
+                                            sorted.Join('\n') + moreText,
                                             "OK");
             }
+        }
+
+        private bool IsBasisAvatar() {
+            var root = (GameObject)avatarObject;
+            if (root == null) return false;
+            return root.GetComponents<Component>()
+                .Any(component => component != null && component.GetType().FullName == "Basis.Scripts.BasisSdk.BasisAvatar");
         }
 
         private bool IsMobileMat(Material m) {

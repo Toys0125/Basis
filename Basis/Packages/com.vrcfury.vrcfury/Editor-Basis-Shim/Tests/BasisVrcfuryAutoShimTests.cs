@@ -111,6 +111,39 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void BasisBuild_PreservesCustomShaderMaterialsAndLights() {
+            var root = new GameObject("Avatar");
+            Material material = null;
+            try {
+                root.AddComponent<BasisAvatar>();
+                var rendererObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                rendererObject.name = "CustomShaderRenderer";
+                rendererObject.transform.SetParent(root.transform, false);
+                var renderer = rendererObject.GetComponent<Renderer>();
+                var shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
+                Assert.That(shader, Is.Not.Null, "Expected a non-VRChat mobile shader for the Basis preservation regression.");
+                Assert.That(shader.name.StartsWith("VRChat/Mobile/"), Is.False);
+                material = new Material(shader) { name = "BasisCustomShaderMaterial" };
+                renderer.sharedMaterial = material;
+
+                var lightObject = new GameObject("CustomLight");
+                lightObject.transform.SetParent(root.transform, false);
+                lightObject.AddComponent<Light>();
+
+                BasisVrcfuryAuthoringMenus.AddFeature(root, new MmdCompatibility(), "Create Basis material preservation regression feature");
+                BasisVrcfuryAutoShim.ProcessBuildClone(root, null);
+
+                Assert.That(renderer.sharedMaterial, Is.SameAs(material),
+                    "Basis supports custom shaders, so VRCFury must not apply VRChat Quest material stripping.");
+                Assert.That(lightObject.GetComponent<Light>(), Is.Not.Null,
+                    "The VRChat Quest material-stripping service also deletes lights and must not run for Basis builds.");
+            } finally {
+                if (material != null) UnityEngine.Object.DestroyImmediate(material);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void TestInEditorCleanup_PreservesUnownedFolders() {
             var unowned = $"{TempFolder}/UnownedTestInEditorStorage";
             AssetDatabase.CreateFolder(TempFolder, "UnownedTestInEditorStorage");
