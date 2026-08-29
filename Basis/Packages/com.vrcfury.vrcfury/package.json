@@ -1,8 +1,8 @@
 {
   "name": "com.toys0125.vrcfury-basis",
   "displayName": "VRCFury for BasisVR",
-  "version": "1.0.5",
-  "description": "BasisVR compatibility port of VRCFury with Armature Link, Blendshape Optimizer, face tracking preservation, and MMD Compatibility support.",
+  "version": "1.0.6",
+  "description": "BasisVR compatibility port of VRCFury with Armature Link, Blendshape Optimizer, face tracking preservation, MMD Compatibility, Test in Editor support, and Basis custom shader preservation.",
   "url": "https://github.com/Toys0125/VRCFury",
   "unity" : "2022.3",
   "author": {

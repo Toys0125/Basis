@@ -443,7 +443,8 @@ namespace VF.Integration.Basis.Shim.Tests {
 
                 BasisArmatureLinkShim.Apply(root, avatar, settings, model);
 
-                Assert.That(sourceSpine, Is.Not.Null);
+                Assert.That(sourceSpine == null, Is.False,
+                    "Mapped bones with non-Transform components must not be destroyed.");
                 Assert.That(sourceSpine.transform.parent, Is.SameAs(targetSpine.transform),
                     "Mapped bones with non-Transform components must be retained and parented to their mapped target.");
             } finally {
