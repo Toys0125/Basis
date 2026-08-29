@@ -400,7 +400,7 @@ namespace VF.Integration.Basis.Shim {
                     SetFloatOnRendererMaterials(
                         flipbook.renderer,
                         "_FlipbookCurrentFrame",
-                        (float)Math.Floor(flipbook.frame) + 0.5f,
+                        flipbook.frame + 0.5f,
                         materialCopies
                     );
                     break;
