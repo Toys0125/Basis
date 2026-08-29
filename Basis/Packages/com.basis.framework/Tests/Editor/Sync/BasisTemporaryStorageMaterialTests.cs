@@ -21,26 +21,38 @@ namespace Basis.Tests.Sync
             {
                 AssetDatabase.CreateFolder("Assets", folderName);
 
-                Shader shader = Shader.Find("Universal Render Pipeline/Lit") ??
-                                Shader.Find("Standard") ??
-                                Shader.Find("Unlit/Color");
-                Assert.IsNotNull(shader, "A shader is required to construct the material test fixture.");
+                Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+                Assert.IsNotNull(shader, "URP Lit is required to construct the material test fixture.");
+
+                Texture2D authoringTexture = new Texture2D(1, 1) { name = "AuthoringReference" };
+                string authoringTexturePath = $"{temporaryStorage}/AuthoringReference.asset";
+                AssetDatabase.CreateAsset(authoringTexture, authoringTexturePath);
+                AssetDatabase.ImportAsset(authoringTexturePath, ImportAssetOptions.ForceSynchronousImport);
+                authoringTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(authoringTexturePath);
 
                 Material sourceMaterial = new Material(shader) { name = "Source" };
+                sourceMaterial.SetTexture("_BaseMap", authoringTexture);
                 AssetDatabase.CreateAsset(sourceMaterial, sourceMaterialPath);
                 AssetDatabase.ImportAsset(sourceMaterialPath, ImportAssetOptions.ForceSynchronousImport);
                 sourceMaterial = AssetDatabase.LoadAssetAtPath<Material>(sourceMaterialPath);
                 Assert.IsNotNull(sourceMaterial);
                 Assert.IsTrue(EditorUtility.IsPersistent(sourceMaterial));
+                Assert.AreSame(authoringTexture, sourceMaterial.GetTexture("_BaseMap"));
 
                 transientMaterial = UnityEngine.Object.Instantiate(sourceMaterial);
                 transientMaterial.name = "Source_Stripped";
+                transientMaterial.SetTexture("_BaseMap", null);
                 Assert.IsFalse(EditorUtility.IsPersistent(transientMaterial),
                     "The fixture must exercise a transient material reference.");
+                Assert.IsNull(transientMaterial.GetTexture("_BaseMap"));
 
                 root = new GameObject("TransientMaterialPrefabRoot");
                 MeshRenderer renderer = root.AddComponent<MeshRenderer>();
                 renderer.sharedMaterial = transientMaterial;
+                GameObject child = new GameObject("SharedMaterialChild");
+                child.transform.SetParent(root.transform, false);
+                MeshRenderer childRenderer = child.AddComponent<MeshRenderer>();
+                childRenderer.sharedMaterial = transientMaterial;
 
                 settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
                 settings.TemporaryStorage = temporaryStorage;
@@ -63,8 +75,26 @@ namespace Basis.Tests.Sync
                     "A transient material assigned before prefab staging was serialized as a missing material reference.");
                 Assert.IsTrue(EditorUtility.IsPersistent(savedRenderer.sharedMaterial),
                     "The staged prefab still references a non-persistent material after serialization.");
-                Assert.IsFalse(string.IsNullOrEmpty(AssetDatabase.GetAssetPath(savedRenderer.sharedMaterial)),
+                string persistedMaterialPath = AssetDatabase.GetAssetPath(savedRenderer.sharedMaterial);
+                Assert.IsFalse(string.IsNullOrEmpty(persistedMaterialPath),
                     "The staged material does not have a durable AssetDatabase path.");
+                Assert.IsNull(savedRenderer.sharedMaterial.GetTexture("_BaseMap"),
+                    "The persisted build material regained the authoring-only texture that the transient clone removed.");
+
+                string[] stagedDependencies = AssetDatabase.GetDependencies(prefabPath, true);
+                CollectionAssert.Contains(stagedDependencies, persistedMaterialPath,
+                    "The staged prefab dependency graph does not include its generated persistent material.");
+                CollectionAssert.DoesNotContain(stagedDependencies, authoringTexturePath,
+                    "The authoring-only texture cleared from the transient material leaked back into staged dependencies.");
+
+                MeshRenderer savedChildRenderer = savedPrefab.transform.Find("SharedMaterialChild")
+                    .GetComponent<MeshRenderer>();
+                Assert.AreSame(savedRenderer.sharedMaterial, savedChildRenderer.sharedMaterial,
+                    "One transient material shared by multiple renderers should map to one persistent temporary material asset.");
+
+                Material originalMaterial = AssetDatabase.LoadAssetAtPath<Material>(sourceMaterialPath);
+                Assert.AreSame(authoringTexture, originalMaterial.GetTexture("_BaseMap"),
+                    "Persisting the build clone must not mutate the authored source material asset.");
             }
             finally
             {
