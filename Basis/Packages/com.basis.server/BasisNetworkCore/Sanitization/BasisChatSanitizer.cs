@@ -3,8 +3,7 @@ using System.Text;
 namespace Basis.Network.Core
 {
     /// <summary>
-    /// Applies Basis chat transport limits and user-text Unicode hardening without producing
-    /// invalid UTF-16/UTF-8.
+    /// Applies Basis chat transport limits without producing invalid UTF-16/UTF-8.
     /// </summary>
     public static class BasisChatSanitizer
     {
@@ -18,8 +17,7 @@ namespace Basis.Network.Core
                 return string.Empty;
             }
 
-            string sanitized = BasisUnicodeSanitizer.SanitizeForDisplay(message);
-            sanitized = ClampUtf16Length(sanitized, MaxMessageCharacters);
+            string sanitized = ClampUtf16Length(message, MaxMessageCharacters);
             while (sanitized.Length > 0 && Encoding.UTF8.GetByteCount(sanitized) > MaxMessageBytes)
             {
                 sanitized = TrimLastScalar(sanitized);

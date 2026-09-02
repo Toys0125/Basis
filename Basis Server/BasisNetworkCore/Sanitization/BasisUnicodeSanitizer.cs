@@ -3,9 +3,9 @@ using System.Text;
 namespace Basis.Network.Core
 {
     /// <summary>
-    /// Normalizes untrusted text before it reaches user-facing UI. U+FFFD is reserved for the
-    /// renderer's missing-glyph fallback and is therefore never accepted as source text.
-    /// Malformed UTF-16 is treated the same way so an encoder cannot synthesize U+FFFD from it.
+    /// Client-side utility for normalizing untrusted text before it reaches user-facing UI.
+    /// U+FFFD is reserved for the renderer's missing-glyph fallback and is therefore never accepted
+    /// as source text by the client. Servers must relay Unicode unchanged and must not call this.
     /// </summary>
     public static class BasisUnicodeSanitizer
     {
@@ -29,7 +29,7 @@ namespace Basis.Network.Core
         /// <summary>
         /// Replaces literal U+FFFD and unpaired UTF-16 surrogates with an ASCII space while
         /// preserving all valid Unicode scalars, including supplementary-plane characters.
-        /// Use this on stable text at a display or transport boundary; live input composition should
+        /// Use this on stable text at a client display boundary; live input composition should
         /// use <see cref="ReplaceReservedReplacementCharacter"/> instead.
         /// Clean strings are returned without allocating a replacement string.
         /// </summary>

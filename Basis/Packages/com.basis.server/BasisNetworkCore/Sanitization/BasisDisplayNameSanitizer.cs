@@ -28,8 +28,6 @@ namespace Basis.Network.Core
                 return string.Empty;
             }
 
-            displayName = BasisUnicodeSanitizer.SanitizeForDisplay(displayName);
-
             StringBuilder builder = new StringBuilder(displayName.Length);
             foreach (char character in displayName)
             {

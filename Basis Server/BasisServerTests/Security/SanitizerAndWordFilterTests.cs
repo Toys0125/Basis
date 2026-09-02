@@ -18,7 +18,7 @@ public class SanitizerAndWordFilterTests
     private const string ThumbsUp = "\uD83D\uDC4D"; // U+1F44D, 4 UTF-8 bytes
     private const char Cjk = '\u597D'; // 3 UTF-8 bytes
 
-    // ---------------- BasisUnicodeSanitizer / BasisChatSanitizer ----------------
+    // ---------------- BasisChatSanitizer ----------------
 
     [Theory]
     [InlineData("hello world")]
@@ -38,31 +38,13 @@ public class SanitizerAndWordFilterTests
     }
 
     [Theory]
-    [InlineData("a\uFFFDb", "a b")]
-    [InlineData("\uFFFDhello", " hello")]
-    [InlineData("hello\uFFFD", "hello ")]
-    [InlineData("\uFFFD\uFFFD", "  ")]
-    public void ChatSanitizer_LiteralReplacementCharacter_BecomesWhitespace(string input, string expected)
+    [InlineData("a\uFFFDb")]
+    [InlineData("\uFFFDhello")]
+    [InlineData("hello\uFFFD")]
+    [InlineData("\uFFFD\uFFFD")]
+    public void ChatSanitizer_LiteralReplacementCharacter_PassesThroughForClientHandling(string message)
     {
-        Assert.Equal(expected, BasisChatSanitizer.Sanitize(input));
-    }
-
-    [Fact]
-    public void UnicodeSanitizer_LiveInput_ReplacesOnlyReservedCharacter()
-    {
-        Assert.Equal("a b\uD800c", BasisUnicodeSanitizer.ReplaceReservedReplacementCharacter("a\uFFFDb\uD800c"));
-    }
-
-    [Fact]
-    public void UnicodeSanitizer_MalformedSurrogates_BecomeWhitespace()
-    {
-        Assert.Equal("a b c", BasisUnicodeSanitizer.SanitizeForDisplay("a\uD800b\uDC00c"));
-    }
-
-    [Fact]
-    public void UnicodeSanitizer_ValidSurrogatePairs_ArePreserved()
-    {
-        Assert.Equal("a" + ThumbsUp + "b", BasisUnicodeSanitizer.SanitizeForDisplay("a" + ThumbsUp + "b"));
+        Assert.Equal(message, BasisChatSanitizer.Sanitize(message));
     }
 
     // The chat sanitizer otherwise enforces transport limits only; control/zero-width/RTL characters are
@@ -193,11 +175,11 @@ public class SanitizerAndWordFilterTests
     }
 
     [Fact]
-    public void DisplayName_LiteralReplacementCharacter_BecomesWhitespace()
+    public void DisplayName_LiteralReplacementCharacter_PassesThroughForClientHandling()
     {
-        Assert.Equal("Player One", BasisDisplayNameSanitizer.Sanitize("Player\uFFFDOne"));
-        Assert.Equal(string.Empty, BasisDisplayNameSanitizer.Sanitize("\uFFFD"));
-        Assert.False(BasisDisplayNameSanitizer.IsValid("\uFFFD"));
+        Assert.Equal("Player\uFFFDOne", BasisDisplayNameSanitizer.Sanitize("Player\uFFFDOne"));
+        Assert.Equal("\uFFFD", BasisDisplayNameSanitizer.Sanitize("\uFFFD"));
+        Assert.True(BasisDisplayNameSanitizer.IsValid("\uFFFD"));
     }
 
     [Theory]

@@ -97,6 +97,9 @@ public static class BasisNetworkHandleChat
         {
             return;
         }
+        // U+FFFD is reserved for the local renderer's missing-glyph fallback. Replace an explicitly
+        // supplied replacement character on this client before the message leaves the machine.
+        message = BasisUnicodeSanitizer.ReplaceReservedReplacementCharacter(message);
         message = BasisChatSanitizer.Sanitize(message);
         if (string.IsNullOrEmpty(message)) return;
 
@@ -162,8 +165,9 @@ public static class BasisNetworkHandleChat
         if (serverChatMessage.chatMessage.payload != null && serverChatMessage.chatMessage.payloadSize > 0)
         {
             message = Encoding.UTF8.GetString(serverChatMessage.chatMessage.payload, 0, serverChatMessage.chatMessage.payloadSize);
-            // Defense in depth for modified/older servers and malformed UTF-8. Encoding.UTF8 can
-            // synthesize U+FFFD for invalid input; reserve that glyph for TMP's missing-font fallback.
+            // Client-side display hardening only: the server relays Unicode unchanged. Encoding.UTF8
+            // can synthesize U+FFFD for invalid input, so normalize it locally before UI callbacks.
+            message = BasisUnicodeSanitizer.SanitizeForDisplay(message);
             message = BasisChatSanitizer.Sanitize(message);
         }
 
