@@ -1,3 +1,4 @@
+using Basis.Network.Core;
 using System;
 using System.Collections.Generic;
 using TMPro;
@@ -11,7 +12,8 @@ namespace Basis.BasisUI
     /// global fallbacks so any TextMeshPro label falls through to a system
     /// font when its primary font doesn't have a glyph. This is how we get
     /// broad Unicode coverage (CJK, Cyrillic, Arabic, Devanagari, Thai…)
-    /// without having to ship every glyph inside a baked static atlas.
+    /// without having to ship every glyph inside a baked static atlas. If the primary font and all
+    /// registered fallbacks still lack a glyph, TMP renders U+FFFD as the final missing-glyph marker.
     ///
     /// Runs once before the first scene loads. Define
     /// <c>BASIS_DISABLE_TMP_FALLBACKS</c> to opt out.
@@ -274,6 +276,11 @@ namespace Basis.BasisUI
             {
                 return;
             }
+
+            // U+FFFD is reserved for renderer-generated missing-glyph fallback. Input/display
+            // sanitizers remove a source-level U+FFFD before it reaches TMP, so seeing this glyph
+            // means the primary font and every registered fallback genuinely lacked the character.
+            TMP_Settings.missingGlyphCharacter = BasisUnicodeSanitizer.ReplacementCodePoint;
 
             List<TMP_FontAsset> fallbacks = TMP_Settings.fallbackFontAssets;
             if (fallbacks == null)

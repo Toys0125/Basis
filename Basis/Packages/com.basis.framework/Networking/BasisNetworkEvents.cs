@@ -511,6 +511,8 @@ public static class BasisNetworkEvents
             Reader.Recycle();
 
             BasisLocalPlayer.Instance.UUID = SMDM.ClientMetaDataMessage.playerUUID;
+            SMDM.ClientMetaDataMessage.playerDisplayName =
+                BasisUnicodeSanitizer.SanitizeForDisplay(SMDM.ClientMetaDataMessage.playerDisplayName);
             BasisLocalPlayer.Instance.DisplayName = SMDM.ClientMetaDataMessage.playerDisplayName;
             BasisNetworkManagement.ServerMetaDataMessage = SMDM;
 #if UNITY_SERVER

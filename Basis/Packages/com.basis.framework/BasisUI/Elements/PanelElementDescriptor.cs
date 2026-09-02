@@ -1,3 +1,4 @@
+using Basis.Network.Core;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -262,6 +263,7 @@ namespace Basis.BasisUI
         public void SetTitle(string value)
         {
             if (!HasTitle) return;
+            value = BasisUnicodeSanitizer.SanitizeForDisplay(value);
             // Skip redraw if the text hasn't actually changed — polling updaters
             // call this every tick and TMP's setter unconditionally triggers a rebuild.
             if (_titleSet && string.Equals(_title, value)) return;
@@ -274,6 +276,7 @@ namespace Basis.BasisUI
         public void SetDescription(string value)
         {
             if (!HasDescription) return;
+            value = BasisUnicodeSanitizer.SanitizeForDisplay(value);
             if (_descriptionSet && string.Equals(_description, value)) return;
             _description = value;
             _descriptionSet = true;
@@ -287,7 +290,7 @@ namespace Basis.BasisUI
         /// </summary>
         public void SetTooltip(string value)
         {
-            _tooltip = value;
+            _tooltip = BasisUnicodeSanitizer.SanitizeForDisplay(value);
         }
 
         /// <summary>
@@ -299,6 +302,7 @@ namespace Basis.BasisUI
         public void SetRichDescription(string value)
         {
             if (!HasDescription) return;
+            value = BasisUnicodeSanitizer.SanitizeForDisplay(value);
             DescriptionLabel.richText = true;
             if (_descriptionSet && string.Equals(_description, value)) return;
             _description = value;

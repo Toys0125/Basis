@@ -1,4 +1,5 @@
 using Basis.BasisUI;
+using Basis.Network.Core;
 using Basis.Scripts.Addressable_Driver.Resource;
 using Basis.Scripts.BasisSdk.Interactions;
 using Basis.Scripts.BasisSdk.Players;
@@ -630,6 +631,7 @@ namespace Basis.Scripts.UI.NamePlate
         /// </summary>
         public void SetChatText(string message)
         {
+            message = BasisUnicodeSanitizer.SanitizeForDisplay(message);
             if (string.IsNullOrEmpty(message))
             {
                 if (ChatText == null) return;

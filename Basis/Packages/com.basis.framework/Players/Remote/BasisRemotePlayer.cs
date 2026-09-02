@@ -1,3 +1,4 @@
+using Basis.Network.Core;
 using Basis.Scripts.Addressable_Driver.Resource;
 using Basis.Scripts.Avatar;
 using Basis.Scripts.Drivers;
@@ -181,6 +182,7 @@ namespace Basis.Scripts.BasisSdk.Players
         /// </summary>
         public static string BuildSafeDisplayName(string displayName)
         {
+            displayName = BasisUnicodeSanitizer.SanitizeForDisplay(displayName);
             return displayName == null
                 ? null
                 : System.Text.RegularExpressions.Regex.Replace(displayName, "<.*?>", string.Empty);
@@ -557,7 +559,7 @@ namespace Basis.Scripts.BasisSdk.Players
             string PreparedSafeDisplayName = null)
         {
             CACM = cACM;
-            DisplayName = PlayerMetaDataMessage.playerDisplayName;
+            DisplayName = BasisUnicodeSanitizer.SanitizeForDisplay(PlayerMetaDataMessage.playerDisplayName);
             PlayerPlatform = PlayerMetaDataMessage.playerPlatform;
             // Non-null when the avatar load thread already stripped the tags off-thread.
             SafeDisplayName = PreparedSafeDisplayName ?? BuildSafeDisplayName(DisplayName);

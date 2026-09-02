@@ -162,6 +162,9 @@ public static class BasisNetworkHandleChat
         if (serverChatMessage.chatMessage.payload != null && serverChatMessage.chatMessage.payloadSize > 0)
         {
             message = Encoding.UTF8.GetString(serverChatMessage.chatMessage.payload, 0, serverChatMessage.chatMessage.payloadSize);
+            // Defense in depth for modified/older servers and malformed UTF-8. Encoding.UTF8 can
+            // synthesize U+FFFD for invalid input; reserve that glyph for TMP's missing-font fallback.
+            message = BasisChatSanitizer.Sanitize(message);
         }
 
         OnChatMessageReceived?.Invoke(senderPlayerId, message);

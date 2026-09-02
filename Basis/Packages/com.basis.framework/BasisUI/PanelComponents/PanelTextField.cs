@@ -1,4 +1,5 @@
 using Basis.BTween;
+using Basis.Network.Core;
 using System;
 using TMPro;
 using UnityEngine;
@@ -100,6 +101,16 @@ namespace Basis.BasisUI
         }
 
         public override bool HasPanelOptions => HasPreviewText || HasResetDefault;
+
+        public override void SetValue(string value)
+        {
+            base.SetValue(BasisUnicodeSanitizer.ReplaceReservedReplacementCharacter(value));
+        }
+
+        public override void SetValueWithoutNotify(string value)
+        {
+            base.SetValueWithoutNotify(BasisUnicodeSanitizer.ReplaceReservedReplacementCharacter(value));
+        }
 
         public override void RequestReset()
         {
