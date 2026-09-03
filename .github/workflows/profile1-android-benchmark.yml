@@ -47,6 +47,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sanitize Android client project
+        shell: bash
+        run: |
+          python3 .github/scripts/sanitize_android_client_ci.py "${PROJECT_PATH}"
+
       - name: Checkout Imazen codec corpus
         uses: actions/checkout@v4
         with:
@@ -119,6 +124,26 @@ jobs:
           androidKeyaliasName: ${{ secrets.ANDROID_KEYALIAS_NAME }}
           androidKeyaliasPass: ${{ secrets.ANDROID_KEYALIAS_PASS }}
           linux64RemoveExecutableExtension: false
+
+      - name: Verify Quest benchmark APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="build/Android/${BUILD_NAME}.apk"
+          if [[ ! -s "$APK" ]]; then
+            echo "Expected Quest benchmark APK was not produced: $APK" >&2
+            exit 1
+          fi
+          unzip -tq "$APK"
+          APK_CONTENTS="$(unzip -Z1 "$APK")"
+          if ! grep -q '^lib/arm64-v8a/' <<< "$APK_CONTENTS"; then
+            echo "Quest benchmark APK does not contain ARM64 native libraries." >&2
+            exit 1
+          fi
+          if ! grep -q '^lib/arm64-v8a/libil2cpp\.so$' <<< "$APK_CONTENTS"; then
+            echo "Quest benchmark APK is not using the expected ARM64 IL2CPP player." >&2
+            exit 1
+          fi
 
       - name: List build outputs
         shell: bash
