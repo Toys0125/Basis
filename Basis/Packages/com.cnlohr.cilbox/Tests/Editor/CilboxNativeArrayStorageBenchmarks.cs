@@ -13,6 +13,7 @@ namespace Cilbox.Tests
         private const int Invocations = 1500;
         private const int OperationsPerInvocation = 192;
         private const int Samples = 5;
+        private static string validationSummary;
 
         [StructLayout(LayoutKind.Explicit, Size = 24)]
         private struct NativeStackElement
@@ -58,7 +59,14 @@ namespace Cilbox.Tests
 
         public static void RunForValidation()
         {
+            validationSummary = string.Empty;
             new CilboxNativeArrayStorageBenchmarks().CompareManagedAndNativeArrayStorage();
+            UnityEditor.EditorApplication.quitting += PrintValidationSummary;
+        }
+
+        private static void PrintValidationSummary()
+        {
+            UnityEngine.Debug.Log("CILBOX_NATIVEARRAY_BENCH|FINAL_SUMMARY\n" + validationSummary);
         }
 
         [Test]
@@ -85,9 +93,11 @@ namespace Cilbox.Tests
                 RunNativePersistentSafeObjects(nativeSafe, hostObjects, 8, 32);
                 RunNativePersistentUnsafeObjects(nativeUnsafe, hostObjects, 8, 32);
 
-                UnityEngine.Debug.Log(
+                string info =
                     $"CILBOX_NATIVEARRAY_BENCH|INFO|stackSize={StackSize}|invocations={Invocations}|ops={OperationsPerInvocation}|samples={Samples}" +
-                    $"|nativeSlotBytes={UnsafeUtility.SizeOf<NativeStackElement>()}|managedObjectOffset={Marshal.OffsetOf(typeof(StackElement), nameof(StackElement.o)).ToInt64()}|pointerBytes={IntPtr.Size}");
+                    $"|nativeSlotBytes={UnsafeUtility.SizeOf<NativeStackElement>()}|managedObjectOffset={Marshal.OffsetOf(typeof(StackElement), nameof(StackElement.o)).ToInt64()}|pointerBytes={IntPtr.Size}";
+                validationSummary += info + "\n";
+                UnityEngine.Debug.Log(info);
 
                 long numericChecksum = 0;
                 numericChecksum = Measure("numeric-managed-fresh", () => RunManagedFreshNumeric(Invocations, OperationsPerInvocation), numericChecksum);
@@ -154,9 +164,11 @@ namespace Cilbox.Tests
             }
 
             double milliseconds = median.ElapsedTicks * 1000.0 / Stopwatch.Frequency;
-            UnityEngine.Debug.Log(
+            string result =
                 $"CILBOX_NATIVEARRAY_BENCH|RESULT|{name}|ms={milliseconds:F4}|allocated={median.AllocatedBytes}" +
-                $"|gen0={median.Gen0Collections}|gen1={median.Gen1Collections}|gen2={median.Gen2Collections}|checksum={median.Checksum}");
+                $"|gen0={median.Gen0Collections}|gen1={median.Gen1Collections}|gen2={median.Gen2Collections}|checksum={median.Checksum}";
+            validationSummary += result + "\n";
+            UnityEngine.Debug.Log(result);
             return median.Checksum;
         }
 
