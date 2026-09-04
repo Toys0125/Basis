@@ -50,6 +50,8 @@ namespace Cilbox
 
 	public class CilboxMethod
 	{
+		private static readonly ArrayPool<StackElement> stackPool = ArrayPool<StackElement>.Create();
+
 		public CilboxClass parentClass;
 		public int MaxStackSize;
 		public String methodName;
@@ -156,10 +158,10 @@ namespace Cilbox
 			int thisOffset = isStatic ? 0 : 1;
 
 			StackElement [] parameters = new StackElement[plen+thisOffset];
-			StackElement [] stackBuffer = ArrayPool<StackElement>.Shared.Rent(Cilbox.defaultStackSize);
-			// ArrayPool does not guarantee zeroed buffers. Cilbox locals previously inherited
-			// fresh-array zero initialization, so preserve that behavior explicitly.
-			Array.Clear(stackBuffer, 0, Cilbox.defaultStackSize);
+			// This pool is private to Cilbox and every returned buffer is cleared below.
+			// New arrays are zero-initialized, so a rented buffer is always clean without
+			// paying for another full clear on the hot path.
+			StackElement [] stackBuffer = stackPool.Rent(Cilbox.defaultStackSize);
 
 			try
 			{
@@ -196,9 +198,9 @@ namespace Cilbox
 			}
 			finally
 			{
-				// StackElement contains managed references; do not retain script or Unity
-				// objects in the shared pool after an invocation completes.
-				ArrayPool<StackElement>.Shared.Return(stackBuffer, clearArray: true);
+				// StackElement contains managed references. Clearing on return both releases
+				// those objects and maintains the private pool's clean-on-rent invariant.
+				stackPool.Return(stackBuffer, clearArray: true);
 			}
 		}
 

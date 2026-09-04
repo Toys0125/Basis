@@ -474,6 +474,7 @@ namespace Cilbox.Tests
                 CilboxMethod arithmetic = CreateNumericMethod(cls, "Arithmetic", BuildArithmeticBytecode(OperationsPerInvocation), 2);
 
                 var emptyParameters = Array.Empty<StackElement>();
+                var ownedStackPool = ArrayPool<StackElement>.Create();
                 var tinyFullStack = new StackElement[StackSize];
                 var tinyRightSizedStack = new StackElement[tiny.MaxStackSize + tiny.methodLocals.Length];
                 var arithmeticFullStack = new StackElement[StackSize];
@@ -486,9 +487,10 @@ namespace Cilbox.Tests
                 RunInterpreterEntryExit(box, tiny, 8);
                 RunStackAllocations(8, StackSize);
                 RunStackAllocations(8, 2);
-                RunArrayPoolStackBuffers(8, clearOnRent: true, clearOnReturn: true);
-                RunArrayPoolStackBuffers(8, clearOnRent: true, clearOnReturn: false);
-                RunArrayPoolStackBuffers(8, clearOnRent: false, clearOnReturn: true);
+                RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, 8, clearOnRent: true, clearOnReturn: true);
+                RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, 8, clearOnRent: true, clearOnReturn: false);
+                RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, 8, clearOnRent: false, clearOnReturn: true);
+                RunArrayPoolStackBuffers(ownedStackPool, 8, clearOnRent: false, clearOnReturn: true);
 
                 long tinyChecksum = 0;
                 tinyChecksum = Measure("interpreter-current-tiny", () => RunCurrentInterpreter(tiny, box, Invocations), tinyChecksum);
@@ -512,9 +514,10 @@ namespace Cilbox.Tests
                 Measure("overhead-allocate-stackelement-2", () => RunStackAllocations(Invocations, 2), 0);
                 Measure("overhead-allocate-stackelement-1", () => RunStackAllocations(Invocations, 1), 0);
                 Measure("overhead-allocate-stackelement-empty", () => RunStackAllocations(Invocations, 0), 0);
-                Measure("overhead-arraypool-1024-clear-rent-clear-return", () => RunArrayPoolStackBuffers(Invocations, clearOnRent: true, clearOnReturn: true), 0);
-                Measure("overhead-arraypool-1024-clear-rent", () => RunArrayPoolStackBuffers(Invocations, clearOnRent: true, clearOnReturn: false), 0);
-                Measure("overhead-arraypool-1024-clear-return", () => RunArrayPoolStackBuffers(Invocations, clearOnRent: false, clearOnReturn: true), 0);
+                Measure("overhead-arraypool-shared-1024-clear-rent-clear-return", () => RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, Invocations, clearOnRent: true, clearOnReturn: true), 0);
+                Measure("overhead-arraypool-shared-1024-clear-rent", () => RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, Invocations, clearOnRent: true, clearOnReturn: false), 0);
+                Measure("overhead-arraypool-shared-1024-clear-return", () => RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, Invocations, clearOnRent: false, clearOnReturn: true), 0);
+                Measure("overhead-arraypool-owned-1024-clear-return", () => RunArrayPoolStackBuffers(ownedStackPool, Invocations, clearOnRent: false, clearOnReturn: true), 0);
             }
             finally
             {
@@ -749,12 +752,12 @@ namespace Cilbox.Tests
             return checksum;
         }
 
-        private static long RunArrayPoolStackBuffers(int invocations, bool clearOnRent, bool clearOnReturn)
+        private static long RunArrayPoolStackBuffers(ArrayPool<StackElement> pool, int invocations, bool clearOnRent, bool clearOnReturn)
         {
             long checksum = 0;
             for (int i = 0; i < invocations; i++)
             {
-                StackElement[] stack = ArrayPool<StackElement>.Shared.Rent(StackSize);
+                StackElement[] stack = pool.Rent(StackSize);
                 try
                 {
                     if (clearOnRent) Array.Clear(stack, 0, StackSize);
@@ -763,7 +766,7 @@ namespace Cilbox.Tests
                 }
                 finally
                 {
-                    ArrayPool<StackElement>.Shared.Return(stack, clearArray: clearOnReturn);
+                    pool.Return(stack, clearArray: clearOnReturn);
                 }
             }
             return checksum;
