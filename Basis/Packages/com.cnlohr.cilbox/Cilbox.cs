@@ -210,6 +210,11 @@ namespace Cilbox
 		// Interpret above; this method is not compiled into players.
 		public object InterpretWithBuffersForBenchmark( StackElement[] stackBuffer, StackElement[] parameters, bool accounting )
 		{
+			return InterpretWithBuffersForBenchmark(stackBuffer, new ArraySegment<StackElement>(parameters), accounting);
+		}
+
+		public object InterpretWithBuffersForBenchmark( StackElement[] stackBuffer, ArraySegment<StackElement> parameters, bool accounting )
+		{
 			if( accounting && !parentClass.box.InterpreterEntry(this) ) return null;
 			try
 			{

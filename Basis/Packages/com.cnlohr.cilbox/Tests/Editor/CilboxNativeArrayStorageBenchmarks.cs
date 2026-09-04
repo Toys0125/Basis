@@ -18,6 +18,8 @@ namespace Cilbox.Tests
         private const int OperationsPerInvocation = 192;
         private const int Samples = 5;
         private static string validationSummary;
+        [ThreadStatic] private static StackElement[] singleParameterCache;
+        [ThreadStatic] private static bool singleParameterCacheInUse;
 
         [StructLayout(LayoutKind.Explicit, Size = 24)]
         private struct NativeStackElement
@@ -472,9 +474,12 @@ namespace Cilbox.Tests
                 var cls = new CilboxClass { box = box, className = "CilboxInterpreterBenchmark" };
                 CilboxMethod tiny = CreateNumericMethod(cls, "Tiny", new byte[] { 0x17, 0x2a }, 1);
                 CilboxMethod arithmetic = CreateNumericMethod(cls, "Arithmetic", BuildArithmeticBytecode(OperationsPerInvocation), 2);
+                CilboxMethod instanceTiny = CreateInstanceThisMethod(cls, "InstanceTiny");
+                var proxy = gameObject.AddComponent<CilboxProxy>();
 
                 var emptyParameters = Array.Empty<StackElement>();
                 var ownedStackPool = ArrayPool<StackElement>.Create();
+                var ownedParameterPool = ArrayPool<StackElement>.Create();
                 var tinyFullStack = new StackElement[StackSize];
                 var tinyRightSizedStack = new StackElement[tiny.MaxStackSize + tiny.methodLocals.Length];
                 var arithmeticFullStack = new StackElement[StackSize];
@@ -491,6 +496,9 @@ namespace Cilbox.Tests
                 RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, 8, clearOnRent: true, clearOnReturn: false);
                 RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, 8, clearOnRent: false, clearOnReturn: true);
                 RunArrayPoolStackBuffers(ownedStackPool, 8, clearOnRent: false, clearOnReturn: true);
+                RunInstanceParameterFresh(instanceTiny, box, tinyFullStack, proxy, 8);
+                RunInstanceParameterPool(instanceTiny, box, tinyFullStack, proxy, ownedParameterPool, 8);
+                RunInstanceParameterThreadCache(instanceTiny, box, tinyFullStack, proxy, 8);
 
                 long tinyChecksum = 0;
                 tinyChecksum = Measure("interpreter-current-tiny", () => RunCurrentInterpreter(tiny, box, Invocations), tinyChecksum);
@@ -518,6 +526,13 @@ namespace Cilbox.Tests
                 Measure("overhead-arraypool-shared-1024-clear-rent", () => RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, Invocations, clearOnRent: true, clearOnReturn: false), 0);
                 Measure("overhead-arraypool-shared-1024-clear-return", () => RunArrayPoolStackBuffers(ArrayPool<StackElement>.Shared, Invocations, clearOnRent: false, clearOnReturn: true), 0);
                 Measure("overhead-arraypool-owned-1024-clear-return", () => RunArrayPoolStackBuffers(ownedStackPool, Invocations, clearOnRent: false, clearOnReturn: true), 0);
+
+                long instanceChecksum = 0;
+                instanceChecksum = Measure("parameters-instance-fresh-1", () => RunInstanceParameterFresh(instanceTiny, box, tinyFullStack, proxy, Invocations), instanceChecksum);
+                instanceChecksum = Measure("parameters-instance-owned-pool-1", () => RunInstanceParameterPool(instanceTiny, box, tinyFullStack, proxy, ownedParameterPool, Invocations), instanceChecksum);
+                instanceChecksum = Measure("parameters-instance-thread-cache-1", () => RunInstanceParameterThreadCache(instanceTiny, box, tinyFullStack, proxy, Invocations), instanceChecksum);
+                Measure("parameters-static-fresh-empty", () => RunEmptyParameterAllocations(Invocations), 0);
+                Measure("parameters-static-array-empty", () => RunEmptyParameterReuse(Invocations), 0);
             }
             finally
             {
@@ -677,6 +692,26 @@ namespace Cilbox.Tests
             return method;
         }
 
+        private static CilboxMethod CreateInstanceThisMethod(CilboxClass cls, string name)
+        {
+            var serialized = new SerializedMethod
+            {
+                methodName = name,
+                maxStack = 1,
+                isVoid = false,
+                isStatic = false,
+                isCtor = false,
+                fullSignature = $"Int32 {name}()",
+                body = new byte[] { 0x02, 0x26, 0x17, 0x2a }, // ldarg.0; pop; ldc.i4.1; ret
+                locals = Array.Empty<SerializedField>(),
+                parameters = Array.Empty<SerializedField>(),
+                exceptionHandlers = Array.Empty<SerializedExceptionHandler>()
+            };
+            var method = new CilboxMethod();
+            method.Load(cls, serialized);
+            return method;
+        }
+
         private static byte[] BuildArithmeticBytecode(int operations)
         {
             var code = new byte[operations * 2 + 2];
@@ -689,6 +724,86 @@ namespace Cilbox.Tests
             }
             code[pc] = 0x2a; // ret
             return code;
+        }
+
+        private static long RunInstanceParameterFresh(CilboxMethod method, CilboxBenchmarkBox box, StackElement[] stack, CilboxProxy proxy, int invocations)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                var parameters = new StackElement[1];
+                parameters[0].Load(proxy);
+                checksum += Convert.ToInt64(method.InterpretWithBuffersForBenchmark(stack, parameters, true));
+            }
+            return checksum;
+        }
+
+        private static long RunInstanceParameterPool(CilboxMethod method, CilboxBenchmarkBox box, StackElement[] stack, CilboxProxy proxy, ArrayPool<StackElement> pool, int invocations)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                StackElement[] parameters = pool.Rent(1);
+                try
+                {
+                    parameters[0].Load(proxy);
+                    checksum += Convert.ToInt64(method.InterpretWithBuffersForBenchmark(stack, new ArraySegment<StackElement>(parameters, 0, 1), true));
+                }
+                finally
+                {
+                    pool.Return(parameters, clearArray: true);
+                }
+            }
+            return checksum;
+        }
+
+        private static long RunInstanceParameterThreadCache(CilboxMethod method, CilboxBenchmarkBox box, StackElement[] stack, CilboxProxy proxy, int invocations)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                StackElement[] parameters;
+                bool cached = !singleParameterCacheInUse;
+                if (cached)
+                {
+                    singleParameterCacheInUse = true;
+                    parameters = singleParameterCache ??= new StackElement[1];
+                }
+                else
+                {
+                    parameters = new StackElement[1];
+                }
+
+                try
+                {
+                    parameters[0].Load(proxy);
+                    checksum += Convert.ToInt64(method.InterpretWithBuffersForBenchmark(stack, parameters, true));
+                }
+                finally
+                {
+                    parameters[0] = default;
+                    if (cached) singleParameterCacheInUse = false;
+                }
+            }
+            return checksum;
+        }
+
+        private static long RunEmptyParameterAllocations(int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++) checksum += new StackElement[0].Length + 1;
+            return checksum;
+        }
+
+        private static long RunEmptyParameterReuse(int invocations)
+        {
+            long checksum = 0;
+            StackElement[] parameters = Array.Empty<StackElement>();
+            for (int i = 0; i < invocations; i++) checksum += parameters.Length + 1;
+            return checksum;
         }
 
         private static long RunCurrentInterpreter(CilboxMethod method, CilboxBenchmarkBox box, int invocations)
