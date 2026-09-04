@@ -52,7 +52,7 @@ public class DesktopManager : MonoBehaviour
         cursorClampX = table.k_TABLE_WIDTH + .3f;
         cursorClampZ = table.k_TABLE_HEIGHT + .3f;
         rootStartScale = root.transform.localScale;
-        cameraStartScale = root.GetComponentInChildren<Camera>().orthographicSize;
+        cameraStartScale = root.GetComponentInChildren<Camera>(true).orthographicSize;
         _RefreshTable();
         _RefreshPhysics();
     }
