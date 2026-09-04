@@ -244,23 +244,30 @@ namespace Cilbox.Tests
             long checksum = 0;
             for (int invocation = 0; invocation < invocations; invocation++)
             {
-                using var stack = new NativeArray<NativeStackElement>(StackSize, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                int sp = -1;
-                for (int op = 0; op < operations; op++)
+                var stack = new NativeArray<NativeStackElement>(StackSize, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                try
                 {
-                    NativeStackElement lhs = default;
-                    lhs.LoadInt(invocation + op + 1);
-                    stack[++sp] = lhs;
+                    int sp = -1;
+                    for (int op = 0; op < operations; op++)
+                    {
+                        NativeStackElement lhs = default;
+                        lhs.LoadInt(invocation + op + 1);
+                        stack[++sp] = lhs;
 
-                    NativeStackElement rhs = default;
-                    rhs.LoadInt((op * 3) + 7);
-                    stack[++sp] = rhs;
+                        NativeStackElement rhs = default;
+                        rhs.LoadInt((op * 3) + 7);
+                        stack[++sp] = rhs;
 
-                    rhs = stack[sp--];
-                    lhs = stack[sp];
-                    lhs.LoadInt(unchecked((lhs.Int * 33) ^ rhs.Int));
-                    stack[sp] = lhs;
-                    checksum += stack[sp--].Int;
+                        rhs = stack[sp--];
+                        lhs = stack[sp];
+                        lhs.LoadInt(unchecked((lhs.Int * 33) ^ rhs.Int));
+                        stack[sp] = lhs;
+                        checksum += stack[sp--].Int;
+                    }
+                }
+                finally
+                {
+                    stack.Dispose();
                 }
             }
             return checksum;
