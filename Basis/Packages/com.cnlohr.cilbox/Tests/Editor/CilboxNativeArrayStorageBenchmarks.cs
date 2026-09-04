@@ -18,8 +18,11 @@ namespace Cilbox.Tests
         private const int OperationsPerInvocation = 192;
         private const int Samples = 5;
         private static string validationSummary;
+        private static object nativeScratchSink;
         [ThreadStatic] private static StackElement[] singleParameterCache;
         [ThreadStatic] private static bool singleParameterCacheInUse;
+        [ThreadStatic] private static object[] nativeSingleArgumentCache;
+        [ThreadStatic] private static bool nativeSingleArgumentCacheInUse;
 
         [StructLayout(LayoutKind.Explicit, Size = 24)]
         private struct NativeStackElement
@@ -102,6 +105,7 @@ namespace Cilbox.Tests
             benchmarks.CompareManagedAndNativeArrayStorage();
             benchmarks.CompareCompactUnmanagedStorageAndHandleStrategies();
             benchmarks.BenchmarkCurrentInterpreterOverhead();
+            benchmarks.BenchmarkNativeCallScratchBuffers();
             UnityEditor.EditorApplication.quitting += PrintValidationSummary;
         }
 
@@ -540,6 +544,88 @@ namespace Cilbox.Tests
             {
                 UnityEngine.Object.DestroyImmediate(gameObject);
             }
+        }
+
+        [Test]
+        public void BenchmarkNativeCallScratchBuffers()
+        {
+            const int nativeInvocations = Invocations * 10;
+            MethodInfo method = typeof(CilboxNativeArrayStorageBenchmarks).GetMethod(nameof(NativeScratchAcceptObject), BindingFlags.Public | BindingFlags.Static);
+            object hostObject = new object();
+
+            RunNativeScratchFresh(method, hostObject, 8);
+            RunNativeScratchNoByRef(method, hostObject, 8);
+            RunNativeScratchThreadCache(method, hostObject, 8);
+
+            long checksum = 0;
+            checksum = Measure("nativecall-scratch-fresh-object-and-stackelement-1", () => RunNativeScratchFresh(method, hostObject, nativeInvocations), checksum);
+            checksum = Measure("nativecall-scratch-fresh-object-only-1", () => RunNativeScratchNoByRef(method, hostObject, nativeInvocations), checksum);
+            checksum = Measure("nativecall-scratch-thread-cache-object-only-1", () => RunNativeScratchThreadCache(method, hostObject, nativeInvocations), checksum);
+        }
+
+        public static void NativeScratchAcceptObject(object value)
+        {
+            nativeScratchSink = value;
+        }
+
+        private static long RunNativeScratchFresh(MethodInfo method, object hostObject, int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                var callpar = new object[1];
+                var callparSe = new StackElement[1];
+                var se = new StackElement();
+                se.Load(hostObject);
+                callparSe[0] = se;
+                callpar[0] = se.AsObject();
+                method.Invoke(null, callpar);
+                if (ReferenceEquals(nativeScratchSink, hostObject) && callparSe[0].type == StackType.Object) checksum++;
+            }
+            return checksum;
+        }
+
+        private static long RunNativeScratchNoByRef(MethodInfo method, object hostObject, int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                var callpar = new object[1];
+                var se = new StackElement();
+                se.Load(hostObject);
+                callpar[0] = se.AsObject();
+                method.Invoke(null, callpar);
+                if (ReferenceEquals(nativeScratchSink, hostObject)) checksum++;
+            }
+            return checksum;
+        }
+
+        private static long RunNativeScratchThreadCache(MethodInfo method, object hostObject, int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                bool usingCache = !nativeSingleArgumentCacheInUse;
+                object[] callpar = usingCache
+                    ? nativeSingleArgumentCache ??= new object[1]
+                    : new object[1];
+                if (usingCache) nativeSingleArgumentCacheInUse = true;
+
+                try
+                {
+                    var se = new StackElement();
+                    se.Load(hostObject);
+                    callpar[0] = se.AsObject();
+                    method.Invoke(null, callpar);
+                    if (ReferenceEquals(nativeScratchSink, hostObject)) checksum++;
+                }
+                finally
+                {
+                    callpar[0] = null;
+                    if (usingCache) nativeSingleArgumentCacheInUse = false;
+                }
+            }
+            return checksum;
         }
 
         private static long RunCompactManagedFreshNumeric(int invocations, int operations)
