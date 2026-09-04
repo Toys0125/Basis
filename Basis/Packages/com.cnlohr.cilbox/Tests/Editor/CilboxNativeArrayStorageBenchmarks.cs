@@ -56,6 +56,11 @@ namespace Cilbox.Tests
             }
         }
 
+        public static void RunForValidation()
+        {
+            new CilboxNativeArrayStorageBenchmarks().CompareManagedAndNativeArrayStorage();
+        }
+
         [Test]
         public unsafe void CompareManagedAndNativeArrayStorage()
         {

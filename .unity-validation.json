@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "projectPath": "Basis",
+  "profiles": {
+    "cilbox-nativearray-benchmark": {
+      "compile": true,
+      "validators": [
+        "Cilbox.Tests.CilboxNativeArrayStorageBenchmarks.RunForValidation"
+      ]
+    }
+  }
+}
