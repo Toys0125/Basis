@@ -156,38 +156,50 @@ namespace Cilbox
 			int thisOffset = isStatic ? 0 : 1;
 
 			StackElement [] parameters = new StackElement[plen+thisOffset];
-			StackElement [] stackBuffer = new StackElement[Cilbox.defaultStackSize];
+			StackElement [] stackBuffer = ArrayPool<StackElement>.Shared.Rent(Cilbox.defaultStackSize);
+			// ArrayPool does not guarantee zeroed buffers. Cilbox locals previously inherited
+			// fresh-array zero initialization, so preserve that behavior explicitly.
+			Array.Clear(stackBuffer, 0, Cilbox.defaultStackSize);
 
-			if( isStatic )
-			{
-				for( int p = 0; p < plen; p++ )
-					parameters[p].Load( parametersIn[p] );
-			}
-			else
-			{
-				parameters[0].Load( ths );
-				for( int p = 0; p < plen; p++ )
-					parameters[p+1].Load( parametersIn[p] );
-				plen++;
-			}
-
-			object ret = null;
-			if( !parentClass.box.InterpreterEntry(this) ) return null;
 			try
 			{
-				ret = InterpretInner( stackBuffer, parameters ).AsObject();
-			}
-			catch( Exception e )
-			{
-				parentClass.box.InterpreterExit();
-				if( ths != null ) ths.DisableProxy();
-				else parentClass.box.DisableWithReason(e.ToString());
-				if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
-				throw;
-			}
-			parentClass.box.InterpreterExit();
+				if( isStatic )
+				{
+					for( int p = 0; p < plen; p++ )
+						parameters[p].Load( parametersIn[p] );
+				}
+				else
+				{
+					parameters[0].Load( ths );
+					for( int p = 0; p < plen; p++ )
+						parameters[p+1].Load( parametersIn[p] );
+					plen++;
+				}
 
-			return ret;
+				object ret = null;
+				if( !parentClass.box.InterpreterEntry(this) ) return null;
+				try
+				{
+					ret = InterpretInner( stackBuffer, parameters ).AsObject();
+				}
+				catch( Exception e )
+				{
+					parentClass.box.InterpreterExit();
+					if( ths != null ) ths.DisableProxy();
+					else parentClass.box.DisableWithReason(e.ToString());
+					if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
+					throw;
+				}
+				parentClass.box.InterpreterExit();
+
+				return ret;
+			}
+			finally
+			{
+				// StackElement contains managed references; do not retain script or Unity
+				// objects in the shared pool after an invocation completes.
+				ArrayPool<StackElement>.Shared.Return(stackBuffer, clearArray: true);
+			}
 		}
 
 #if UNITY_EDITOR
