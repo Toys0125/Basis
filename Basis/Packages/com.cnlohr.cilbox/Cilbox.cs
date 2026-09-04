@@ -190,6 +190,24 @@ namespace Cilbox
 			return ret;
 		}
 
+#if UNITY_EDITOR
+		// Benchmark-only entry point used to isolate the cost of Cilbox's fixed 1024-slot
+		// allocation and interpreter accounting. Production execution still goes through
+		// Interpret above; this method is not compiled into players.
+		public object InterpretWithBuffersForBenchmark( StackElement[] stackBuffer, StackElement[] parameters, bool accounting )
+		{
+			if( accounting && !parentClass.box.InterpreterEntry(this) ) return null;
+			try
+			{
+				return InterpretInner( stackBuffer, parameters ).AsObject();
+			}
+			finally
+			{
+				if( accounting ) parentClass.box.InterpreterExit();
+			}
+		}
+#endif
+
 		private StackElement InterpretInner( ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
 		{
 			Span<StackElement> stackBuffer = stackBufferIn.AsSpan();

@@ -472,13 +472,41 @@ namespace Cilbox.Tests
                 CilboxMethod tiny = CreateNumericMethod(cls, "Tiny", new byte[] { 0x17, 0x2a }, 1);
                 CilboxMethod arithmetic = CreateNumericMethod(cls, "Arithmetic", BuildArithmeticBytecode(OperationsPerInvocation), 2);
 
+                var emptyParameters = Array.Empty<StackElement>();
+                var tinyFullStack = new StackElement[StackSize];
+                var tinyRightSizedStack = new StackElement[tiny.MaxStackSize + tiny.methodLocals.Length];
+                var arithmeticFullStack = new StackElement[StackSize];
+                var arithmeticRightSizedStack = new StackElement[arithmetic.MaxStackSize + arithmetic.methodLocals.Length];
+
                 RunCurrentInterpreter(tiny, box, 8);
                 RunCurrentInterpreter(arithmetic, box, 8);
+                RunBufferedInterpreter(tiny, box, tinyFullStack, emptyParameters, 8, true, false);
+                RunBufferedInterpreter(arithmetic, box, arithmeticFullStack, emptyParameters, 8, true, false);
+                RunInterpreterEntryExit(box, tiny, 8);
+                RunStackAllocations(8, StackSize);
+                RunStackAllocations(8, 2);
 
                 long tinyChecksum = 0;
                 tinyChecksum = Measure("interpreter-current-tiny", () => RunCurrentInterpreter(tiny, box, Invocations), tinyChecksum);
                 long arithmeticChecksum = 0;
                 arithmeticChecksum = Measure("interpreter-current-arithmetic", () => RunCurrentInterpreter(arithmetic, box, Invocations), arithmeticChecksum);
+
+                long bufferedTinyChecksum = 0;
+                bufferedTinyChecksum = Measure("interpreter-buffered-tiny-1024", () => RunBufferedInterpreter(tiny, box, tinyFullStack, emptyParameters, Invocations, true, false), bufferedTinyChecksum);
+                bufferedTinyChecksum = Measure("interpreter-buffered-tiny-right-sized", () => RunBufferedInterpreter(tiny, box, tinyRightSizedStack, emptyParameters, Invocations, true, false), bufferedTinyChecksum);
+                bufferedTinyChecksum = Measure("interpreter-buffered-tiny-1024-full-clear", () => RunBufferedInterpreter(tiny, box, tinyFullStack, emptyParameters, Invocations, true, true), bufferedTinyChecksum);
+                bufferedTinyChecksum = Measure("interpreter-buffered-tiny-no-accounting", () => RunBufferedInterpreter(tiny, box, tinyRightSizedStack, emptyParameters, Invocations, false, false), bufferedTinyChecksum);
+
+                long bufferedArithmeticChecksum = 0;
+                bufferedArithmeticChecksum = Measure("interpreter-buffered-arithmetic-1024", () => RunBufferedInterpreter(arithmetic, box, arithmeticFullStack, emptyParameters, Invocations, true, false), bufferedArithmeticChecksum);
+                bufferedArithmeticChecksum = Measure("interpreter-buffered-arithmetic-right-sized", () => RunBufferedInterpreter(arithmetic, box, arithmeticRightSizedStack, emptyParameters, Invocations, true, false), bufferedArithmeticChecksum);
+                bufferedArithmeticChecksum = Measure("interpreter-buffered-arithmetic-1024-full-clear", () => RunBufferedInterpreter(arithmetic, box, arithmeticFullStack, emptyParameters, Invocations, true, true), bufferedArithmeticChecksum);
+                bufferedArithmeticChecksum = Measure("interpreter-buffered-arithmetic-no-accounting", () => RunBufferedInterpreter(arithmetic, box, arithmeticRightSizedStack, emptyParameters, Invocations, false, false), bufferedArithmeticChecksum);
+
+                Measure("overhead-interpreter-entry-exit", () => RunInterpreterEntryExit(box, tiny, Invocations), 0);
+                Measure("overhead-allocate-stackelement-1024", () => RunStackAllocations(Invocations, StackSize), 0);
+                Measure("overhead-allocate-stackelement-2", () => RunStackAllocations(Invocations, 2), 0);
+                Measure("overhead-allocate-stackelement-empty", () => RunStackAllocations(Invocations, 0), 0);
             }
             finally
             {
@@ -658,6 +686,51 @@ namespace Cilbox.Tests
             long checksum = 0;
             for (int i = 0; i < invocations; i++)
                 checksum += Convert.ToInt64(method.Interpret(null, Array.Empty<object>()));
+            return checksum;
+        }
+
+        private static long RunBufferedInterpreter(CilboxMethod method, CilboxBenchmarkBox box,
+            StackElement[] stack, StackElement[] parameters, int invocations, bool accounting, bool clearFullStack)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                checksum += Convert.ToInt64(method.InterpretWithBuffersForBenchmark(stack, parameters, accounting));
+                if (clearFullStack) Array.Clear(stack, 0, stack.Length);
+            }
+            return checksum;
+        }
+
+        private static long RunInterpreterEntryExit(CilboxBenchmarkBox box, CilboxMethod method, int invocations)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                if (!box.InterpreterEntry(method)) continue;
+                box.InterpreterExit();
+                checksum++;
+            }
+            return checksum;
+        }
+
+        private static long RunStackAllocations(int invocations, int length)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+            {
+                var stack = new StackElement[length];
+                if (length != 0)
+                {
+                    stack[0].LoadInt(i);
+                    checksum += stack[0].i;
+                }
+                else
+                {
+                    checksum++;
+                }
+            }
             return checksum;
         }
 
