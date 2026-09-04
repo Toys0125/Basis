@@ -693,6 +693,13 @@ namespace Cilbox.Tests
             StackElement[] stack, StackElement[] parameters, int invocations, bool accounting, bool clearFullStack)
         {
             box.interpreterAccountingCumulitiveTicks = 0;
+            if (!accounting)
+            {
+                // InterpretInner independently checks this deadline every 64 instructions.
+                // Keep that safety branch from firing while isolating only Entry/Exit cost.
+                box.interpreterInstructionsCount = 0;
+                box.interpreterAccountingDropDead = long.MaxValue;
+            }
             long checksum = 0;
             for (int i = 0; i < invocations; i++)
             {
