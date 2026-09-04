@@ -51,6 +51,8 @@ namespace Cilbox
 	public class CilboxMethod
 	{
 		private static readonly ArrayPool<StackElement> stackPool = ArrayPool<StackElement>.Create();
+		[ThreadStatic] private static StackElement[] singleParameterCache;
+		[ThreadStatic] private static bool singleParameterCacheInUse;
 
 		public CilboxClass parentClass;
 		public int MaxStackSize;
@@ -156,12 +158,28 @@ namespace Cilbox
 
 			int plen = parametersIn?.Length ?? 0;
 			int thisOffset = isStatic ? 0 : 1;
+			int parameterCount = plen + thisOffset;
 
-			StackElement [] parameters = new StackElement[plen+thisOffset];
+			bool usingSingleParameterCache = parameterCount == 1 && !singleParameterCacheInUse;
+			StackElement [] parameters;
+			if( parameterCount == 0 )
+			{
+				parameters = Array.Empty<StackElement>();
+			}
+			else if( usingSingleParameterCache )
+			{
+				parameters = singleParameterCache ?? (singleParameterCache = new StackElement[1]);
+			}
+			else
+			{
+				parameters = new StackElement[parameterCount];
+			}
+
 			// This pool is private to Cilbox and every returned buffer is cleared below.
 			// New arrays are zero-initialized, so a rented buffer is always clean without
 			// paying for another full clear on the hot path.
 			StackElement [] stackBuffer = stackPool.Rent(Cilbox.defaultStackSize);
+			if( usingSingleParameterCache ) singleParameterCacheInUse = true;
 
 			try
 			{
@@ -198,6 +216,12 @@ namespace Cilbox
 			}
 			finally
 			{
+				if( usingSingleParameterCache )
+				{
+					parameters[0] = default;
+					singleParameterCacheInUse = false;
+				}
+
 				// StackElement contains managed references. Clearing on return both releases
 				// those objects and maintains the private pool's clean-on-rent invariant.
 				stackPool.Return(stackBuffer, clearArray: true);

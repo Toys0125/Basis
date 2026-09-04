@@ -499,6 +499,7 @@ namespace Cilbox.Tests
                 RunInstanceParameterFresh(instanceTiny, box, tinyFullStack, proxy, 8);
                 RunInstanceParameterPool(instanceTiny, box, tinyFullStack, proxy, ownedParameterPool, 8);
                 RunInstanceParameterThreadCache(instanceTiny, box, tinyFullStack, proxy, 8);
+                RunCurrentInstanceInterpreter(instanceTiny, box, proxy, 8);
 
                 long tinyChecksum = 0;
                 tinyChecksum = Measure("interpreter-current-tiny", () => RunCurrentInterpreter(tiny, box, Invocations), tinyChecksum);
@@ -533,6 +534,7 @@ namespace Cilbox.Tests
                 instanceChecksum = Measure("parameters-instance-thread-cache-1", () => RunInstanceParameterThreadCache(instanceTiny, box, tinyFullStack, proxy, Invocations), instanceChecksum);
                 Measure("parameters-static-fresh-empty", () => RunEmptyParameterAllocations(Invocations), 0);
                 Measure("parameters-static-array-empty", () => RunEmptyParameterReuse(Invocations), 0);
+                Measure("interpreter-current-instance-tiny", () => RunCurrentInstanceInterpreter(instanceTiny, box, proxy, Invocations), 0);
             }
             finally
             {
@@ -803,6 +805,15 @@ namespace Cilbox.Tests
             long checksum = 0;
             StackElement[] parameters = Array.Empty<StackElement>();
             for (int i = 0; i < invocations; i++) checksum += parameters.Length + 1;
+            return checksum;
+        }
+
+        private static long RunCurrentInstanceInterpreter(CilboxMethod method, CilboxBenchmarkBox box, CilboxProxy proxy, int invocations)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+                checksum += Convert.ToInt64(method.Interpret(proxy, null));
             return checksum;
         }
 
