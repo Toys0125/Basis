@@ -246,6 +246,13 @@ namespace LiteNetLib
         {
 #if DISABLE_IPV6
             IPv6Support = false;
+#elif UNITY_SERVER && UNITY_STANDALONE_LINUX
+            // Dedicated Linux players currently use Unity's Mono backend while the normal
+            // Standalone Linux player uses IL2CPP. Mono's OSSupportsIPv6 capability flag can be
+            // false even when the kernel can create AF_INET6 sockets, which makes LiteNetLib skip
+            // its IPv6 socket entirely and also prevents IPv6-only DNS targets from connecting.
+            // The socket itself is the authority here: if the kernel accepts AF_INET6, enable it.
+            IPv6Support = DetectLinuxIPv6SocketSupport();
 #elif !UNITY_2019_1_OR_NEWER && !UNITY_2018_4_OR_NEWER && (!UNITY_EDITOR && ENABLE_IL2CPP)
             string version = UnityEngine.Application.unityVersion;
             IPv6Support = Socket.OSSupportsIPv6 && int.Parse(version.Remove(version.IndexOf('f')).Split('.')[2]) >= 6;
@@ -253,6 +260,27 @@ namespace LiteNetLib
             IPv6Support = Socket.OSSupportsIPv6;
 #endif
         }
+
+#if UNITY_SERVER && UNITY_STANDALONE_LINUX && !DISABLE_IPV6
+        private static bool DetectLinuxIPv6SocketSupport()
+        {
+            try
+            {
+                using (var socket = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp))
+                {
+                    return socket.AddressFamily == AddressFamily.InterNetworkV6;
+                }
+            }
+            catch (SocketException)
+            {
+                return false;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                return false;
+            }
+        }
+#endif
 
         private bool ProcessError(SocketException ex)
         {

@@ -873,13 +873,85 @@ public class BasisHeadlessManagement : BasisBaseTypeManagement
         ResetServerHeadlessAudioPolicy();
         reconnectScheduled = false;
         BasisHeadlessRuntimeStatus.MarkConnecting();
-        BasisNetworkManagement.Ip = Ip;
-        BasisNetworkManagement.Password = Password;
-        BasisNetworkManagement.IsHostMode = false;
-        BasisNetworkManagement.Port = (ushort)Port;
-        BasisNetworkManagement.Connect();
-        BasisDebug.Log("connecting to default");
-        BasisMainMenu.Close();
+
+        CancellationToken token = reconnectCts?.Token ?? CancellationToken.None;
+        _ = ResolveAndConnectAsync(Ip, Port, Password, token);
+    }
+
+    private async Task ResolveAndConnectAsync(string configuredIp, int configuredPort, string configuredPassword, CancellationToken token)
+    {
+        string connectionIp = configuredIp;
+        if (!System.Net.IPAddress.TryParse(configuredIp, out _) &&
+            !string.Equals(configuredIp, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var target = new ConnectionTarget(BasisNetworkStackRegistry.DefaultId, configuredIp);
+                target.Set(ConnectionTarget.Keys.Address, configuredIp);
+                target.Set(ConnectionTarget.Keys.Port, configuredPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+                using CancellationTokenSource probeCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                probeCts.CancelAfter(2500);
+                ServerProbeResult probe = await BasisServerInfoClient.ProbeAsync(
+                    target,
+                    2500,
+                    probeCts.Token).ConfigureAwait(false);
+                if (probe?.ResolvedAddress != null)
+                {
+                    connectionIp = probe.ResolvedAddress.ToString();
+                }
+                else
+                {
+                    string probeFailure = probe == null
+                        ? "no probe result"
+                        : probe.TimedOut
+                            ? "probe timed out"
+                            : string.IsNullOrWhiteSpace(probe.Error) ? "no reachable address" : probe.Error;
+                    BasisDebug.LogWarning(
+                        $"Headless address probe for {configuredIp}:{configuredPort} failed ({probeFailure}); " +
+                        $"transport IPv6 support={LiteNetLib.NetManager.IPv6Support}. Falling back to hostname resolution.",
+                        BasisDebug.LogTag.Networking);
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+
+        if (token.IsCancellationRequested || isShuttingDown)
+        {
+            return;
+        }
+
+        BasisDeviceManagement.EnqueueOnMainThread(() =>
+        {
+            if (token.IsCancellationRequested || isShuttingDown || !BasisNetworkManagement.IsInitialized)
+            {
+                return;
+            }
+
+            // Ignore a stale DNS/probe result if configuration changed while it was in flight.
+            if (!string.Equals(Ip, configuredIp, StringComparison.Ordinal) ||
+                Port != configuredPort ||
+                !string.Equals(Password, configuredPassword, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (!string.Equals(connectionIp, configuredIp, StringComparison.OrdinalIgnoreCase))
+            {
+                BasisDebug.Log($"Headless resolved {configuredIp} -> {connectionIp} for connection.", BasisDebug.LogTag.Networking);
+            }
+
+            BasisNetworkManagement.Ip = connectionIp;
+            BasisNetworkManagement.Password = configuredPassword;
+            BasisNetworkManagement.IsHostMode = false;
+            BasisNetworkManagement.Port = (ushort)configuredPort;
+            BasisNetworkManagement.Connect();
+            BasisDebug.Log($"Headless connecting to {connectionIp}:{configuredPort}", BasisDebug.LogTag.Networking);
+            BasisMainMenu.Close();
+        });
     }
 
     private void TriggerStrictMemoryCleanup(string reason)
