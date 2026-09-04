@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using NUnit.Framework;
 using Unity.Collections;
@@ -37,6 +40,38 @@ namespace Cilbox.Tests
             }
         }
 
+        // Once object references are represented by handles, the separate reference
+        // word at offset 16 is unnecessary. Every primitive and a 64-bit handle fit
+        // in the same payload word, leaving a naturally aligned 16-byte VM value.
+        [StructLayout(LayoutKind.Explicit, Size = 16)]
+        private struct CompactStackElement
+        {
+            [FieldOffset(0)] public StackType Type;
+            [FieldOffset(8)] public long Long;
+            [FieldOffset(8)] public int Int;
+            [FieldOffset(8)] public ulong ULong;
+            [FieldOffset(8)] public ulong Handle;
+
+            public void LoadInt(int value)
+            {
+                Long = value;
+                Type = StackType.Int;
+            }
+
+            public void LoadHandle(ulong value)
+            {
+                Handle = value;
+                Type = StackType.Object;
+            }
+        }
+
+        private sealed class ReferenceComparer : IEqualityComparer<object>
+        {
+            public static readonly ReferenceComparer Instance = new ReferenceComparer();
+            public new bool Equals(object x, object y) => ReferenceEquals(x, y);
+            public int GetHashCode(object obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
         private readonly struct SampleResult
         {
             public readonly long ElapsedTicks;
@@ -60,7 +95,10 @@ namespace Cilbox.Tests
         public static void RunForValidation()
         {
             validationSummary = string.Empty;
-            new CilboxNativeArrayStorageBenchmarks().CompareManagedAndNativeArrayStorage();
+            var benchmarks = new CilboxNativeArrayStorageBenchmarks();
+            benchmarks.CompareManagedAndNativeArrayStorage();
+            benchmarks.CompareCompactUnmanagedStorageAndHandleStrategies();
+            benchmarks.BenchmarkCurrentInterpreterOverhead();
             UnityEditor.EditorApplication.quitting += PrintValidationSummary;
         }
 
@@ -95,7 +133,8 @@ namespace Cilbox.Tests
 
                 string info =
                     $"CILBOX_NATIVEARRAY_BENCH|INFO|stackSize={StackSize}|invocations={Invocations}|ops={OperationsPerInvocation}|samples={Samples}" +
-                    $"|nativeSlotBytes={UnsafeUtility.SizeOf<NativeStackElement>()}|managedObjectOffset={Marshal.OffsetOf(typeof(StackElement), nameof(StackElement.o)).ToInt64()}|pointerBytes={IntPtr.Size}";
+                    $"|nativeSlotBytes={UnsafeUtility.SizeOf<NativeStackElement>()}|compactSlotBytes={UnsafeUtility.SizeOf<CompactStackElement>()}" +
+                    $"|managedObjectOffset={Marshal.OffsetOf(typeof(StackElement), nameof(StackElement.o)).ToInt64()}|pointerBytes={IntPtr.Size}";
                 validationSummary += info + "\n";
                 UnityEngine.Debug.Log(info);
 
@@ -376,6 +415,252 @@ namespace Cilbox.Tests
             return checksum;
         }
 
+        [Test]
+        public unsafe void CompareCompactUnmanagedStorageAndHandleStrategies()
+        {
+            var compactManagedReuse = new CompactStackElement[StackSize];
+            var compactNative = new NativeArray<CompactStackElement>(StackSize, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            CompactStackElement* rawCompact = (CompactStackElement*)UnsafeUtility.Malloc(
+                StackSize * UnsafeUtility.SizeOf<CompactStackElement>(), 16, Allocator.Persistent);
+            object[] hostObjects = MakeHostObjects(64);
+            object[] handleArena = new object[OperationsPerInvocation];
+            var stableHandles = new Dictionary<object, int>(hostObjects.Length, ReferenceComparer.Instance);
+            for (int i = 0; i < hostObjects.Length; i++) stableHandles.Add(hostObjects[i], i + 1);
+
+            try
+            {
+                RunCompactManagedFreshNumeric(8, 32);
+                RunCompactManagedReuseNumeric(compactManagedReuse, 8, 32);
+                RunCompactNativeUnsafeNumeric(compactNative, 8, 32, 0);
+                RunRawCompactNumeric(rawCompact, 8, 32, 0);
+                RunCompactNativeUnsafeObjects(compactNative, hostObjects, 8, 32);
+                RunCompactHandleArena(compactNative, hostObjects, handleArena, 8, 32, false);
+                RunCompactHandleArena(compactNative, hostObjects, handleArena, 8, 32, true);
+                RunCompactStableDictionaryHandles(compactNative, hostObjects, stableHandles, 8, 32);
+
+                long numericChecksum = 0;
+                numericChecksum = Measure("compact16-managed-fresh", () => RunCompactManagedFreshNumeric(Invocations, OperationsPerInvocation), numericChecksum);
+                numericChecksum = Measure("compact16-managed-reuse", () => RunCompactManagedReuseNumeric(compactManagedReuse, Invocations, OperationsPerInvocation), numericChecksum);
+                numericChecksum = Measure("compact16-nativearray-unsafe", () => RunCompactNativeUnsafeNumeric(compactNative, Invocations, OperationsPerInvocation, 0), numericChecksum);
+                numericChecksum = Measure("compact16-raw-malloc", () => RunRawCompactNumeric(rawCompact, Invocations, OperationsPerInvocation, 0), numericChecksum);
+                numericChecksum = Measure("compact16-raw-clear-8-slots", () => RunRawCompactNumeric(rawCompact, Invocations, OperationsPerInvocation, 8), numericChecksum);
+                numericChecksum = Measure("compact16-raw-clear-32-slots", () => RunRawCompactNumeric(rawCompact, Invocations, OperationsPerInvocation, 32), numericChecksum);
+                numericChecksum = Measure("compact16-raw-clear-1024-slots", () => RunRawCompactNumeric(rawCompact, Invocations, OperationsPerInvocation, StackSize), numericChecksum);
+
+                long objectChecksum = 0;
+                objectChecksum = Measure("compact16-object-preassigned-handles", () => RunCompactNativeUnsafeObjects(compactNative, hostObjects, Invocations, OperationsPerInvocation), objectChecksum);
+                objectChecksum = Measure("compact16-object-arena-register", () => RunCompactHandleArena(compactNative, hostObjects, handleArena, Invocations, OperationsPerInvocation, false), objectChecksum);
+                objectChecksum = Measure("compact16-object-arena-register-clear", () => RunCompactHandleArena(compactNative, hostObjects, handleArena, Invocations, OperationsPerInvocation, true), objectChecksum);
+                objectChecksum = Measure("compact16-object-stable-dictionary", () => RunCompactStableDictionaryHandles(compactNative, hostObjects, stableHandles, Invocations, OperationsPerInvocation), objectChecksum);
+            }
+            finally
+            {
+                compactNative.Dispose();
+                UnsafeUtility.Free(rawCompact, Allocator.Persistent);
+            }
+        }
+
+        [Test]
+        public void BenchmarkCurrentInterpreterOverhead()
+        {
+            var gameObject = new UnityEngine.GameObject("CilboxInterpreterBenchmark");
+            try
+            {
+                var box = gameObject.AddComponent<CilboxBenchmarkBox>();
+                box.timeoutLengthUs = box.MaxTimeoutLengthUs;
+                var cls = new CilboxClass { box = box, className = "CilboxInterpreterBenchmark" };
+                CilboxMethod tiny = CreateNumericMethod(cls, "Tiny", new byte[] { 0x17, 0x2a }, 1);
+                CilboxMethod arithmetic = CreateNumericMethod(cls, "Arithmetic", BuildArithmeticBytecode(OperationsPerInvocation), 2);
+
+                RunCurrentInterpreter(tiny, box, 8);
+                RunCurrentInterpreter(arithmetic, box, 8);
+
+                long tinyChecksum = 0;
+                tinyChecksum = Measure("interpreter-current-tiny", () => RunCurrentInterpreter(tiny, box, Invocations), tinyChecksum);
+                long arithmeticChecksum = 0;
+                arithmeticChecksum = Measure("interpreter-current-arithmetic", () => RunCurrentInterpreter(arithmetic, box, Invocations), arithmeticChecksum);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        private static long RunCompactManagedFreshNumeric(int invocations, int operations)
+        {
+            long checksum = 0;
+            for (int invocation = 0; invocation < invocations; invocation++)
+            {
+                var stack = new CompactStackElement[StackSize];
+                checksum += RunCompactManagedNumericBody(stack, invocation, operations);
+            }
+            return checksum;
+        }
+
+        private static long RunCompactManagedReuseNumeric(CompactStackElement[] stack, int invocations, int operations)
+        {
+            long checksum = 0;
+            for (int invocation = 0; invocation < invocations; invocation++)
+                checksum += RunCompactManagedNumericBody(stack, invocation, operations);
+            return checksum;
+        }
+
+        private static long RunCompactManagedNumericBody(CompactStackElement[] stack, int invocation, int operations)
+        {
+            long checksum = 0;
+            int sp = -1;
+            for (int op = 0; op < operations; op++)
+            {
+                stack[++sp].LoadInt(invocation + op + 1);
+                stack[++sp].LoadInt((op * 3) + 7);
+                int rhs = stack[sp--].Int;
+                int lhs = stack[sp].Int;
+                stack[sp].LoadInt(unchecked((lhs * 33) ^ rhs));
+                checksum += stack[sp--].Int;
+            }
+            return checksum;
+        }
+
+        private static unsafe long RunCompactNativeUnsafeNumeric(NativeArray<CompactStackElement> stack, int invocations, int operations, int clearSlots)
+        {
+            CompactStackElement* ptr = (CompactStackElement*)NativeArrayUnsafeUtility.GetUnsafePtr(stack);
+            return RunRawCompactNumeric(ptr, invocations, operations, clearSlots);
+        }
+
+        private static unsafe long RunRawCompactNumeric(CompactStackElement* ptr, int invocations, int operations, int clearSlots)
+        {
+            long checksum = 0;
+            int clearBytes = clearSlots * UnsafeUtility.SizeOf<CompactStackElement>();
+            for (int invocation = 0; invocation < invocations; invocation++)
+            {
+                if (clearBytes != 0) UnsafeUtility.MemClear(ptr, clearBytes);
+                int sp = -1;
+                for (int op = 0; op < operations; op++)
+                {
+                    ptr[++sp].LoadInt(invocation + op + 1);
+                    ptr[++sp].LoadInt((op * 3) + 7);
+                    int rhs = ptr[sp--].Int;
+                    int lhs = ptr[sp].Int;
+                    ptr[sp].LoadInt(unchecked((lhs * 33) ^ rhs));
+                    checksum += ptr[sp--].Int;
+                }
+            }
+            return checksum;
+        }
+
+        private static unsafe long RunCompactNativeUnsafeObjects(NativeArray<CompactStackElement> stack, object[] hostObjects, int invocations, int operations)
+        {
+            CompactStackElement* ptr = (CompactStackElement*)NativeArrayUnsafeUtility.GetUnsafePtr(stack);
+            long checksum = 0;
+            int mask = hostObjects.Length - 1;
+            for (int invocation = 0; invocation < invocations; invocation++)
+            {
+                int sp = -1;
+                for (int op = 0; op < operations; op++)
+                {
+                    int objectIndex = (invocation + op) & mask;
+                    ptr[++sp].LoadHandle((ulong)(objectIndex + 1));
+                    ptr[++sp] = ptr[sp - 1];
+                    ulong rhsHandle = ptr[sp--].Handle;
+                    ulong lhsHandle = ptr[sp--].Handle;
+                    object rhs = hostObjects[(int)rhsHandle - 1];
+                    object lhs = hostObjects[(int)lhsHandle - 1];
+                    if (ReferenceEquals(lhs, rhs)) checksum++;
+                }
+            }
+            return checksum;
+        }
+
+        private static unsafe long RunCompactHandleArena(NativeArray<CompactStackElement> stack, object[] hostObjects, object[] arena, int invocations, int operations, bool clearArena)
+        {
+            CompactStackElement* ptr = (CompactStackElement*)NativeArrayUnsafeUtility.GetUnsafePtr(stack);
+            long checksum = 0;
+            int mask = hostObjects.Length - 1;
+            for (int invocation = 0; invocation < invocations; invocation++)
+            {
+                int sp = -1;
+                int arenaCount = 0;
+                for (int op = 0; op < operations; op++)
+                {
+                    object value = hostObjects[(invocation + op) & mask];
+                    arena[arenaCount] = value;
+                    ulong handle = (ulong)++arenaCount;
+                    ptr[++sp].LoadHandle(handle);
+                    ptr[++sp] = ptr[sp - 1];
+                    object rhs = arena[(int)ptr[sp--].Handle - 1];
+                    object lhs = arena[(int)ptr[sp--].Handle - 1];
+                    if (ReferenceEquals(lhs, rhs)) checksum++;
+                }
+                if (clearArena) Array.Clear(arena, 0, arenaCount);
+            }
+            return checksum;
+        }
+
+        private static unsafe long RunCompactStableDictionaryHandles(NativeArray<CompactStackElement> stack, object[] hostObjects, Dictionary<object, int> handles, int invocations, int operations)
+        {
+            CompactStackElement* ptr = (CompactStackElement*)NativeArrayUnsafeUtility.GetUnsafePtr(stack);
+            long checksum = 0;
+            int mask = hostObjects.Length - 1;
+            for (int invocation = 0; invocation < invocations; invocation++)
+            {
+                int sp = -1;
+                for (int op = 0; op < operations; op++)
+                {
+                    object value = hostObjects[(invocation + op) & mask];
+                    ulong handle = (ulong)handles[value];
+                    ptr[++sp].LoadHandle(handle);
+                    ptr[++sp] = ptr[sp - 1];
+                    object rhs = hostObjects[(int)ptr[sp--].Handle - 1];
+                    object lhs = hostObjects[(int)ptr[sp--].Handle - 1];
+                    if (ReferenceEquals(lhs, rhs)) checksum++;
+                }
+            }
+            return checksum;
+        }
+
+        private static CilboxMethod CreateNumericMethod(CilboxClass cls, string name, byte[] byteCode, int maxStack)
+        {
+            var serialized = new SerializedMethod
+            {
+                methodName = name,
+                maxStack = maxStack,
+                isVoid = false,
+                isStatic = true,
+                isCtor = false,
+                fullSignature = $"Int32 {name}()",
+                body = byteCode,
+                locals = Array.Empty<SerializedField>(),
+                parameters = Array.Empty<SerializedField>(),
+                exceptionHandlers = Array.Empty<SerializedExceptionHandler>()
+            };
+            var method = new CilboxMethod();
+            method.Load(cls, serialized);
+            return method;
+        }
+
+        private static byte[] BuildArithmeticBytecode(int operations)
+        {
+            var code = new byte[operations * 2 + 2];
+            int pc = 0;
+            code[pc++] = 0x17; // ldc.i4.1
+            for (int i = 0; i < operations; i++)
+            {
+                code[pc++] = 0x18; // ldc.i4.2
+                code[pc++] = 0x58; // add
+            }
+            code[pc] = 0x2a; // ret
+            return code;
+        }
+
+        private static long RunCurrentInterpreter(CilboxMethod method, CilboxBenchmarkBox box, int invocations)
+        {
+            box.interpreterAccountingCumulitiveTicks = 0;
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++)
+                checksum += Convert.ToInt64(method.Interpret(null, Array.Empty<object>()));
+            return checksum;
+        }
+
         private static void ClearManaged(StackElement[] stack, ClearMode clearMode, int touched)
         {
             switch (clearMode)
@@ -398,6 +683,25 @@ namespace Cilbox.Tests
             var result = new object[count];
             for (int i = 0; i < count; i++) result[i] = new object();
             return result;
+        }
+    }
+
+    internal sealed class CilboxBenchmarkBox : global::Cilbox.Cilbox
+    {
+        public override bool CheckMethodAllowed(out MethodInfo mi, Type declaringType, string name,
+            SerializedTypeDescriptor[] parametersIn, SerializedTypeDescriptor[] genericArgumentsIn, string fullSignature)
+        {
+            mi = null;
+            return false;
+        }
+
+        public override bool CheckTypeAllowed(string sType) => false;
+        public override bool CheckFieldAllowed(string sType, string sFieldName) => false;
+
+        public override bool GetTypeOverride(string sType, out Type t)
+        {
+            t = null;
+            return false;
         }
     }
 }
