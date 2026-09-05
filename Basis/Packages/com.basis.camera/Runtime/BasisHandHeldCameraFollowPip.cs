@@ -142,9 +142,6 @@ public partial class BasisHandHeldCamera
         }
     }
 
-    /// <summary>True while the player is holding the detached marker — a "selfie stick" grip on the camera.</summary>
-    public bool FollowPipGrabbed => FollowGripTransform != null;
-
     /// <summary>While grabbed, the grip's transform is where the camera should be, less the parking offset.</summary>
     public bool TryGetFollowPipPose(out Vector3 pos, out Quaternion rot)
     {

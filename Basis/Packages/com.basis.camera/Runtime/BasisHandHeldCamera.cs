@@ -158,13 +158,6 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     /// <summary>Folder where screenshots are written (platform-dependent).</summary>
     private string picturesFolder;
 
-    /// <summary>
-    /// Whether the UI (nameplate) layer is in the capture. Derived from the capture camera's own
-    /// culling mask so it is the single source of truth — the Render Layers "Nameplates" toggle
-    /// and this can never disagree.
-    /// </summary>
-    public bool ShowUIInCapture => captureCamera != null && uiLayerMask != 0 && (WorldCullingMask & uiLayerMask) != 0;
-
     /// <summary>Last visibility state reported by the mesh renderer check.</summary>
     public bool LastVisibilityState = false;
 

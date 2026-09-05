@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -42,6 +43,7 @@ public static class BasisAvatarProxyJobs
     private static bool scheduled;
     private static bool hooked;
 
+    [BurstCompile]
     private struct GatherJob : IJobParallelForTransform
     {
         public NativeArray<Vector3> Positions;
@@ -53,6 +55,7 @@ public static class BasisAvatarProxyJobs
         }
     }
 
+    [BurstCompile]
     private struct BuildJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<Vector3> Positions;
@@ -65,9 +68,6 @@ public static class BasisAvatarProxyJobs
             Matrices[index] = Build(Positions[index * 2], Positions[index * 2 + 1], s.x, s.y);
         }
     }
-
-    /// <summary>How many limbs the shared arrays currently hold. For tests and diagnostics.</summary>
-    public static int LimbCount => limbCount;
 
     public static bool IsAllocated => matrices != null && limbCount > 0;
 

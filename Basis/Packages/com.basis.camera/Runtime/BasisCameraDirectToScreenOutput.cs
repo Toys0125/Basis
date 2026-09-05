@@ -53,9 +53,6 @@ public sealed class BasisCameraDirectToScreenOutput : MonoBehaviour
     /// <summary>The camera the feed is drawn through. Exposed for tests and diagnostics.</summary>
     public Camera ScreenCamera => screenCamera;
 
-    /// <summary>The render texture currently being drawn, or null.</summary>
-    public RenderTexture FeedTexture => feedTexture;
-
     /// <summary>
     /// True when the pass is being enqueued by hand because no renderer on the active pipeline
     /// carries <see cref="BasisCameraDirectToScreenFeature"/>. The mode still works; it is just

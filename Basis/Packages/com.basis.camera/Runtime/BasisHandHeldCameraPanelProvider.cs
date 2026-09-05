@@ -4146,7 +4146,7 @@ namespace Basis.BasisUI.HandHeldCamera
                 return all.ToArray();
             }
         }
-        public static string[] MeteringKeysForTest => MeteringKeys;
+
         public static string[] DollyEaseKeysForTest => DollyEaseKeys;
         public static string[] AimPointKeysForTest => AimPointKeys;
         public static string[] FocusModeLabelsForTest => FocusModeKeys;
