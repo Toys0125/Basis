@@ -324,7 +324,7 @@ spiperf.Begin();
 					case 0x12:
 					{
 						uint whichLocal = byteCode[pc++];
-						stackBuffer[++sp] = VmValue.CreateNativeAddressReference( stackBufferIn.AddressOf(localVarsHead + whichLocal) );
+						stackBuffer[++sp] = VmValue.CreateNativeAddressReference( stackBufferIn.AddressOf(localVarsHead + (int)whichLocal) );
 						break; //ldloca.s // Load address of local variable.
 					}
 					case 0x13: stackBuffer[localVarsHead+byteCode[pc++]] = stackBuffer[sp--]; break; //stloc.s
@@ -2017,7 +2017,7 @@ spiperf.End();
 				{
 					if (ehc.Flags == ExceptionHandlingClauseOptions.Clause && exceptionRegister.HasValue)
 					{
-						stackBuffer[++sp] = exceptionRegister.Value;
+						stackBufferIn[++sp] = exceptionRegister.Value;
 						exceptionRegister = null;
 					}
 				}
