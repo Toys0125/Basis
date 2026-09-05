@@ -191,7 +191,12 @@ public static class BasisAvatarProxyJobs
         {
             // A collapsed joint still has a body part sitting on it, so it stays a ball rather than
             // vanishing - which is what stops a degenerate rig punching holes in the occlusion.
-            return Matrix4x4.TRS(start, Quaternion.identity, new Vector3(radius, radius, radius));
+            Matrix4x4 ball = new Matrix4x4();
+            ball.SetColumn(0, new Vector4(radius, 0f, 0f, 0f));
+            ball.SetColumn(1, new Vector4(0f, radius, 0f, 0f));
+            ball.SetColumn(2, new Vector4(0f, 0f, radius, 0f));
+            ball.SetColumn(3, new Vector4(start.x, start.y, start.z, 1f));
+            return ball;
         }
 
         Vector3 direction = axis / length;
