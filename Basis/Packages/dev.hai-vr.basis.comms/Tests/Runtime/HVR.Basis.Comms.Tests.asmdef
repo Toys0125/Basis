@@ -4,6 +4,7 @@
     "references": [
         "HVR.Basis.Comms",
         "Basis Framework",
+        "BasisBundleManagement",
         "BasisNetworkCore",
         "BasisSDK",
         "BasisShims",
