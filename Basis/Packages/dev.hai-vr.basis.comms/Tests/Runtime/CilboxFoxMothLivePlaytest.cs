@@ -34,6 +34,14 @@ public class CilboxFoxMothLivePlaytest
     private const string AvatarPassword = "a0225a75691b5e83169c4c045c3588cbdaa48ae0af558c4722c3b21e58485768";
     private const int SampleFrames = 300;
 
+    [TearDown]
+    public void ResetValidationHooks()
+    {
+        BasisBundleLoadAsset.DisableFrameSplitForValidation = false;
+        BasisSceneFactory.SkipSceneCameraSetupForValidation = false;
+        LogAssert.ignoreFailingMessages = false;
+    }
+
     [UnityTest]
     [Timeout(240000)]
     public IEnumerator FoxMoth_ReachesVixxyFilterLoop_AndProfilesUpdate()
@@ -43,6 +51,8 @@ public class CilboxFoxMothLivePlaytest
         // Framework from failing on those logs; every condition relevant to this test
         // (boot, target avatar, Vixxy readiness and profiler data) is asserted explicitly.
         LogAssert.ignoreFailingMessages = true;
+        BasisBundleLoadAsset.DisableFrameSplitForValidation = true;
+        BasisSceneFactory.SkipSceneCameraSetupForValidation = true;
 
         SceneManager.LoadScene("initialization", LoadSceneMode.Single);
 
