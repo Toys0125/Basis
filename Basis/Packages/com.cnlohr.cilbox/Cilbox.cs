@@ -2,6 +2,8 @@
 
 using UnityEngine;
 using UnityEngine.Serialization;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using System.Collections.Generic;
 using System;
 using System.Collections.Specialized;
@@ -159,38 +161,50 @@ namespace Cilbox
 			int thisOffset = isStatic ? 0 : 1;
 			int parameterCount = plen + thisOffset;
 			int totalSlots = Cilbox.defaultStackSize + parameterCount;
-			VmValue* nativeBuffer = stackalloc VmValue[totalSlots];
-			NativeVmSpan stackBuffer = new NativeVmSpan((IntPtr)nativeBuffer, Cilbox.defaultStackSize);
-			NativeVmSpan parameters = new NativeVmSpan((IntPtr)(nativeBuffer + Cilbox.defaultStackSize), parameterCount);
-
-			if( isStatic )
+			bool rentedNativeBuffer = parentClass.box.TryRentNativeVmBuffer(parameterCount, out NativeVmSpan stackBuffer, out NativeVmSpan parameters);
+			VmValue* fallbackBuffer = null;
+			if( !rentedNativeBuffer )
 			{
-				for( int p = 0; p < plen; p++ )
-					parameters[p].Load( parametersIn[p] );
-			}
-			else
-			{
-				parameters[0].Load( ths );
-				for( int p = 0; p < plen; p++ )
-					parameters[p+1].Load( parametersIn[p] );
+				fallbackBuffer = stackalloc VmValue[totalSlots];
+				stackBuffer = new NativeVmSpan((IntPtr)fallbackBuffer, Cilbox.defaultStackSize);
+				parameters = new NativeVmSpan((IntPtr)(fallbackBuffer + Cilbox.defaultStackSize), parameterCount);
 			}
 
-			object ret = null;
-			if( !parentClass.box.InterpreterEntry(this) ) return null;
 			try
 			{
-				ret = InterpretInner( stackBuffer, parameters ).AsObject();
-			}
-			catch( Exception e )
-			{
+				if( isStatic )
+				{
+					for( int p = 0; p < plen; p++ )
+						parameters[p].Load( parametersIn[p] );
+				}
+				else
+				{
+					parameters[0].Load( ths );
+					for( int p = 0; p < plen; p++ )
+						parameters[p+1].Load( parametersIn[p] );
+				}
+
+				object ret = null;
+				if( !parentClass.box.InterpreterEntry(this) ) return null;
+				try
+				{
+					ret = InterpretInner( stackBuffer, parameters ).AsObject();
+				}
+				catch( Exception e )
+				{
+					parentClass.box.InterpreterExit();
+					if( ths != null ) ths.DisableProxy();
+					else parentClass.box.DisableWithReason(e.ToString());
+					if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
+					throw;
+				}
 				parentClass.box.InterpreterExit();
-				if( ths != null ) ths.DisableProxy();
-				else parentClass.box.DisableWithReason(e.ToString());
-				if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
-				throw;
+				return ret;
 			}
-			parentClass.box.InterpreterExit();
-			return ret;
+			finally
+			{
+				if( rentedNativeBuffer ) parentClass.box.ReturnNativeVmBuffer();
+			}
 		}
 
 #if UNITY_EDITOR
@@ -2245,6 +2259,8 @@ spiperf.End();
 		public Dictionary<string, CilboxEnum> cilboxEnums;
 		public String assemblyData;
 		private bool initialized = false;
+		private NativeArray<VmValue> nativeVmBuffer;
+		private bool nativeVmBufferInUse;
 
 		public static readonly int defaultStackSize = 1024;
 
@@ -2277,6 +2293,39 @@ spiperf.End();
 		{
 			initialized = false;
 			usage = new CilboxUsage( this );
+		}
+
+		internal unsafe bool TryRentNativeVmBuffer( int parameterCount, out NativeVmSpan stack, out NativeVmSpan parameters )
+		{
+			if( nativeVmBufferInUse )
+			{
+				stack = default;
+				parameters = default;
+				return false;
+			}
+
+			int required = defaultStackSize + parameterCount;
+			if( !nativeVmBuffer.IsCreated || nativeVmBuffer.Length < required )
+			{
+				if( nativeVmBuffer.IsCreated ) nativeVmBuffer.Dispose();
+				nativeVmBuffer = new NativeArray<VmValue>(required, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+			}
+
+			nativeVmBufferInUse = true;
+			VmValue* ptr = (VmValue*)NativeArrayUnsafeUtility.GetUnsafePtr(nativeVmBuffer);
+			stack = new NativeVmSpan((IntPtr)ptr, defaultStackSize);
+			parameters = new NativeVmSpan((IntPtr)(ptr + defaultStackSize), parameterCount);
+			return true;
+		}
+
+		internal void ReturnNativeVmBuffer()
+		{
+			nativeVmBufferInUse = false;
+		}
+
+		protected virtual void OnDestroy()
+		{
+			if( nativeVmBuffer.IsCreated ) nativeVmBuffer.Dispose();
 		}
 
 		abstract public bool CheckMethodAllowed( out MethodInfo mi, Type declaringType, String name, SerializedTypeDescriptor [] parametersIn, SerializedTypeDescriptor [] genericArgumentsIn, String fullSignature );
