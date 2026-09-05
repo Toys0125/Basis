@@ -25,6 +25,9 @@ namespace Cilbox
 
 		private bool proxyWasSetup = false;
 		private bool proxyLoadInProgress = false;
+#if UNITY_EDITOR
+		private static readonly ProfilerMarker LivePlaytestUpdateMarker = new ProfilerMarker("CilboxProxy.Update.LivePlaytest");
+#endif
 
 		public bool disabled = false;
 
@@ -523,7 +526,13 @@ namespace Cilbox
 			}
 		}
 		void FixedUpdate() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.FixedUpdate, null ); }
-		void Update() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.Update, null ); }
+		void Update()
+		{
+#if UNITY_EDITOR
+			using var marker = LivePlaytestUpdateMarker.Auto();
+#endif
+			if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.Update, null );
+		}
 		void LateUpdate() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.LateUpdate, null ); }
 		void OnEnable() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnEnable, null ); }
 		void OnDisable() { if( proxyWasSetup ) box.InterpretIID( cls, this, ImportFunctionID.OnDisable, null ); }
