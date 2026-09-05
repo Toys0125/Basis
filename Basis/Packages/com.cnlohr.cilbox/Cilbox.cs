@@ -499,6 +499,23 @@ spiperf.Begin();
 							object callthis = null;
 							Type[] paTypes = dt.nativeParameterTypes;
 							int numFields = paTypes.Length;
+							if( dt.nativeStaticByteArrayIntToFloat != null )
+							{
+								int arg1 = stackBuffer[sp--].i;
+								byte[] arg0 = stackBuffer[sp--].AsObject(box) as byte[];
+								try
+								{
+									stackBuffer[++sp].LoadFloat(dt.nativeStaticByteArrayIntToFloat(arg0, arg1));
+								}
+								catch( Exception e )
+								{
+									interpretedThrow(pc - 1, e);
+									break;
+								}
+								constrainedMeta = null;
+								if( isJmp ) cont = false;
+								break;
+							}
 							object [] callpar = new object[numFields];
 							VmValue [] callparValues = null;
 
@@ -2222,6 +2239,7 @@ spiperf.End();
 		public MethodBase nativeMethod;
 		public Type[] nativeParameterTypes;
 		public bool nativeIsVoid;
+		public Func<byte[], int, float> nativeStaticByteArrayIntToFloat;
 		public int interpretiveMethod; // If nativeToken is 0, then it's a interpreted call.
 		public int interpretiveMethodClass; // If nativeToken is 0, then it's a interpreted call class
 
@@ -2578,6 +2596,11 @@ spiperf.End();
 							}
 							t.nativeParameterTypes = mpt;
 							t.nativeIsVoid = (m is MethodInfo mInfo) && mInfo.ReturnType == typeof(void);
+							if( m is MethodInfo fastMethod && fastMethod.IsStatic && fastMethod.ReturnType == typeof(float) &&
+								mpt.Length == 2 && mpt[0] == typeof(byte[]) && mpt[1] == typeof(int) )
+							{
+								t.nativeStaticByteArrayIntToFloat = (Func<byte[], int, float>)fastMethod.CreateDelegate(typeof(Func<byte[], int, float>));
+							}
 						} else if( !t.isNative )
 						{
 							throw new CilboxException( "Error: Could not find reference to: [" + useAssembly + "][" + declaringType.FullName + "][" + fullSignature + "] Type from:" + declaringTypeName );
