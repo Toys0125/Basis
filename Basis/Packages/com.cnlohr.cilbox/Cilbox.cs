@@ -162,10 +162,11 @@ namespace Cilbox
 			int parameterCount = plen + thisOffset;
 			int totalSlots = Cilbox.defaultStackSize + parameterCount;
 			bool rentedNativeBuffer = parentClass.box.TryRentNativeVmBuffer(parameterCount, out NativeVmSpan stackBuffer, out NativeVmSpan parameters);
-			VmValue* fallbackBuffer = null;
+			NativeArray<VmValue> fallbackNativeBuffer = default;
 			if( !rentedNativeBuffer )
 			{
-				fallbackBuffer = stackalloc VmValue[totalSlots];
+				fallbackNativeBuffer = new NativeArray<VmValue>(totalSlots, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+				VmValue* fallbackBuffer = (VmValue*)NativeArrayUnsafeUtility.GetUnsafePtr(fallbackNativeBuffer);
 				stackBuffer = new NativeVmSpan((IntPtr)fallbackBuffer, Cilbox.defaultStackSize);
 				parameters = new NativeVmSpan((IntPtr)(fallbackBuffer + Cilbox.defaultStackSize), parameterCount);
 			}
@@ -204,6 +205,7 @@ namespace Cilbox
 			finally
 			{
 				if( rentedNativeBuffer ) parentClass.box.ReturnNativeVmBuffer();
+				else if( fallbackNativeBuffer.IsCreated ) fallbackNativeBuffer.Dispose();
 			}
 		}
 
