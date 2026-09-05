@@ -6,6 +6,7 @@ using Basis.Scripts.BasisSdk.Players;
 using Cilbox;
 using HVR.Vixxy;
 using NUnit.Framework;
+using Unity.Burst;
 using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -13,15 +14,16 @@ using UnityEngine.TestTools;
 
 #if UNITY_EDITOR
 [UnityEditor.InitializeOnLoad]
-internal static class CilboxFoxMothPlaytestLogGuard
+internal static class CilboxFoxMothPlaytestBurstGuard
 {
-    static CilboxFoxMothPlaytestLogGuard()
+    static CilboxFoxMothPlaytestBurstGuard()
     {
         // Unity-Server's Linux editor currently emits unrelated Burst AOT linker
-        // errors during PlayMode startup. Custom validators tolerate them, but
-        // Unity Test Framework treats every unexpected error log as a test
-        // failure before this playtest gets a chance to run.
-        LogAssert.ignoreFailingMessages = true;
+        // errors while the Test Framework is entering PlayMode. Those errors
+        // occur before a test LogScope exists, so they cannot be suppressed with
+        // LogAssert. Cilbox and Vixxy are managed; disable Burst only for this
+        // temporary live playtest so their own CPU/GC markers remain measurable.
+        BurstCompiler.Options.EnableBurstCompilation = false;
     }
 }
 #endif
