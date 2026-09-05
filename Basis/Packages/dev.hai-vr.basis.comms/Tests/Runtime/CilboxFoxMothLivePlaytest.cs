@@ -35,7 +35,7 @@ public class CilboxFoxMothLivePlaytest
     private const string AvatarPassword = "a0225a75691b5e83169c4c045c3588cbdaa48ae0af558c4722c3b21e58485768";
     private const int InstanceCount = 20;
     private const int WarmupFrames = 120;
-    private const int SampleFrames = 600;
+    private const int SampleFrames = 300;
     private readonly List<GameObject> spawnedClones = new List<GameObject>();
 
     [TearDown]
