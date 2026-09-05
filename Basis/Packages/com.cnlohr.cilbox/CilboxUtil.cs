@@ -36,6 +36,7 @@ namespace Cilbox
 		Object,
 		Address,
 		NativeHandle,
+		NativeAddress,
 	}
 
 	[StructLayout(LayoutKind.Explicit)]

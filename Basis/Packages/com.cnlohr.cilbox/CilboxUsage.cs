@@ -116,7 +116,7 @@ namespace Cilbox
 		////////////////////////////////////////////////////////////////////////////////////
 		// DELEGATE OVERRIDES //////////////////////////////////////////////////////////////
 		////////////////////////////////////////////////////////////////////////////////////
-		public static VmValue OverrideGetComponentT( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
+		public static VmValue OverrideGetComponentT( CilMetadataTokenInfo ths, NativeVmSpan stackBufferIn, NativeVmSpan parametersIn )
 		{
 			Span<VmValue> parameters = parametersIn.AsSpan();
 
@@ -148,7 +148,7 @@ namespace Cilbox
 			return ret;
 		}
 
-		public static VmValue OverrideGetComponentC( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
+		public static VmValue OverrideGetComponentC( CilMetadataTokenInfo ths, NativeVmSpan stackBufferIn, NativeVmSpan parametersIn )
 		{
 			Span<VmValue> parameters = parametersIn.AsSpan();
 
@@ -178,7 +178,7 @@ namespace Cilbox
 		}
 
 
-		public static VmValue OverrideTryGetComponentT( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
+		public static VmValue OverrideTryGetComponentT( CilMetadataTokenInfo ths, NativeVmSpan stackBufferIn, NativeVmSpan parametersIn )
 		{
 			Span<VmValue> parameters = parametersIn.AsSpan();
 
@@ -211,7 +211,7 @@ namespace Cilbox
 			return ret;
 		}
 
-		public static VmValue OverrideTryGetComponentC( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
+		public static VmValue OverrideTryGetComponentC( CilMetadataTokenInfo ths, NativeVmSpan stackBufferIn, NativeVmSpan parametersIn )
 		{
 			Span<VmValue> parameters = parametersIn.AsSpan();
 

@@ -5,6 +5,31 @@ using System.Runtime.InteropServices;
 
 namespace Cilbox
 {
+    public readonly struct NativeVmSpan
+    {
+        public readonly IntPtr Pointer;
+        public readonly int Count;
+
+        public NativeVmSpan(IntPtr pointer, int count)
+        {
+            Pointer = pointer;
+            Count = count;
+        }
+
+        public unsafe ref VmValue this[int index] => ref ((VmValue*)Pointer)[index];
+
+        public NativeVmSpan Slice(int start) => Slice(start, Count - start);
+
+        public unsafe NativeVmSpan Slice(int start, int count)
+        {
+            return new NativeVmSpan((IntPtr)(((VmValue*)Pointer) + start), count);
+        }
+
+        public unsafe Span<VmValue> AsSpan() => new Span<VmValue>((void*)Pointer, Count);
+
+        public unsafe IntPtr AddressOf(int index) => (IntPtr)(((VmValue*)Pointer) + index);
+    }
+
     /// <summary>
     /// Compact interpreter-only value. Primitive data stays inline; managed references are
     /// represented by a 32-bit handle into the current top-level interpreter call's arena.
@@ -139,6 +164,7 @@ namespace Cilbox
                 StackType.Double => d,
                 StackType.Boolean => b,
                 StackType.Address => DereferenceAddress(),
+                StackType.NativeAddress => DereferenceAddress(),
                 StackType.NativeHandle => DereferenceNativeHandle(box),
                 _ => o
             };
@@ -231,8 +257,11 @@ namespace Cilbox
             throw new Exception("Error invalid type conversion from " + type + " to " + targetType);
         }
 
-        public readonly object DereferenceAddress()
+        public readonly unsafe object DereferenceAddress()
         {
+            if (type == StackType.NativeAddress)
+                return ((VmValue*)e)->AsObject();
+
             object target = o;
             int index = i;
             if (target is VmValue[] vmValues)
@@ -247,8 +276,14 @@ namespace Cilbox
             return box.metadatas[u].nativeField.GetValue(o);
         }
 
-        public void DereferenceLoadAddress(object overwrite)
+        public unsafe void DereferenceLoadAddress(object overwrite)
         {
+            if (type == StackType.NativeAddress)
+            {
+                ((VmValue*)e)->Load(overwrite);
+                return;
+            }
+
             object target = o;
             int index = i;
             if (target is VmValue[] vmValues)
@@ -282,10 +317,24 @@ namespace Cilbox
             return ret;
         }
 
-        public static VmValue ResolveToVmValue(VmValue value)
+        public static VmValue CreateNativeAddressReference(IntPtr pointer)
         {
-            while (value.type == StackType.Address)
+            VmValue ret = default;
+            ret.type = StackType.NativeAddress;
+            ret.e = unchecked((ulong)pointer.ToInt64());
+            return ret;
+        }
+
+        public static unsafe VmValue ResolveToVmValue(VmValue value)
+        {
+            while (value.type == StackType.Address || value.type == StackType.NativeAddress)
             {
+                if (value.type == StackType.NativeAddress)
+                {
+                    value = *((VmValue*)value.e);
+                    continue;
+                }
+
                 object target = value.o;
                 int index = value.i;
                 if (target is VmValue[] vmValues)
@@ -316,6 +365,7 @@ namespace Cilbox
                 case StackType.Double: ret.LoadDouble(d); break;
                 case StackType.Object: ret.LoadObject(o); break;
                 case StackType.Address: ret = StackElement.CreateAddressReference((Array)o, u); break;
+                case StackType.NativeAddress: ret = ResolveToVmValue(this).ToStackElement(); break;
                 case StackType.NativeHandle: ret = StackElement.CreateNativeHandleReference(o, u); break;
                 default: ret.type = type; break;
             }

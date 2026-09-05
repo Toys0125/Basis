@@ -50,9 +50,6 @@ namespace Cilbox
 
 	public class CilboxMethod
 	{
-		private static readonly ArrayPool<VmValue> stackPool = ArrayPool<VmValue>.Create();
-		[ThreadStatic] private static VmValue[] singleParameterCache;
-		[ThreadStatic] private static bool singleParameterCacheInUse;
 
 		public CilboxClass parentClass;
 		public int MaxStackSize;
@@ -152,7 +149,7 @@ namespace Cilbox
 
 		}
 
-		public object Interpret( CilboxProxy ths, object [] parametersIn )
+		public unsafe object Interpret( CilboxProxy ths, object [] parametersIn )
 		{
 			if( ths != null && ths.disabled ) return null;
 
@@ -161,70 +158,39 @@ namespace Cilbox
 			int plen = parametersIn?.Length ?? 0;
 			int thisOffset = isStatic ? 0 : 1;
 			int parameterCount = plen + thisOffset;
+			int totalSlots = Cilbox.defaultStackSize + parameterCount;
+			VmValue* nativeBuffer = stackalloc VmValue[totalSlots];
+			NativeVmSpan stackBuffer = new NativeVmSpan((IntPtr)nativeBuffer, Cilbox.defaultStackSize);
+			NativeVmSpan parameters = new NativeVmSpan((IntPtr)(nativeBuffer + Cilbox.defaultStackSize), parameterCount);
 
-			bool usingSingleParameterCache = parameterCount == 1 && !singleParameterCacheInUse;
-			VmValue [] parameters;
-			if( parameterCount == 0 )
+			if( isStatic )
 			{
-				parameters = Array.Empty<VmValue>();
-			}
-			else if( usingSingleParameterCache )
-			{
-				parameters = singleParameterCache ?? (singleParameterCache = new VmValue[1]);
+				for( int p = 0; p < plen; p++ )
+					parameters[p].Load( parametersIn[p] );
 			}
 			else
 			{
-				parameters = new VmValue[parameterCount];
+				parameters[0].Load( ths );
+				for( int p = 0; p < plen; p++ )
+					parameters[p+1].Load( parametersIn[p] );
 			}
 
-			// VmValue is unmanaged: the pooled stack contains no GC references and does not
-			// need a full 1024-slot clear when it is returned. Managed values live in vmArena.
-			VmValue [] stackBuffer = stackPool.Rent(Cilbox.defaultStackSize);
-			if( usingSingleParameterCache ) singleParameterCacheInUse = true;
-
+			object ret = null;
+			if( !parentClass.box.InterpreterEntry(this) ) return null;
 			try
 			{
-				if( isStatic )
-				{
-					for( int p = 0; p < plen; p++ )
-						parameters[p].Load( parametersIn[p] );
-				}
-				else
-				{
-					parameters[0].Load( ths );
-					for( int p = 0; p < plen; p++ )
-						parameters[p+1].Load( parametersIn[p] );
-					plen++;
-				}
-
-				object ret = null;
-				if( !parentClass.box.InterpreterEntry(this) ) return null;
-				try
-				{
-					ret = InterpretInner( stackBuffer, parameters ).AsObject();
-				}
-				catch( Exception e )
-				{
-					parentClass.box.InterpreterExit();
-					if( ths != null ) ths.DisableProxy();
-					else parentClass.box.DisableWithReason(e.ToString());
-					if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
-					throw;
-				}
-				parentClass.box.InterpreterExit();
-
-				return ret;
+				ret = InterpretInner( stackBuffer, parameters ).AsObject();
 			}
-			finally
+			catch( Exception e )
 			{
-				if( usingSingleParameterCache )
-				{
-					parameters[0] = default;
-					singleParameterCacheInUse = false;
-				}
-
-				stackPool.Return(stackBuffer, clearArray: false);
+				parentClass.box.InterpreterExit();
+				if( ths != null ) ths.DisableProxy();
+				else parentClass.box.DisableWithReason(e.ToString());
+				if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
+				throw;
 			}
+			parentClass.box.InterpreterExit();
+			return ret;
 		}
 
 #if UNITY_EDITOR
@@ -236,20 +202,17 @@ namespace Cilbox
 			return InterpretWithBuffersForBenchmark(stackBuffer, new ArraySegment<StackElement>(parameters), accounting);
 		}
 
-		public object InterpretWithBuffersForBenchmark( StackElement[] stackBuffer, ArraySegment<StackElement> parameters, bool accounting )
+		public unsafe object InterpretWithBuffersForBenchmark( StackElement[] stackBuffer, ArraySegment<StackElement> parameters, bool accounting )
 		{
 			using var vmArena = VmValueArena.Enter();
-			VmValue[] vmBuffer = stackPool.Rent(stackBuffer.Length + parameters.Count);
-			var vmStack = new ArraySegment<VmValue>(vmBuffer, 0, stackBuffer.Length);
-			var vmParameters = new ArraySegment<VmValue>(vmBuffer, stackBuffer.Length, parameters.Count);
+			int totalSlots = stackBuffer.Length + parameters.Count;
+			VmValue* nativeBuffer = stackalloc VmValue[totalSlots];
+			NativeVmSpan vmStack = new NativeVmSpan((IntPtr)nativeBuffer, stackBuffer.Length);
+			NativeVmSpan vmParameters = new NativeVmSpan((IntPtr)(nativeBuffer + stackBuffer.Length), parameters.Count);
 			for( int i = 0; i < parameters.Count; i++ )
-				vmParameters.Array[vmParameters.Offset + i] = parameters.Array[parameters.Offset + i];
+				vmParameters[i] = parameters.Array[parameters.Offset + i];
 
-			if( accounting && !parentClass.box.InterpreterEntry(this) )
-			{
-				stackPool.Return(vmBuffer, clearArray: false);
-				return null;
-			}
+			if( accounting && !parentClass.box.InterpreterEntry(this) ) return null;
 			try
 			{
 				return InterpretInner(vmStack, vmParameters).AsObject();
@@ -257,12 +220,11 @@ namespace Cilbox
 			finally
 			{
 				if( accounting ) parentClass.box.InterpreterExit();
-				stackPool.Return(vmBuffer, clearArray: false);
 			}
 		}
 #endif
 
-		private VmValue InterpretInner( ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
+		private VmValue InterpretInner( NativeVmSpan stackBufferIn, NativeVmSpan parametersIn )
 		{
 			Span<VmValue> stackBuffer = stackBufferIn.AsSpan();
 			Span<VmValue> parameters = parametersIn.AsSpan();
@@ -356,13 +318,13 @@ spiperf.Begin();
 					case 0x0c: stackBuffer[localVarsHead+2] = stackBuffer[sp--]; break; //stloc.2
 					case 0x0d: stackBuffer[localVarsHead+3] = stackBuffer[sp--]; break; //stloc.3
 					case 0x0e: stackBuffer[++sp] = parameters[byteCode[pc++]]; break; // ldarg.s <uint8 (argNum)>
-					case 0x0f: stackBuffer[++sp] = StackElement.CreateAddressReference( parametersIn.Array, (uint)parametersIn.Offset + (uint)byteCode[pc++] ); break; // ldarga.s <uint8 (argNum)>
+					case 0x0f: stackBuffer[++sp] = VmValue.CreateNativeAddressReference( parametersIn.AddressOf(byteCode[pc++]) ); break; // ldarga.s <uint8 (argNum)>
 					case 0x10: parameters[byteCode[pc++]] = stackBuffer[sp--]; break; // starg.s <uint8 (argNum)> -- mirror of stloc.s (0x13) but stores into a parameter slot
 					case 0x11: stackBuffer[++sp] = stackBuffer[localVarsHead+byteCode[pc++]]; break; //ldloc.s
 					case 0x12:
 					{
 						uint whichLocal = byteCode[pc++];
-						stackBuffer[++sp] = StackElement.CreateAddressReference( stackBufferIn.Array, (uint)(localVarsHead+whichLocal+stackBufferIn.Offset) );
+						stackBuffer[++sp] = VmValue.CreateNativeAddressReference( stackBufferIn.AddressOf(localVarsHead + whichLocal) );
 						break; //ldloca.s // Load address of local variable.
 					}
 					case 0x13: stackBuffer[localVarsHead+byteCode[pc++]] = stackBuffer[sp--]; break; //stloc.s
@@ -529,7 +491,7 @@ spiperf.Begin();
 							{
 								VmValue se = stackBuffer[sp--];
 								int parameterIndex = numFields-ik-1;
-								if( se.type == StackType.Address || se.type == StackType.NativeHandle )
+								if( se.type == StackType.Address || se.type == StackType.NativeAddress || se.type == StackType.NativeHandle )
 								{
 									callparValues ??= new VmValue[numFields];
 									callparValues[parameterIndex] = se;
@@ -584,7 +546,7 @@ spiperf.Begin();
 									if( ctorDeclaringType != null && ctorDeclaringType.IsValueType )
 									{
 										object newStruct = ctor.Invoke( callpar );
-										if( ctorThisSe.type == StackType.Address )
+										if( ctorThisSe.type == StackType.Address || ctorThisSe.type == StackType.NativeAddress )
 											ctorThisSe.DereferenceLoadAddress( newStruct );
 										else if( ctorThisSe.type == StackType.NativeHandle )
 											ctorThisSe.DereferenceLoadNativeHandle( box, newStruct );
@@ -658,7 +620,7 @@ spiperf.Begin();
 									interpretedThrow(pc - 1, e.InnerException ?? e);
 									break;
 								}
-								if( seorig.type == StackType.Address  && callthis is not BoxedCilboxEnum ) // enums are immutable
+								if( (seorig.type == StackType.Address || seorig.type == StackType.NativeAddress) && callthis is not BoxedCilboxEnum ) // enums are immutable
 								{
 									seorig.DereferenceLoadAddress( callthis );
 								}
@@ -686,7 +648,7 @@ spiperf.Begin();
 								for( ik = 0; ik < numFields; ik++ )
 								{
 									VmValue se = callparValues[ik];
-									if( se.type == StackType.Address )
+									if( se.type == StackType.Address || se.type == StackType.NativeAddress )
 										se.DereferenceLoadAddress( callpar[ik] );
 									else if( se.type == StackType.NativeHandle )
 										se.DereferenceLoadNativeHandle( box, callpar[ik] );
@@ -739,7 +701,7 @@ spiperf.Begin();
 					case 0x2c: case 0x39: // brfalse.s, brnull.s, brzero.s - is it zero, null or  / brfalse
 					case 0x2d: case 0x3a: // brinst.s, brtrue.s / btrue
 					{
-						StackElement s = stackBuffer[sp--];
+						VmValue s = stackBuffer[sp--];
 						int iop = b - 0x2c;
 						if( b >= 0x38 ) iop -= 0xd;
 						int offset = (b >= 0x38) ? (int)BytecodeAsU32( ref pc ) : (sbyte)byteCode[pc++];
@@ -761,7 +723,7 @@ spiperf.Begin();
 					case 0x36: case 0x43: // ble.un.s
 					case 0x37: case 0x44: // blt.un.s
 					{
-						StackElement sb = stackBuffer[sp--]; StackElement sa = stackBuffer[sp--];
+						VmValue sb = stackBuffer[sp--]; VmValue sa = stackBuffer[sp--];
 						int iop = b - 0x2e;
 						if( b >= 0x38 ) iop -= 0xd;
 						int joffset = (b >= 0x38) ? (int)BytecodeAsU32( ref pc ) : (sbyte)byteCode[pc++];
@@ -866,7 +828,7 @@ spiperf.Begin();
 						int nsw = (int)BytecodeAsU32( ref pc );
 						int startpc = pc;
 						pc += nsw * 4;
-						StackElement s = stackBuffer[sp--];
+						VmValue s = stackBuffer[sp--];
 						if( s.type > StackType.Ulong )
 							throw new CilboxInterpreterRuntimeException("Stack type invalid for switch statement", parentClass.className, methodName, pc);
 
@@ -884,8 +846,8 @@ spiperf.Begin();
 					case 0x5E: case 0x5F: case 0x60: case 0x61: case 0x62: case 0x63:
 					case 0x64:
 					{
-						StackElement sb = stackBuffer[sp--];
-						StackElement sa = stackBuffer[sp];
+						VmValue sb = stackBuffer[sp--];
+						VmValue sa = stackBuffer[sp];
 						StackType promoted = StackElement.StackTypeMaxPromote( sa.type, sb.type );
 
 						switch( b-0x58 )
@@ -1233,7 +1195,7 @@ spiperf.Begin();
 					{
 						VmValue se = stackBuffer[sp--];
 						object obj = null;
-						if (se.type == StackType.Address)
+						if (se.type == StackType.Address || se.type == StackType.NativeAddress)
 						{
 							obj = se.DereferenceAddress();
 						}
@@ -1315,10 +1277,10 @@ spiperf.Begin();
 					case 0x51: case 0x52: case 0x53: case 0x54: case 0x55: // stind
 					case 0x56: case 0x57:
 					{
-						StackElement val = stackBuffer[sp--];
-						StackElement addr = stackBuffer[sp--];
+						VmValue val = stackBuffer[sp--];
+						VmValue addr = stackBuffer[sp--];
 						object obj = val.AsObject();
-						if (addr.type == StackType.Address)
+						if (addr.type == StackType.Address || addr.type == StackType.NativeAddress)
 						{
 							addr.DereferenceLoadAddress(obj);
 						}
@@ -1394,13 +1356,13 @@ spiperf.Begin();
 					{
 						uint typeToken = BytecodeAsU32( ref pc );
 						CilMetadataTokenInfo stobjMeta = box.metadatas[typeToken];
-						StackElement value = stackBuffer[sp--];
-						StackElement addr = stackBuffer[sp--];
+						VmValue value = stackBuffer[sp--];
+						VmValue addr = stackBuffer[sp--];
 						object obj = ( stobjMeta.nativeType != null && value.type < StackType.Object ) ?
 							value.CoerceToObject( stobjMeta.nativeType ) :
 							value.AsObject( box );
 
-						if( addr.type == StackType.Address )
+						if( addr.type == StackType.Address || addr.type == StackType.NativeAddress )
 						{
 							addr.DereferenceLoadAddress( obj );
 						}
@@ -1512,7 +1474,7 @@ spiperf.Begin();
 					case 0x9a: // Ldelem_Ref
 					{
 						int index = stackBuffer[sp--].i;
-						StackElement arrSE = stackBuffer[sp--];
+						VmValue arrSE = stackBuffer[sp--];
 						if (arrSE.o == null)
 						{
 							interpretedThrow(pc - 1, new NullReferenceException());
@@ -1531,7 +1493,7 @@ spiperf.Begin();
 					{
 						uint otyp = BytecodeAsU32( ref pc );
 						int index = stackBuffer[sp--].i;
-						StackElement arrSE = stackBuffer[sp--];
+						VmValue arrSE = stackBuffer[sp--];
 
 						if (arrSE.o == null)
 						{
@@ -1560,9 +1522,9 @@ spiperf.Begin();
 					case 0x9b: case 0x9c: case 0x9d: case 0x9e: case 0x9f: // stelem
 					case 0xa0: case 0xa1: case 0xa2:
 					{
-						StackElement valSE = stackBuffer[sp--];
+						VmValue valSE = stackBuffer[sp--];
 						int index = stackBuffer[sp--].i;
-						StackElement arrSE = stackBuffer[sp--];
+						VmValue arrSE = stackBuffer[sp--];
 						if (arrSE.o == null)
 						{
 							interpretedThrow(pc - 1, new NullReferenceException());
@@ -1608,9 +1570,9 @@ spiperf.Begin();
 					case 0xa4: // stelem <typeTok>
 					{
 						uint otyp = BytecodeAsU32( ref pc );
-						StackElement valSE = stackBuffer[sp--];
+						VmValue valSE = stackBuffer[sp--];
 						int index = stackBuffer[sp--].i;
-						StackElement arrSE = stackBuffer[sp--];
+						VmValue arrSE = stackBuffer[sp--];
 						if (arrSE.o == null)
 						{
 							interpretedThrow(pc - 1, new NullReferenceException());
@@ -1706,8 +1668,8 @@ spiperf.Begin();
 						case 0x04:
 						case 0x05:
 						{
-							StackElement sb = stackBuffer[sp--];
-							StackElement sa = stackBuffer[sp];
+							VmValue sb = stackBuffer[sp--];
+							VmValue sa = stackBuffer[sp];
 							StackType promoted = StackElement.StackTypeMaxPromote( sa.type, sb.type );
 							switch( b )
 							{
@@ -1821,10 +1783,10 @@ spiperf.Begin();
 						{
 							uint typeToken = BytecodeAsU32( ref pc );
 							CilMetadataTokenInfo initMeta = box.metadatas[typeToken];
-							StackElement addr = stackBuffer[sp--];
+							VmValue addr = stackBuffer[sp--];
 							object defaultValue = CreateDefaultValueForType( initMeta );
 
-							if( addr.type == StackType.Address )
+							if( addr.type == StackType.Address || addr.type == StackType.NativeAddress )
 							{
 								addr.DereferenceLoadAddress( defaultValue );
 							}
@@ -2055,7 +2017,7 @@ spiperf.End();
 				{
 					if (ehc.Flags == ExceptionHandlingClauseOptions.Clause && exceptionRegister.HasValue)
 					{
-						stackBufferIn.AsSpan()[++sp] = exceptionRegister.Value;
+						stackBuffer[++sp] = exceptionRegister.Value;
 						exceptionRegister = null;
 					}
 				}
@@ -2258,7 +2220,7 @@ spiperf.End();
 
 		public CilboxEnum cilboxEnum;
 
-		public delegate VmValue DelegateOverride( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn );
+		public delegate VmValue DelegateOverride( CilMetadataTokenInfo ths, NativeVmSpan stackBufferIn, NativeVmSpan parametersIn );
 		public object opaque;
 		public DelegateOverride shim = null;
 		public bool shimIsVoid;
