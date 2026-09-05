@@ -106,6 +106,7 @@ namespace Cilbox.Tests
             benchmarks.CompareCompactUnmanagedStorageAndHandleStrategies();
             benchmarks.BenchmarkCurrentInterpreterOverhead();
             benchmarks.BenchmarkNativeCallScratchBuffers();
+            benchmarks.BenchmarkNativeDelegateDispatch();
             UnityEditor.EditorApplication.quitting += PrintValidationSummary;
         }
 
@@ -561,6 +562,46 @@ namespace Cilbox.Tests
             checksum = Measure("nativecall-scratch-fresh-object-and-stackelement-1", () => RunNativeScratchFresh(method, hostObject, nativeInvocations), checksum);
             checksum = Measure("nativecall-scratch-fresh-object-only-1", () => RunNativeScratchNoByRef(method, hostObject, nativeInvocations), checksum);
             checksum = Measure("nativecall-scratch-thread-cache-object-only-1", () => RunNativeScratchThreadCache(method, hostObject, nativeInvocations), checksum);
+        }
+
+        [Test]
+        public void BenchmarkNativeDelegateDispatch()
+        {
+            const int directInvocations = 5000000;
+            const int reflectionInvocations = 150000;
+            byte[] bytes = BitConverter.GetBytes(123.25f);
+            MethodInfo method = typeof(BitConverter).GetMethod(nameof(BitConverter.ToSingle), new[] { typeof(byte[]), typeof(int) });
+            var typedDelegate = (Func<byte[], int, float>)method.CreateDelegate(typeof(Func<byte[], int, float>));
+            object[] reflectionArgs = { bytes, 0 };
+
+            RunBitConverterDirect(bytes, 8);
+            RunBitConverterDelegate(typedDelegate, bytes, 8);
+            RunBitConverterReflection(method, reflectionArgs, 8);
+
+            long directChecksum = Measure("native-dispatch-bitconverter-direct-5000000", () => RunBitConverterDirect(bytes, directInvocations), 0);
+            Measure("native-dispatch-bitconverter-delegate-5000000", () => RunBitConverterDelegate(typedDelegate, bytes, directInvocations), directChecksum);
+            Measure("native-dispatch-bitconverter-reflection-150000", () => RunBitConverterReflection(method, reflectionArgs, reflectionInvocations), 0);
+        }
+
+        private static long RunBitConverterDirect(byte[] bytes, int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++) checksum += (int)BitConverter.ToSingle(bytes, 0);
+            return checksum;
+        }
+
+        private static long RunBitConverterDelegate(Func<byte[], int, float> invoker, byte[] bytes, int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++) checksum += (int)invoker(bytes, 0);
+            return checksum;
+        }
+
+        private static long RunBitConverterReflection(MethodInfo method, object[] args, int invocations)
+        {
+            long checksum = 0;
+            for (int i = 0; i < invocations; i++) checksum += (int)(float)method.Invoke(null, args);
+            return checksum;
         }
 
         public static void NativeScratchAcceptObject(object value)
