@@ -28,6 +28,40 @@ namespace HVR.Vixxy
         private readonly HashSet<IHVRVixxyActuator> _actuatorsToUpdateThisTick = new();
         private bool _anythingNeedsUpdating;
 
+#if UNITY_EDITOR
+        public int ValidationFilterApplyCount { get; private set; }
+        public int ValidationRegisteredFilteredActuatorCount
+        {
+            get
+            {
+                int count = 0;
+                foreach (var actuators in _addressIdToActuators.Values)
+                {
+                    foreach (var actuator in actuators)
+                    {
+                        if (actuator.HasFilters()) count++;
+                    }
+                }
+                return count;
+            }
+        }
+
+        public bool ScheduleFirstFilteredActuatorForValidation()
+        {
+            foreach (var actuators in _addressIdToActuators.Values)
+            {
+                foreach (var actuator in actuators)
+                {
+                    if (!actuator.HasFilters()) continue;
+                    _actuatorsWithFiltersToCheckThisTick.Add(actuator);
+                    _anythingNeedsUpdating = true;
+                    return true;
+                }
+            }
+            return false;
+        }
+#endif
+
         private readonly Dictionary<int, HashSet<IHVRVixxyAggregator>> _addressIdToAggregators = new();
         private readonly Dictionary<int, HashSet<IHVRVixxyActuator>> _addressIdToActuators = new();
         private readonly Dictionary<GameObject, MaterialPropertyBlock> _objectToMaterialPropertyBlock = new();
@@ -207,6 +241,9 @@ namespace HVR.Vixxy
 
                 foreach (var actuator in _actuatorsWithFiltersToCheckThisTick)
                 {
+#if UNITY_EDITOR
+                    ValidationFilterApplyCount++;
+#endif
                     var filterResult = actuator.ApplyFilters();
                     if (filterResult.filterNeedsCheckNextTick)
                     {
