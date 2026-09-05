@@ -20,6 +20,11 @@ namespace Cilbox
 		public String className;
 		public String serializedObjectData;
 
+#if UNITY_EDITOR
+		[NonSerialized] public string ValidationSerializedObjectData;
+		public bool ValidationProxyIsSetup => proxyWasSetup && enabled && !disabled;
+#endif
+
 		public String buildTimeGuid;
 		public String initialLoadPath;
 
@@ -208,6 +213,11 @@ namespace Cilbox
 			if( proxyLoadInProgress ) return;
 			if (box == null) return;
 			if (string.IsNullOrEmpty(serializedObjectData)) return;
+#if UNITY_EDITOR
+			// Preserve the runtime bootstrap blob only for temporary validation clones.
+			// Production still releases serializedObjectData after successful setup.
+			ValidationSerializedObjectData = serializedObjectData;
+#endif
 			proxyLoadInProgress = true;
 			try
 			{
@@ -369,6 +379,19 @@ namespace Cilbox
 				proxyLoadInProgress = false;
 			}
 		}
+
+#if UNITY_EDITOR
+		public void ValidationReloadFromInitializedProxy( CilboxProxy source )
+		{
+			if( source == null || string.IsNullOrEmpty(source.ValidationSerializedObjectData) )
+				throw new InvalidOperationException("Source Cilbox proxy has no retained validation bootstrap data.");
+
+			serializedObjectData = source.ValidationSerializedObjectData;
+			proxyWasSetup = false;
+			proxyLoadInProgress = false;
+			RuntimeProxyLoad();
+		}
+#endif
 
 
 		// Returns: true if is object, otherwise is primitive.

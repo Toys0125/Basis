@@ -129,26 +129,45 @@ public class CilboxFoxMothLivePlaytest
         Assert.GreaterOrEqual(readyFrame, 0, "Fox Moth's scheduled Vixxy actuator never reached ApplyFilters().");
 
         GameObject sourceAvatar = BasisLocalPlayer.Instance.BasisAvatar.gameObject;
+        CilboxProxy[] sourceProxies = sourceAvatar.GetComponentsInChildren<CilboxProxy>(true);
+        Assert.AreEqual(1, sourceProxies.Length, "Fox Moth stress harness expects one Cilbox proxy per avatar instance.");
+        Assert.IsTrue(sourceProxies[0].ValidationProxyIsSetup, "Source Fox Moth Cilbox proxy is not initialized.");
+        Assert.IsFalse(string.IsNullOrEmpty(sourceProxies[0].ValidationSerializedObjectData), "Source Fox Moth Cilbox proxy did not retain validation bootstrap data.");
+
         for (int i = 1; i < InstanceCount; i++)
         {
             GameObject clone = UnityEngine.Object.Instantiate(sourceAvatar);
             clone.name = $"Fox Moth Stress Clone {i:D2}";
             clone.transform.position = sourceAvatar.transform.position + new Vector3((i % 5) * 2.0f, 0f, (i / 5) * 2.0f);
+
+            CilboxProxy[] cloneProxies = clone.GetComponentsInChildren<CilboxProxy>(true);
+            Assert.AreEqual(sourceProxies.Length, cloneProxies.Length, $"Clone {i} did not preserve the Fox Moth Cilbox proxy layout.");
+            for (int proxyIndex = 0; proxyIndex < cloneProxies.Length; proxyIndex++)
+            {
+                cloneProxies[proxyIndex].ValidationReloadFromInitializedProxy(sourceProxies[proxyIndex]);
+            }
             spawnedClones.Add(clone);
         }
 
         for (int i = 0; i < WarmupFrames; i++) yield return null;
 
-        int proxyCount = sourceAvatar.GetComponentsInChildren<CilboxProxy>(true).Length;
+        int proxyCount = sourceProxies.Length;
+        int activeProxyCount = sourceProxies[0].ValidationProxyIsSetup ? 1 : 0;
         int orchestratorCount = sourceAvatar.GetComponentsInChildren<HVRVixxyOrchestrator>(true).Length;
         for (int i = 0; i < spawnedClones.Count; i++)
         {
-            proxyCount += spawnedClones[i].GetComponentsInChildren<CilboxProxy>(true).Length;
+            CilboxProxy[] cloneProxies = spawnedClones[i].GetComponentsInChildren<CilboxProxy>(true);
+            proxyCount += cloneProxies.Length;
+            for (int proxyIndex = 0; proxyIndex < cloneProxies.Length; proxyIndex++)
+            {
+                if (cloneProxies[proxyIndex].ValidationProxyIsSetup) activeProxyCount++;
+            }
             orchestratorCount += spawnedClones[i].GetComponentsInChildren<HVRVixxyOrchestrator>(true).Length;
         }
         Assert.AreEqual(InstanceCount, proxyCount, "20-instance Fox Moth stress test did not create the expected Cilbox proxy count.");
+        Assert.AreEqual(InstanceCount, activeProxyCount, "20-instance Fox Moth stress test did not initialize every Cilbox proxy.");
         Assert.GreaterOrEqual(orchestratorCount, InstanceCount, "20-instance Fox Moth stress test did not create the expected Vixxy orchestrators.");
-        Debug.Log($"CILBOX_LIVE_PLAYTEST|READY|frame={Time.frameCount}|instances={InstanceCount}|warmupFrames={WarmupFrames}|registeredFilteredActuators={registeredFilteredActuators}|filterApplyCount={orchestrator.ValidationFilterApplyCount}|cilboxProxies={proxyCount}|vixxyOrchestrators={orchestratorCount}");
+        Debug.Log($"CILBOX_LIVE_PLAYTEST|READY|frame={Time.frameCount}|instances={InstanceCount}|warmupFrames={WarmupFrames}|registeredFilteredActuators={registeredFilteredActuators}|filterApplyCount={orchestrator.ValidationFilterApplyCount}|cilboxProxies={proxyCount}|activeCilboxProxies={activeProxyCount}|vixxyOrchestrators={orchestratorCount}");
 
         var options = ProfilerRecorderOptions.WrapAroundWhenCapacityReached |
                       ProfilerRecorderOptions.StartImmediately |
