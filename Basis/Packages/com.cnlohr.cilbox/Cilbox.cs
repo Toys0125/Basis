@@ -499,6 +499,31 @@ spiperf.Begin();
 							object callthis = null;
 							Type[] paTypes = dt.nativeParameterTypes;
 							int numFields = paTypes.Length;
+
+							// Experimental ceiling test: Fox Moth's measured native boundary is exclusively
+							// BitConverter.ToSingle(byte[], int). Bypass reflection to measure its total cost.
+							if( st.DeclaringType == typeof(BitConverter) && st.Name == nameof(BitConverter.ToSingle) &&
+								numFields == 2 && paTypes[0] == typeof(byte[]) && paTypes[1] == typeof(int) )
+							{
+								int startIndex = stackBuffer[sp--].i;
+								byte[] bytes = stackBuffer[sp--].AsObject(box) as byte[];
+								if( bytes == null )
+								{
+									interpretedThrow(pc - 1, new ArgumentNullException("value"));
+									break;
+								}
+								try
+								{
+									stackBuffer[++sp].LoadFloat(BitConverter.ToSingle(bytes, startIndex));
+								}
+								catch( Exception e )
+								{
+									interpretedThrow(pc - 1, e);
+								}
+								constrainedMeta = null;
+								break;
+							}
+
 							object [] callpar = new object[numFields];
 							VmValue [] callparValues = null;
 
