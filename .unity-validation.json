@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "projectPath": "Basis",
+  "profiles": {
+    "cilbox-foxmoth-playtest": {
+      "compile": true,
+      "playModeTests": true
+    }
+  }
+}

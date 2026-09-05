@@ -4,10 +4,12 @@
     "references": [
         "HVR.Basis.Comms",
         "Basis Framework",
+        "BasisBundleManagement",
         "BasisNetworkCore",
         "BasisSDK",
         "BasisShims",
         "Cilbox",
+        "Unity.Burst",
         "UnityEngine.TestRunner"
     ],
     "includePlatforms": [],
