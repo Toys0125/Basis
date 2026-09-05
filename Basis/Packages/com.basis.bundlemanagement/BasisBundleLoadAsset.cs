@@ -6,6 +6,11 @@ using UnityEngine.SceneManagement;
 using static BundledContentHolder;
 public static class BasisBundleLoadAsset
 {
+    // Temporary validation hook used by the Fox Moth live PlayMode harness. Unity Test
+    // Framework can tear down scene-owned objects during the intentional one-frame gap
+    // between BeginContentControl and FinishContentControl. Normal runtime behavior keeps
+    // the split enabled.
+    public static bool DisableFrameSplitForValidation;
     public static async Task<GameObject> LoadFromWrapper(GameObject DisabledGameobject,BasisTrackedBundleWrapper BasisLoadableBundle, bool UseContentRemoval, Vector3 Position, Quaternion Rotation, bool ModifyScale, Vector3 Scale, Selector Selector, Transform Parent = null, bool DestroyColliders = false,bool ChangeColidersToCorrectLayer = false, List<BasisHeadChop.HeadChopTarget> HarvestedHeadChop = null)
     {
         if (BasisLoadableBundle.AssetBundle != null || BasisLoadableBundle.HasGltfTemplate)
@@ -88,7 +93,7 @@ public static class BasisBundleLoadAsset
         ContentPoliceControl.ContentControlState scrubState = ContentPoliceControl.BeginContentControl(DisabledGameobject, loadedObject, ChecksRequired, Position, Rotation, ModifyScale, Scale, Selector, Parent, LayerMask.NameToLayer("IgnoredByInteractable"), HarvestedHeadChop, harvest);
         BasisLoadFrameBudget.EndStep(instantiateStart);
         GameObject CreatedCopy;
-        if (scrubState.RemovalWalkPending)
+        if (scrubState.RemovalWalkPending && !DisableFrameSplitForValidation)
         {
             await Task.Yield();
             await BasisLoadFrameBudget.WaitForBudgetAsync();
