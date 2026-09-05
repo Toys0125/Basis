@@ -40,35 +40,43 @@ public class CilboxFoxMothLivePlaytest
     {
         SceneManager.LoadScene("initialization", LoadSceneMode.Single);
 
-        float bootDeadline = Time.realtimeSinceStartup + 90f;
-        while (BasisLocalPlayer.Instance == null && Time.realtimeSinceStartup < bootDeadline)
+        float bootDeadline = Time.realtimeSinceStartup + 120f;
+        while ((BasisLocalPlayer.Instance == null || !BasisLocalPlayer.PlayerReady) && Time.realtimeSinceStartup < bootDeadline)
         {
             yield return null;
         }
         Assert.IsNotNull(BasisLocalPlayer.Instance, "Basis local player did not finish booting.");
+        Assert.IsTrue(BasisLocalPlayer.PlayerReady, "Basis local player never reached PlayerReady.");
 
-        var bundle = new BasisLoadableBundle
+        // PlayerReady is set only after Basis finishes restoring the last-used avatar.
+        // Reuse that avatar if it is already our target; starting another CreateAvatar
+        // while boot's restore is still active causes the two loads to cancel each other.
+        if (BasisLocalPlayer.CurrentAvatarUniqueID != AvatarUrl)
         {
-            UnlockPassword = AvatarPassword,
-            BasisRemoteBundleEncrypted = new BasisRemoteEncyptedBundle
+            var bundle = new BasisLoadableBundle
             {
-                RemoteBeeFileLocation = AvatarUrl
-            },
-            BasisLocalEncryptedBundle = new BasisStoredEncryptedBundle()
-        };
+                UnlockPassword = AvatarPassword,
+                BasisRemoteBundleEncrypted = new BasisRemoteEncyptedBundle
+                {
+                    RemoteBeeFileLocation = AvatarUrl
+                },
+                BasisLocalEncryptedBundle = new BasisStoredEncryptedBundle()
+            };
 
-        var loadTask = BasisLocalPlayer.Instance.CreateAvatar((byte)BasisLoadMode.Download, bundle);
-        float loadDeadline = Time.realtimeSinceStartup + 120f;
-        while (!loadTask.IsCompleted && Time.realtimeSinceStartup < loadDeadline)
-        {
-            yield return null;
-        }
-        Assert.IsTrue(loadTask.IsCompleted, "Fox Moth avatar load timed out.");
-        if (loadTask.IsFaulted)
-        {
-            throw loadTask.Exception;
+            var loadTask = BasisLocalPlayer.Instance.CreateAvatar((byte)BasisLoadMode.Download, bundle);
+            float loadDeadline = Time.realtimeSinceStartup + 120f;
+            while (!loadTask.IsCompleted && Time.realtimeSinceStartup < loadDeadline)
+            {
+                yield return null;
+            }
+            Assert.IsTrue(loadTask.IsCompleted, "Fox Moth avatar load timed out.");
+            if (loadTask.IsFaulted)
+            {
+                throw loadTask.Exception;
+            }
         }
 
+        Assert.AreEqual(AvatarUrl, BasisLocalPlayer.CurrentAvatarUniqueID, "Fox Moth is not the active local avatar.");
         Assert.IsNotNull(BasisLocalPlayer.Instance.BasisAvatar, "Fox Moth avatar load completed without a BasisAvatar.");
 
         var orchestrator = BasisLocalPlayer.Instance.BasisAvatar.GetComponentInChildren<HVRVixxyOrchestrator>(true);
