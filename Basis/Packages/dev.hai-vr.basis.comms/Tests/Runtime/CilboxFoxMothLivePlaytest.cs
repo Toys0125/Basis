@@ -32,18 +32,26 @@ public class CilboxFoxMothLivePlaytest
 {
     private const string AvatarUrl = "https://dipcdn.net/Fox-Moth-v1.41-3rVn";
     private const string AvatarPassword = "a0225a75691b5e83169c4c045c3588cbdaa48ae0af558c4722c3b21e58485768";
-    private const int SampleFrames = 300;
+    private const int InstanceCount = 20;
+    private const int WarmupFrames = 120;
+    private const int SampleFrames = 600;
+    private readonly List<GameObject> spawnedClones = new List<GameObject>();
 
     [TearDown]
     public void ResetValidationHooks()
     {
         BasisBundleLoadAsset.DisableFrameSplitForValidation = false;
+        for (int i = spawnedClones.Count - 1; i >= 0; i--)
+        {
+            if (spawnedClones[i] != null) UnityEngine.Object.DestroyImmediate(spawnedClones[i]);
+        }
+        spawnedClones.Clear();
         BasisSceneFactory.SkipSceneCameraSetupForValidation = false;
         LogAssert.ignoreFailingMessages = false;
     }
 
     [UnityTest]
-    [Timeout(240000)]
+    [Timeout(360000)]
     public IEnumerator FoxMoth_ReachesVixxyFilterLoop_AndProfilesUpdate()
     {
         // This live playtest boots the full Basis scene stack, which currently emits
@@ -120,8 +128,27 @@ public class CilboxFoxMothLivePlaytest
 
         Assert.GreaterOrEqual(readyFrame, 0, "Fox Moth's scheduled Vixxy actuator never reached ApplyFilters().");
 
-        int proxyCount = BasisLocalPlayer.Instance.BasisAvatar.GetComponentsInChildren<CilboxProxy>(true).Length;
-        Debug.Log($"CILBOX_LIVE_PLAYTEST|READY|frame={readyFrame}|registeredFilteredActuators={registeredFilteredActuators}|filterApplyCount={orchestrator.ValidationFilterApplyCount}|cilboxProxies={proxyCount}");
+        GameObject sourceAvatar = BasisLocalPlayer.Instance.BasisAvatar.gameObject;
+        for (int i = 1; i < InstanceCount; i++)
+        {
+            GameObject clone = UnityEngine.Object.Instantiate(sourceAvatar);
+            clone.name = $"Fox Moth Stress Clone {i:D2}";
+            clone.transform.position = sourceAvatar.transform.position + new Vector3((i % 5) * 2.0f, 0f, (i / 5) * 2.0f);
+            spawnedClones.Add(clone);
+        }
+
+        for (int i = 0; i < WarmupFrames; i++) yield return null;
+
+        int proxyCount = sourceAvatar.GetComponentsInChildren<CilboxProxy>(true).Length;
+        int orchestratorCount = sourceAvatar.GetComponentsInChildren<HVRVixxyOrchestrator>(true).Length;
+        for (int i = 0; i < spawnedClones.Count; i++)
+        {
+            proxyCount += spawnedClones[i].GetComponentsInChildren<CilboxProxy>(true).Length;
+            orchestratorCount += spawnedClones[i].GetComponentsInChildren<HVRVixxyOrchestrator>(true).Length;
+        }
+        Assert.AreEqual(InstanceCount, proxyCount, "20-instance Fox Moth stress test did not create the expected Cilbox proxy count.");
+        Assert.GreaterOrEqual(orchestratorCount, InstanceCount, "20-instance Fox Moth stress test did not create the expected Vixxy orchestrators.");
+        Debug.Log($"CILBOX_LIVE_PLAYTEST|READY|frame={Time.frameCount}|instances={InstanceCount}|warmupFrames={WarmupFrames}|registeredFilteredActuators={registeredFilteredActuators}|filterApplyCount={orchestrator.ValidationFilterApplyCount}|cilboxProxies={proxyCount}|vixxyOrchestrators={orchestratorCount}");
 
         var options = ProfilerRecorderOptions.WrapAroundWhenCapacityReached |
                       ProfilerRecorderOptions.StartImmediately |
@@ -157,8 +184,9 @@ public class CilboxFoxMothLivePlaytest
         gcBytes.Sort();
 
         Debug.Log(
-            $"CILBOX_LIVE_PLAYTEST|SUMMARY|frames={SampleFrames}|cilboxProxies={proxyCount}" +
+            $"CILBOX_LIVE_PLAYTEST|SUMMARY|frames={SampleFrames}|instances={InstanceCount}|cilboxProxies={proxyCount}" +
             $"|cilboxAvgUs={Average(cilboxNs) / 1000.0:F3}|cilboxP50Us={Percentile(cilboxNs, 0.50) / 1000.0:F3}|cilboxP95Us={Percentile(cilboxNs, 0.95) / 1000.0:F3}|cilboxMaxUs={cilboxNs[cilboxNs.Count - 1] / 1000.0:F3}" +
+            $"|cilboxPerProxyAvgUs={Average(cilboxNs) / 1000.0 / proxyCount:F3}|cilboxPerProxyP50Us={Percentile(cilboxNs, 0.50) / 1000.0 / proxyCount:F3}|cilboxPerProxyP95Us={Percentile(cilboxNs, 0.95) / 1000.0 / proxyCount:F3}" +
             $"|vixxyAvgUs={Average(vixxyNs) / 1000.0:F3}|vixxyP95Us={Percentile(vixxyNs, 0.95) / 1000.0:F3}" +
             $"|gcAvgBytes={Average(gcBytes):F1}|gcP95Bytes={Percentile(gcBytes, 0.95)}|gcMaxBytes={gcBytes[gcBytes.Count - 1]}|gcZeroFrames={CountZero(gcBytes)}");
     }
