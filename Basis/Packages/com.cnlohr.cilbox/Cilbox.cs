@@ -50,8 +50,8 @@ namespace Cilbox
 
 	public class CilboxMethod
 	{
-		private static readonly ArrayPool<StackElement> stackPool = ArrayPool<StackElement>.Create();
-		[ThreadStatic] private static StackElement[] singleParameterCache;
+		private static readonly ArrayPool<VmValue> stackPool = ArrayPool<VmValue>.Create();
+		[ThreadStatic] private static VmValue[] singleParameterCache;
 		[ThreadStatic] private static bool singleParameterCacheInUse;
 
 		public CilboxClass parentClass;
@@ -156,29 +156,30 @@ namespace Cilbox
 		{
 			if( ths != null && ths.disabled ) return null;
 
+			using var vmArena = VmValueArena.Enter();
+
 			int plen = parametersIn?.Length ?? 0;
 			int thisOffset = isStatic ? 0 : 1;
 			int parameterCount = plen + thisOffset;
 
 			bool usingSingleParameterCache = parameterCount == 1 && !singleParameterCacheInUse;
-			StackElement [] parameters;
+			VmValue [] parameters;
 			if( parameterCount == 0 )
 			{
-				parameters = Array.Empty<StackElement>();
+				parameters = Array.Empty<VmValue>();
 			}
 			else if( usingSingleParameterCache )
 			{
-				parameters = singleParameterCache ?? (singleParameterCache = new StackElement[1]);
+				parameters = singleParameterCache ?? (singleParameterCache = new VmValue[1]);
 			}
 			else
 			{
-				parameters = new StackElement[parameterCount];
+				parameters = new VmValue[parameterCount];
 			}
 
-			// This pool is private to Cilbox and every returned buffer is cleared below.
-			// New arrays are zero-initialized, so a rented buffer is always clean without
-			// paying for another full clear on the hot path.
-			StackElement [] stackBuffer = stackPool.Rent(Cilbox.defaultStackSize);
+			// VmValue is unmanaged: the pooled stack contains no GC references and does not
+			// need a full 1024-slot clear when it is returned. Managed values live in vmArena.
+			VmValue [] stackBuffer = stackPool.Rent(Cilbox.defaultStackSize);
 			if( usingSingleParameterCache ) singleParameterCacheInUse = true;
 
 			try
@@ -222,9 +223,7 @@ namespace Cilbox
 					singleParameterCacheInUse = false;
 				}
 
-				// StackElement contains managed references. Clearing on return both releases
-				// those objects and maintains the private pool's clean-on-rent invariant.
-				stackPool.Return(stackBuffer, clearArray: true);
+				stackPool.Return(stackBuffer, clearArray: false);
 			}
 		}
 
@@ -239,22 +238,34 @@ namespace Cilbox
 
 		public object InterpretWithBuffersForBenchmark( StackElement[] stackBuffer, ArraySegment<StackElement> parameters, bool accounting )
 		{
-			if( accounting && !parentClass.box.InterpreterEntry(this) ) return null;
+			using var vmArena = VmValueArena.Enter();
+			VmValue[] vmBuffer = stackPool.Rent(stackBuffer.Length + parameters.Count);
+			var vmStack = new ArraySegment<VmValue>(vmBuffer, 0, stackBuffer.Length);
+			var vmParameters = new ArraySegment<VmValue>(vmBuffer, stackBuffer.Length, parameters.Count);
+			for( int i = 0; i < parameters.Count; i++ )
+				vmParameters.Array[vmParameters.Offset + i] = parameters.Array[parameters.Offset + i];
+
+			if( accounting && !parentClass.box.InterpreterEntry(this) )
+			{
+				stackPool.Return(vmBuffer, clearArray: false);
+				return null;
+			}
 			try
 			{
-				return InterpretInner( stackBuffer, parameters ).AsObject();
+				return InterpretInner(vmStack, vmParameters).AsObject();
 			}
 			finally
 			{
 				if( accounting ) parentClass.box.InterpreterExit();
+				stackPool.Return(vmBuffer, clearArray: false);
 			}
 		}
 #endif
 
-		private StackElement InterpretInner( ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		private VmValue InterpretInner( ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
 		{
-			Span<StackElement> stackBuffer = stackBufferIn.AsSpan();
-			Span<StackElement> parameters = parametersIn.AsSpan();
+			Span<VmValue> stackBuffer = stackBufferIn.AsSpan();
+			Span<VmValue> parameters = parametersIn.AsSpan();
 			Stack<int> handlerClauseStack = null; // don't allocate unless necessary
 
 #if UNITY_EDITOR
@@ -265,6 +276,10 @@ namespace Cilbox
 
 			int localVarsHead = MaxStackSize;
 			int stackContinues = localVarsHead + methodLocals.Length;
+			// The pooled VmValue stack can retain primitive bits, so preserve CLR initlocals
+			// semantics by clearing only the local-variable region instead of all 1024 slots.
+			if( methodLocals.Length > 0 )
+				stackBuffer.Slice(localVarsHead, methodLocals.Length).Clear();
 			StackElement? exceptionRegister = null;
 
 			// Uncomment for debugging.
@@ -598,7 +613,7 @@ spiperf.Begin();
 							{
 								MethodInfo mi = (MethodInfo)st;
 								StackElement seorig = stackBuffer[sp--];
-								StackElement se = StackElement.ResolveToStackElement( seorig );
+								VmValue se = VmValue.ResolveToVmValue( seorig );
 								Type t = mi.DeclaringType;
 
 								if( seorig.type == StackType.NativeHandle )
@@ -1019,7 +1034,7 @@ spiperf.Begin();
 
 					case 0x65: // neg
 					{
-						ref StackElement s = ref stackBuffer[sp];
+						ref VmValue s = ref stackBuffer[sp];
 						switch (s.type)
 						{
 							case StackType.Float:
@@ -2239,7 +2254,7 @@ spiperf.End();
 
 		public CilboxEnum cilboxEnum;
 
-		public delegate StackElement DelegateOverride( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn );
+		public delegate VmValue DelegateOverride( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn );
 		public object opaque;
 		public DelegateOverride shim = null;
 		public bool shimIsVoid;

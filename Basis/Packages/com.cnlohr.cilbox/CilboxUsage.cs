@@ -116,11 +116,11 @@ namespace Cilbox
 		////////////////////////////////////////////////////////////////////////////////////
 		// DELEGATE OVERRIDES //////////////////////////////////////////////////////////////
 		////////////////////////////////////////////////////////////////////////////////////
-		public static StackElement OverrideGetComponentT( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		public static VmValue OverrideGetComponentT( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
 		{
-			Span<StackElement> parameters = parametersIn.AsSpan();
+			Span<VmValue> parameters = parametersIn.AsSpan();
 
-			StackElement ret = new StackElement();
+			VmValue ret = new VmValue();
 
 			ret.LoadObject( null );
 
@@ -148,11 +148,11 @@ namespace Cilbox
 			return ret;
 		}
 
-		public static StackElement OverrideGetComponentC( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		public static VmValue OverrideGetComponentC( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
 		{
-			Span<StackElement> parameters = parametersIn.AsSpan();
+			Span<VmValue> parameters = parametersIn.AsSpan();
 
-			StackElement ret = new StackElement();
+			VmValue ret = new VmValue();
 			ret.LoadObject( null );
 
 			CilboxClass cls = (CilboxClass)ths.opaque;
@@ -178,11 +178,11 @@ namespace Cilbox
 		}
 
 
-		public static StackElement OverrideTryGetComponentT( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		public static VmValue OverrideTryGetComponentT( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
 		{
-			Span<StackElement> parameters = parametersIn.AsSpan();
+			Span<VmValue> parameters = parametersIn.AsSpan();
 
-			StackElement ret = new StackElement();
+			VmValue ret = new VmValue();
 
 			ret.LoadBool( false );
 
@@ -211,11 +211,11 @@ namespace Cilbox
 			return ret;
 		}
 
-		public static StackElement OverrideTryGetComponentC( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		public static VmValue OverrideTryGetComponentC( CilMetadataTokenInfo ths, ArraySegment<VmValue> stackBufferIn, ArraySegment<VmValue> parametersIn )
 		{
-			Span<StackElement> parameters = parametersIn.AsSpan();
+			Span<VmValue> parameters = parametersIn.AsSpan();
 
-			StackElement ret = new StackElement();
+			VmValue ret = new VmValue();
 
 			ret.LoadBool( false );
 
