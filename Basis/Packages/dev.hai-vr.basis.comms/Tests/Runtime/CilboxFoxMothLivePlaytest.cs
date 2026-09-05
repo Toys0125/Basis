@@ -100,34 +100,28 @@ public class CilboxFoxMothLivePlaytest
         var orchestrator = BasisLocalPlayer.Instance.BasisAvatar.GetComponentInChildren<HVRVixxyOrchestrator>(true);
         Assert.IsNotNull(orchestrator, "Loaded Fox Moth avatar did not create a Vixxy orchestrator.");
 
-        FieldInfo filterSetField = typeof(HVRVixxyOrchestrator).GetField(
-            "_actuatorsWithFiltersToCheckThisTick",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.IsNotNull(filterSetField, "Unable to locate Vixxy filter-check set.");
+        int registeredFilteredActuators = orchestrator.ValidationRegisteredFilteredActuatorCount;
+        Assert.Greater(registeredFilteredActuators, 0, "Fox Moth registered no Vixxy actuators with filters.");
 
-        PropertyInfo countProperty = filterSetField.FieldType.GetProperty("Count");
-        Assert.IsNotNull(countProperty, "Unable to read Vixxy filter-check count.");
+        int filterApplyBefore = orchestrator.ValidationFilterApplyCount;
+        Assert.IsTrue(orchestrator.ScheduleFirstFilteredActuatorForValidation(), "Unable to schedule a Fox Moth filtered actuator.");
 
-        float readyDeadline = Time.realtimeSinceStartup + 60f;
+        float readyDeadline = Time.realtimeSinceStartup + 10f;
         int readyFrame = -1;
-        int readyFilterCount = 0;
         while (Time.realtimeSinceStartup < readyDeadline)
         {
-            object filterSet = filterSetField.GetValue(orchestrator);
-            int count = (int)countProperty.GetValue(filterSet);
-            if (count > 0)
+            yield return null;
+            if (orchestrator.ValidationFilterApplyCount > filterApplyBefore)
             {
                 readyFrame = Time.frameCount;
-                readyFilterCount = count;
                 break;
             }
-            yield return null;
         }
 
-        Assert.GreaterOrEqual(readyFrame, 0, "Fox Moth never entered the Vixxy filter-check loop.");
+        Assert.GreaterOrEqual(readyFrame, 0, "Fox Moth's scheduled Vixxy actuator never reached ApplyFilters().");
 
         int proxyCount = BasisLocalPlayer.Instance.BasisAvatar.GetComponentsInChildren<CilboxProxy>(true).Length;
-        Debug.Log($"CILBOX_LIVE_PLAYTEST|READY|frame={readyFrame}|vixxyFilterCount={readyFilterCount}|cilboxProxies={proxyCount}");
+        Debug.Log($"CILBOX_LIVE_PLAYTEST|READY|frame={readyFrame}|registeredFilteredActuators={registeredFilteredActuators}|filterApplyCount={orchestrator.ValidationFilterApplyCount}|cilboxProxies={proxyCount}");
 
         var options = ProfilerRecorderOptions.WrapAroundWhenCapacityReached |
                       ProfilerRecorderOptions.StartImmediately |
