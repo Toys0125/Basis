@@ -522,15 +522,20 @@ spiperf.Begin();
 							Type[] paTypes = dt.nativeParameterTypes;
 							int numFields = paTypes.Length;
 							object [] callpar = new object[numFields];
-							StackElement [] callpar_se = new StackElement[numFields];
+							VmValue [] callparValues = null;
 
 							int ik;
 							for( ik = 0; ik < numFields; ik++ )
 							{
-								StackElement se = stackBuffer[sp--];
-								callpar_se[numFields-ik-1] = se;
+								VmValue se = stackBuffer[sp--];
+								int parameterIndex = numFields-ik-1;
+								if( se.type == StackType.Address || se.type == StackType.NativeHandle )
+								{
+									callparValues ??= new VmValue[numFields];
+									callparValues[parameterIndex] = se;
+								}
 								object o = se.AsObject(box);
-								Type t = paTypes[numFields-ik-1];
+								Type t = paTypes[parameterIndex];
 
 								if( t.IsByRef )
 								{
@@ -553,7 +558,7 @@ spiperf.Begin();
 										o = se.CoerceToObject( t );
 									}
 								}
-								callpar[numFields-ik-1] = o;
+								callpar[parameterIndex] = o;
 							}
 							if( st.IsConstructor )
 							{
@@ -573,7 +578,7 @@ spiperf.Begin();
 								}
 								else
 								{
-									StackElement ctorThisSe = stackBuffer[sp--];
+									VmValue ctorThisSe = stackBuffer[sp--];
 									Type ctorDeclaringType = ctor.DeclaringType;
 
 									if( ctorDeclaringType != null && ctorDeclaringType.IsValueType )
@@ -612,7 +617,7 @@ spiperf.Begin();
 							else if( !st.IsStatic )
 							{
 								MethodInfo mi = (MethodInfo)st;
-								StackElement seorig = stackBuffer[sp--];
+								VmValue seorig = stackBuffer[sp--];
 								VmValue se = VmValue.ResolveToVmValue( seorig );
 								Type t = mi.DeclaringType;
 
@@ -675,17 +680,16 @@ spiperf.Begin();
 								}
 							}
 
-							// Possibly copy back any references.
-							for( ik = 0; ik < numFields; ik++ )
+							// Copy back only when an argument actually carried an address/native handle.
+							if( callparValues != null )
 							{
-								StackElement se = callpar_se[ik];
-								if (se.type == StackType.Address)
+								for( ik = 0; ik < numFields; ik++ )
 								{
-									callpar_se[ik].DereferenceLoadAddress( callpar[ik] );
-								}
-								else if ( se.type == StackType.NativeHandle )
-								{
-									callpar_se[ik].DereferenceLoadNativeHandle( box, callpar[ik] );
+									VmValue se = callparValues[ik];
+									if( se.type == StackType.Address )
+										se.DereferenceLoadAddress( callpar[ik] );
+									else if( se.type == StackType.NativeHandle )
+										se.DereferenceLoadNativeHandle( box, callpar[ik] );
 								}
 							}
 
@@ -1054,17 +1058,17 @@ spiperf.Begin();
 
 					// XXX TODO: Perf improvement, detect float-to-int conversions and fast-path them.
 					// C# Does not want you to blindly interpret these.
-					case 0x67: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadSByte( ((se.type < StackType.Float) ? (sbyte)se.u  : (sbyte)se.CoerceToObject(typeof(sbyte)))  ); break; } // conv.i1
-					case 0x68: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadShort( ((se.type < StackType.Float) ? (short)se.i  : (short)se.CoerceToObject(typeof(short)))  ); break; } // conv.i2
-					case 0x69: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadInt(   ((se.type < StackType.Float) ? (int)se.i    : (int)se.CoerceToObject(typeof(int)))      ); break; } // conv.i4
-					case 0x6A: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadLong(  ( se.type <= StackType.Int ? (long)se.i   : se.type == StackType.Uint ? (long) se.u   : se.type == StackType.Long ? (long)se.l   : se.type == StackType.Ulong ? (long)se.e   : (long)se.CoerceToObject(typeof(long)))    ); break; } // conv.i8
-					case 0x6B: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadFloat( ( se.type <= StackType.Int ? (float)se.i  : se.type == StackType.Uint ? (float) se.u  : se.type == StackType.Long ? (float)se.l  : se.type == StackType.Ulong ? (float)se.e  : se.type == StackType.Double ? (float)se.d : (float)se.CoerceToObject(typeof(float)))  ); break; } // conv.r4
-					case 0x6C: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadDouble(( se.type <= StackType.Int ? (double)se.i : se.type == StackType.Uint ? (double) se.u : se.type == StackType.Long ? (double)se.l : se.type == StackType.Ulong ? (double)se.e : se.type == StackType.Float ? (double)se.f : (double)se.CoerceToObject(typeof(double)))); break; } // conv.r8
-					case 0x6D: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadUint(  ((se.type < StackType.Float) ?(uint)se.u    : (uint)se.CoerceToObject(typeof(uint)))      ); break; } // conv.u4
-					case 0x6E: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadUlong( ( se.type <= StackType.Int ? (ulong)se.i   : se.type == StackType.Uint ? (ulong)se.u  : se.type == StackType.Long ? (ulong)se.l  : se.type == StackType.Ulong ? (ulong)se.e  : (ulong)se.CoerceToObject(typeof(ulong)))); break; } // conv.u8
-					case 0xD1: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadUshort(((se.type < StackType.Float) ? (ushort)se.u : (ushort)se.CoerceToObject(typeof(ushort)))); break; } // conv.u2
-					case 0xD2: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadByte(  ((se.type < StackType.Float) ? (byte)se.u   : (byte)se.CoerceToObject(typeof(byte)))    ); break; } // conv.u1
-					case 0xD3: { StackElement se = stackBuffer[sp]; stackBuffer[sp].LoadNint(  ( se.type <= StackType.Int ? (nint)se.i    : se.type == StackType.Uint ? (nint)se.u   : se.type == StackType.Long ? (nint)se.l  : se.type == StackType.Ulong ? (nint)se.e  : (nint)Convert.ToInt64(se.CoerceToObject(typeof(long)))) ); break; } // conv.i
+					case 0x67: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadSByte( ((se.type < StackType.Float) ? (sbyte)se.u  : (sbyte)se.CoerceToObject(typeof(sbyte)))  ); break; } // conv.i1
+					case 0x68: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadShort( ((se.type < StackType.Float) ? (short)se.i  : (short)se.CoerceToObject(typeof(short)))  ); break; } // conv.i2
+					case 0x69: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadInt(   ((se.type < StackType.Float) ? (int)se.i    : (int)se.CoerceToObject(typeof(int)))      ); break; } // conv.i4
+					case 0x6A: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadLong(  ( se.type <= StackType.Int ? (long)se.i   : se.type == StackType.Uint ? (long) se.u   : se.type == StackType.Long ? (long)se.l   : se.type == StackType.Ulong ? (long)se.e   : (long)se.CoerceToObject(typeof(long)))    ); break; } // conv.i8
+					case 0x6B: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadFloat( ( se.type <= StackType.Int ? (float)se.i  : se.type == StackType.Uint ? (float) se.u  : se.type == StackType.Long ? (float)se.l  : se.type == StackType.Ulong ? (float)se.e  : se.type == StackType.Double ? (float)se.d : (float)se.CoerceToObject(typeof(float)))  ); break; } // conv.r4
+					case 0x6C: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadDouble(( se.type <= StackType.Int ? (double)se.i : se.type == StackType.Uint ? (double) se.u : se.type == StackType.Long ? (double)se.l : se.type == StackType.Ulong ? (double)se.e : se.type == StackType.Float ? (double)se.f : (double)se.CoerceToObject(typeof(double)))); break; } // conv.r8
+					case 0x6D: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadUint(  ((se.type < StackType.Float) ?(uint)se.u    : (uint)se.CoerceToObject(typeof(uint)))      ); break; } // conv.u4
+					case 0x6E: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadUlong( ( se.type <= StackType.Int ? (ulong)se.i   : se.type == StackType.Uint ? (ulong)se.u  : se.type == StackType.Long ? (ulong)se.l  : se.type == StackType.Ulong ? (ulong)se.e  : (ulong)se.CoerceToObject(typeof(ulong)))); break; } // conv.u8
+					case 0xD1: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadUshort(((se.type < StackType.Float) ? (ushort)se.u : (ushort)se.CoerceToObject(typeof(ushort)))); break; } // conv.u2
+					case 0xD2: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadByte(  ((se.type < StackType.Float) ? (byte)se.u   : (byte)se.CoerceToObject(typeof(byte)))    ); break; } // conv.u1
+					case 0xD3: { VmValue se = stackBuffer[sp]; stackBuffer[sp].LoadNint(  ( se.type <= StackType.Int ? (nint)se.i    : se.type == StackType.Uint ? (nint)se.u   : se.type == StackType.Long ? (nint)se.l  : se.type == StackType.Ulong ? (nint)se.e  : (nint)Convert.ToInt64(se.CoerceToObject(typeof(long)))) ); break; } // conv.i
 
 					case 0x72:
 					{
@@ -1076,7 +1080,7 @@ spiperf.Begin();
 					case 0x75: //isinst
 					{
 						uint bc = BytecodeAsU32( ref pc );
-						StackElement se = stackBuffer[sp--];
+						VmValue se = stackBuffer[sp--];
 						CilMetadataTokenInfo ti = box.metadatas[bc];
 						object oRet = null;
 						if( ti.nativeTypeIsCilboxProxy )
@@ -1187,7 +1191,7 @@ spiperf.Begin();
 					case 0x7d: // stfld
 					{
 						uint bc = BytecodeAsU32( ref pc );
-						StackElement se = stackBuffer[sp--];
+						VmValue se = stackBuffer[sp--];
 						object opths = stackBuffer[sp--].AsObject(box);
 						if (opths == null)
 						{
@@ -1203,7 +1207,7 @@ spiperf.Begin();
 
 						if( TryGetInternalObjectData( opths, out _, out StackElement[] internalFields ) )
 						{
-							internalFields[box.metadatas[bc].fieldIndex] = se;
+							internalFields[box.metadatas[bc].fieldIndex] = se.ToStackElement();
 							//Debug.Log( "Type: " + ((CilboxProxy)opths).fields[box.metadatas[bc].fieldIndex].type );
 							break;
 						}
@@ -1227,7 +1231,7 @@ spiperf.Begin();
 					case 0x46: case 0x47: case 0x48: case 0x49: case 0x4a: // ldind
 					case 0x4b: case 0x4c: case 0x4d: case 0x4e: case 0x4f: case 0x50:
 					{
-						StackElement se = stackBuffer[sp--];
+						VmValue se = stackBuffer[sp--];
 						object obj = null;
 						if (se.type == StackType.Address)
 						{

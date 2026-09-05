@@ -37,9 +37,36 @@ namespace Cilbox
 
         public VmValue Load(object value)
         {
-            StackElement tmp = StackElement.LoadAsStatic(value);
-            this = FromStackElement(tmp);
-            return this;
+            switch (value)
+            {
+                case sbyte t0: return LoadSByte(t0);
+                case byte t1: return LoadByte(t1);
+                case short t2: return LoadShort(t2);
+                case ushort t3: return LoadUshort(t3);
+                case int t4: return LoadInt(t4);
+                case uint t5: return LoadUint(t5);
+                case long t6: return LoadLong(t6);
+                case ulong t7: return LoadUlong(t7);
+                case float t8: return LoadFloat(t8);
+                case double t9: return LoadDouble(t9);
+                case bool ta0: return LoadBool(ta0);
+                default:
+                    if (value is BoxedCilboxEnum bce)
+                    {
+                        l = bce.value;
+                        type = bce.enumDef.underlyingType;
+                    }
+                    else if (value != null && value.GetType().IsEnum)
+                    {
+                        l = Convert.ToInt64(value);
+                        type = StackElement.StackTypeFromType(value.GetType().GetEnumUnderlyingType());
+                    }
+                    else
+                    {
+                        LoadObject(value);
+                    }
+                    return this;
+            }
         }
 
         public static VmValue LoadAsStatic(object value)
@@ -71,9 +98,29 @@ namespace Cilbox
 
         public void Unbox(object value, StackType stackType)
         {
-            StackElement tmp = default;
-            tmp.Unbox(value, stackType);
-            this = FromStackElement(tmp);
+            if (value is BoxedCilboxEnum bce)
+            {
+                type = bce.enumDef.underlyingType;
+                l = bce.value;
+                return;
+            }
+
+            type = stackType;
+            switch (stackType)
+            {
+                case StackType.Sbyte: l = (sbyte)value; break;
+                case StackType.Byte: e = (byte)value; break;
+                case StackType.Short: l = (short)value; break;
+                case StackType.Ushort: e = (ushort)value; break;
+                case StackType.Int: l = (int)value; break;
+                case StackType.Uint: e = (uint)value; break;
+                case StackType.Long: l = (long)value; break;
+                case StackType.Ulong: e = (ulong)value; break;
+                case StackType.Float: l = 0; f = (float)value; break;
+                case StackType.Double: d = (double)value; break;
+                case StackType.Boolean: l = (bool)value ? 1 : 0; break;
+                default: LoadObject(value); break;
+            }
         }
 
         public readonly object AsObject(Cilbox box = null)
@@ -99,7 +146,89 @@ namespace Cilbox
 
         public readonly object CoerceToObject(Type targetType)
         {
-            return ToStackElement().CoerceToObject(targetType);
+            StackType resultType = StackElement.StackTypeFromType(targetType);
+
+            if (targetType.IsEnum && type < StackType.Object)
+            {
+                return type switch
+                {
+                    StackType.Sbyte => Enum.ToObject(targetType, (sbyte)i),
+                    StackType.Byte => Enum.ToObject(targetType, (byte)u),
+                    StackType.Short => Enum.ToObject(targetType, (short)i),
+                    StackType.Ushort => Enum.ToObject(targetType, (ushort)u),
+                    StackType.Int => Enum.ToObject(targetType, i),
+                    StackType.Uint => Enum.ToObject(targetType, u),
+                    StackType.Long => Enum.ToObject(targetType, l),
+                    StackType.Ulong => Enum.ToObject(targetType, e),
+                    _ => Convert.ChangeType(AsObject(), targetType)
+                };
+            }
+
+            if (type < StackType.Float)
+            {
+                switch (resultType)
+                {
+                    case StackType.Sbyte: return (sbyte)i;
+                    case StackType.Byte: return (byte)u;
+                    case StackType.Short: return (short)i;
+                    case StackType.Ushort: return (ushort)u;
+                    case StackType.Int: return i;
+                    case StackType.Uint: return u;
+                    case StackType.Long: return l;
+                    case StackType.Ulong: return e;
+                    case StackType.Float: return (float)e;
+                    case StackType.Double: return (double)e;
+                    case StackType.Boolean: return e != 0;
+                    default: return Convert.ChangeType(AsObject(), targetType);
+                }
+            }
+
+            if (type == StackType.Float)
+            {
+                switch (resultType)
+                {
+                    case StackType.Sbyte: return (sbyte)f;
+                    case StackType.Byte: return (byte)f;
+                    case StackType.Short: return (short)f;
+                    case StackType.Ushort: return (ushort)f;
+                    case StackType.Int: return (int)f;
+                    case StackType.Uint: return (uint)f;
+                    case StackType.Long: return (long)f;
+                    case StackType.Ulong: return (ulong)f;
+                    case StackType.Float: return f;
+                    case StackType.Double: return (double)f;
+                    case StackType.Boolean: return f != 0.0f;
+                    default: return Convert.ChangeType(f, targetType);
+                }
+            }
+
+            if (type == StackType.Double)
+            {
+                switch (resultType)
+                {
+                    case StackType.Sbyte: return (sbyte)d;
+                    case StackType.Byte: return (byte)d;
+                    case StackType.Short: return (short)d;
+                    case StackType.Ushort: return (ushort)d;
+                    case StackType.Int: return (int)d;
+                    case StackType.Uint: return (uint)d;
+                    case StackType.Long: return (long)d;
+                    case StackType.Ulong: return (ulong)d;
+                    case StackType.Float: return (float)d;
+                    case StackType.Double: return d;
+                    case StackType.Boolean: return d != 0;
+                    default: return Convert.ChangeType(d, targetType);
+                }
+            }
+
+            if (type == StackType.Object)
+            {
+                object value = o;
+                if (value == null || targetType.IsInstanceOfType(value)) return value;
+                return Convert.ChangeType(value, targetType);
+            }
+
+            throw new Exception("Error invalid type conversion from " + type + " to " + targetType);
         }
 
         public readonly object DereferenceAddress()
