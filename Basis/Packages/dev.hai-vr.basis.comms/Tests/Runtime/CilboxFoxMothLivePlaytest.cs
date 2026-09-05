@@ -54,8 +54,10 @@ public class CilboxFoxMothLivePlaytest
         BasisBundleLoadAsset.DisableFrameSplitForValidation = true;
         BasisSceneFactory.SkipSceneCameraSetupForValidation = true;
 
-        SceneManager.LoadScene("initialization", LoadSceneMode.Single);
-
+        // BasisBootSequence runs automatically after the Test Framework's PlayMode scene
+        // loads. Do not replace that scene here: the asynchronously-instantiated BasisFramework
+        // belongs to it, so a Single scene load destroys DeviceManagement/CreationGameobject
+        // while avatar boot is still in flight.
         float bootDeadline = Time.realtimeSinceStartup + 120f;
         while ((BasisLocalPlayer.Instance == null || !BasisLocalPlayer.PlayerReady) && Time.realtimeSinceStartup < bootDeadline)
         {
