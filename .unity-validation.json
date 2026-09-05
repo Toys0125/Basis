@@ -7,6 +7,10 @@
       "validators": [
         "Cilbox.Tests.CilboxNativeArrayStorageBenchmarks.RunForValidation"
       ]
+    },
+    "cilbox-foxmoth-playtest": {
+      "compile": true,
+      "playModeTests": true
     }
   }
 }
