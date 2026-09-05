@@ -139,6 +139,11 @@ public class CilboxFoxMothLivePlaytest
             GameObject clone = UnityEngine.Object.Instantiate(sourceAvatar);
             clone.name = $"Fox Moth Stress Clone {i:D2}";
             clone.transform.position = sourceAvatar.transform.position + new Vector3((i % 5) * 2.0f, 0f, (i / 5) * 2.0f);
+            BasisAvatar cloneAvatar = clone.GetComponent<BasisAvatar>();
+            Assert.IsNotNull(cloneAvatar, $"Clone {i} is missing its BasisAvatar root.");
+            // The stress clones are local synthetic avatar instances, not network peers. Mark
+            // them local so Vixxy never attempts an avatar->network-player lookup each tick.
+            cloneAvatar.IsOwnedLocally = true;
 
             CilboxProxy[] cloneProxies = clone.GetComponentsInChildren<CilboxProxy>(true);
             Assert.AreEqual(sourceProxies.Length, cloneProxies.Length, $"Clone {i} did not preserve the Fox Moth Cilbox proxy layout.");
