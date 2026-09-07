@@ -2155,6 +2155,10 @@
       "value": "Manually set mirror resolution instead of using the default."
     },
     {
+      "key": "settings.graphics.vrMirror.fullView.tooltip",
+      "value": "Controls how much of the full VR eye image appears on the desktop mirror. 0% uses the XR provider's original crop; 100% shows the complete image with black bars instead of cutting it off."
+    },
+    {
       "key": "settings.graphics.mirrorResolution.tooltip",
       "value": "The resolution mirrors render at when override is enabled."
     },
@@ -7565,6 +7569,14 @@
     {
       "key": "settings.graphics.overrides.title",
       "value": "Overrides"
+    },
+    {
+      "key": "settings.graphics.vrMirror.title",
+      "value": "VR Desktop Mirror"
+    },
+    {
+      "key": "settings.graphics.vrMirror.fullView",
+      "value": "Full Image"
     },
     {
       "key": "settings.graphics.mirrorQuality.title",

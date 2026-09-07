@@ -2255,6 +2255,26 @@ namespace Basis.BasisUI
         public static BasisSettingsBinding<bool> UseMirrorQualityOverride = new("usemirrorqualityoverride", new BasisPlatformDefault<bool>(false));
         public static BasisSettingsBinding<string> MirrorQuality = new("mirrorquality", new BasisPlatformDefault<string>("2048"));
 
+        /// <summary>
+        /// How much of the full XR eye texture is shown in the desktop mirror. 0 preserves the XR
+        /// provider's original aspect-fill crop; 100 reveals the whole eye image and letterboxes it.
+        /// Intermediate values linearly reveal more of the source while preserving its aspect ratio.
+        /// </summary>
+        public static BasisSettingsBinding<float> VRMirrorFullView = new("vrmirrorfullview", new BasisPlatformDefault<float>(30f));
+        public const float VR_MIRROR_FULL_VIEW_MIN = 0f;
+        public const float VR_MIRROR_FULL_VIEW_MAX = 100f;
+        private static readonly int VRMirrorFullViewShaderId = UnityEngine.Shader.PropertyToID("_BasisVRMirrorFullView");
+
+        private static void ApplyVRMirrorFullView(float percent)
+        {
+            float normalized = percent <= VR_MIRROR_FULL_VIEW_MIN
+                ? 0f
+                : percent >= VR_MIRROR_FULL_VIEW_MAX
+                    ? 1f
+                    : percent / VR_MIRROR_FULL_VIEW_MAX;
+            UnityEngine.Shader.SetGlobalFloat(VRMirrorFullViewShaderId, normalized);
+        }
+
         // ---------------- CAMERA CLIP OVERRIDE ----------------
         public static BasisSettingsBinding<bool> UseCameraClipOverride = new("usecameraclipoverride", new BasisPlatformDefault<bool>(false));
         public static BasisSettingsBinding<float> CameraClipNear = new("cameraclipnear", new BasisPlatformDefault<float>(0.01f));
@@ -2590,6 +2610,9 @@ namespace Basis.BasisUI
             // Mirror
             UseMirrorQualityOverride.LoadBindingValue();
             MirrorQuality.LoadBindingValue();
+            VRMirrorFullView.LoadBindingValue();
+            ApplyVRMirrorFullView(VRMirrorFullView.RawValue);
+            VRMirrorFullView.OnChanged += ApplyVRMirrorFullView;
 
             // Camera Clip Override
             UseCameraClipOverride.LoadBindingValue();

@@ -2551,6 +2551,22 @@ namespace Basis.BasisUI
             void RebuildOverridesLayout() =>
                 PanelElementDescriptor.RebuildLayoutChain(overridesGroup.ContentParent, container);
 
+            // --- VR Desktop Mirror View ---
+            PanelSectionToggle vrMirrorToggle = PanelSectionToggle.CreateNewEntry(overridesContent);
+            vrMirrorToggle.SetTitle(BasisLocalization.Get("settings.graphics.vrMirror.title"));
+            PanelElementDescriptor vrMirrorGroup =
+                PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, overridesContent);
+
+            PanelSlider sliderVRMirrorFullView = PanelSlider.CreateEntryAndBind(
+                vrMirrorGroup.ContentParent,
+                PanelSlider.SliderSettings.Percentage(BasisLocalization.Get("settings.graphics.vrMirror.fullView")),
+                BasisSettingsDefaults.VRMirrorFullView);
+            sliderVRMirrorFullView.Descriptor.SetTooltip(BasisLocalization.Get("settings.graphics.vrMirror.fullView.tooltip"));
+
+            vrMirrorToggle.RegisterContentContainer(vrMirrorGroup);
+            PanelSectionToggleHelpers.FinalizeCollapsibleGroup(vrMirrorToggle, vrMirrorGroup, true,
+                _ => RebuildOverridesLayout());
+
             // --- Mirror Quality Override ---
             PanelSectionToggle mirrorToggle = PanelSectionToggle.CreateNewEntry(overridesContent);
             mirrorToggle.SetTitle(BasisLocalization.Get("settings.graphics.mirrorQuality.title"));
@@ -3343,6 +3359,7 @@ namespace Basis.BasisUI
 
             BasisSettingsDefaults.UseMirrorQualityOverride.ResetToDefault();
             BasisSettingsDefaults.MirrorQuality.ResetToDefault();
+            BasisSettingsDefaults.VRMirrorFullView.ResetToDefault();
             BasisSettingsDefaults.UseCameraClipOverride.ResetToDefault();
             BasisSettingsDefaults.CameraClipNear.ResetToDefault();
             BasisSettingsDefaults.CameraClipFar.ResetToDefault();

@@ -17,6 +17,10 @@ uniform float _SourceMaxNits;
 uniform int _SourceHDREncoding;
 uniform float4x4 _ColorTransform;
 
+// BasisVR desktop mirror framing. 0 keeps the XR provider's original aspect-fill crop; 1 reveals
+// the complete eye texture and fits it inside the provider's destination rectangle with letterboxing.
+uniform float _BasisVRMirrorFullView;
+
 
 struct Attributes
 {
@@ -25,8 +29,9 @@ struct Attributes
 
 struct Varyings
 {
-    float4 positionCS : SV_POSITION;
-    float2 texcoord   : TEXCOORD0;
+    float4 positionCS  : SV_POSITION;
+    float2 texcoord    : TEXCOORD0;
+    float2 mirrorCoord : TEXCOORD1;
 };
 
 Varyings VertQuad(Attributes input)
@@ -41,12 +46,52 @@ Varyings VertQuad(Attributes input)
     // Unity viewport convention is bottom left as origin. Adjust Scalebias to read the correct region.
     scaleBiasW = 1 - _ScaleBias.w - _ScaleBias.y;
 #endif
-    output.texcoord = GetQuadTexCoord(input.vertexID) * _ScaleBias.xy + float2(_ScaleBias.z, scaleBiasW);
+
+    float2 quadCoord = GetQuadTexCoord(input.vertexID);
+    float fullView = saturate(_BasisVRMirrorFullView);
+    float2 defaultSourceScale = _ScaleBias.xy;
+    float2 defaultSourceBias = float2(_ScaleBias.z, scaleBiasW);
+
+    // Preserve the provider path exactly at 0%, including its existing UV flip behavior.
+    if (fullView <= 0.0f)
+    {
+        output.mirrorCoord = quadCoord;
+        output.texcoord = quadCoord * defaultSourceScale + defaultSourceBias;
+        return output;
+    }
+
+    // The provider's source rect is already aspect-filled to the destination. That means its normalized
+    // width/height ratio contains exactly the source-vs-destination aspect relationship we need. As we
+    // expand the sampled rect toward the complete eye texture, shrink the visible destination region by
+    // the inverse relationship so the revealed image is never stretched.
+    float2 defaultSourceScaleAbs = max(abs(_ScaleBias.xy), float2(1e-6f, 1e-6f));
+    float2 revealedSourceScaleAbs = lerp(defaultSourceScaleAbs, float2(1.0f, 1.0f), fullView);
+    float relativeAspect = (revealedSourceScaleAbs.x * defaultSourceScaleAbs.y) /
+        max(revealedSourceScaleAbs.y * defaultSourceScaleAbs.x, 1e-6f);
+    float2 contentScale = relativeAspect < 1.0f
+        ? float2(relativeAspect, 1.0f)
+        : float2(1.0f, rcp(relativeAspect));
+    float2 contentMin = (1.0f - contentScale) * 0.5f;
+
+    // mirrorCoord is intentionally allowed outside 0..1. The fragment shader turns that region black,
+    // giving us letter/pillar boxes while the provider's original full-destination quad still clears them.
+    output.mirrorCoord = (quadCoord - contentMin) / contentScale;
+
+    float2 fullSourceScale = float2(defaultSourceScale.x < 0.0f ? -1.0f : 1.0f,
+                                   defaultSourceScale.y < 0.0f ? -1.0f : 1.0f);
+    float2 fullSourceBias = float2(fullSourceScale.x < 0.0f ? 1.0f : 0.0f,
+                                  fullSourceScale.y < 0.0f ? 1.0f : 0.0f);
+    float2 revealedSourceScale = lerp(defaultSourceScale, fullSourceScale, fullView);
+    float2 revealedSourceBias = lerp(defaultSourceBias, fullSourceBias, fullView);
+
+    output.texcoord = output.mirrorCoord * revealedSourceScale + revealedSourceBias;
     return output;
 }
 
 float4 FragBilinear(Varyings input) : SV_Target
 {
+    if (any(input.mirrorCoord < 0.0f) || any(input.mirrorCoord > 1.0f))
+        return float4(0.0f, 0.0f, 0.0f, 1.0f);
 
     float4 outColor;
     float2 uv = input.texcoord.xy;
