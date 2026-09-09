@@ -256,26 +256,35 @@ public static class BasisContentVersion
             return false;
         }
 
-        meta.LastValidatedUnixUtc = NowUnixUtc();
-
-        // Stored verbatim (see LastModifiedPrefix): If-None-Match has to echo the server's exact
-        // spelling later, so normalization is a comparison-time concern only.
-        if (!string.IsNullOrWhiteSpace(observedTag) && !TagsMatch(meta.CachedVersionTag, observedTag))
+        // Build a replacement record rather than mutating the live dictionary entry before the
+        // disk write succeeds. If persistence fails, the in-memory cache must keep advertising the
+        // last version that is actually recoverable after a restart.
+        string cachedVersionTag = meta.CachedVersionTag;
+        if (!string.IsNullOrWhiteSpace(observedTag) && !TagsMatch(cachedVersionTag, observedTag))
         {
-            meta.CachedVersionTag = observedTag.Trim();
+            cachedVersionTag = observedTag.Trim();
         }
 
-        // AddDiscInfo derives the meta filename from UniqueVersion and THROWS before its own
-        // try/catch when that is blank, so a fire-and-forget call would lose the baseline to an
-        // unobserved task exception and silently re-ask the host on every launch.
-        if (string.IsNullOrWhiteSpace(meta.UniqueVersion))
+        var validated = new BasisBEEExtensionMeta
         {
-            BasisDebug.LogWarning($"Recorded content version for {remoteUrl} in memory only; the cache entry has no UniqueVersion to file it under.", BasisDebug.LogTag.Event);
+            StoredRemote = meta.StoredRemote,
+            StoredLocal = meta.StoredLocal,
+            UniqueVersion = meta.UniqueVersion,
+            DownloadedPlatform = meta.DownloadedPlatform,
+            CachedVersionTag = cachedVersionTag,
+            LastValidatedUnixUtc = NowUnixUtc(),
+        };
+
+        // The caller promises the user this baseline has been recorded, so do not return until the
+        // .BME write is complete. A failed write must propagate as false; otherwise every later
+        // check starts from an empty tag and repeats the "Now Tracking Updates" flow forever.
+        if (string.IsNullOrWhiteSpace(validated.UniqueVersion))
+        {
+            BasisDebug.LogWarning($"Could not persist content version for {remoteUrl}; the cache entry has no UniqueVersion to file it under.", BasisDebug.LogTag.Event);
             return false;
         }
 
-        _ = BasisLoadHandler.AddDiscInfo(meta);
-        return true;
+        return await BasisLoadHandler.AddDiscInfo(validated);
     }
 
     /// <summary>Outcome of asking a host whether cached content is still current.</summary>
@@ -369,8 +378,7 @@ public static class BasisContentVersion
         // check, and BaselineEstablished tells the UI to offer a refresh anyway.
         if (cachedTag.Length == 0)
         {
-            await MarkValidatedAsync(remoteUrl, observed);
-            return new UpdateCheckResult(true, false, false, observed, null, baselineEstablished: true);
+            return await EstablishBaselineAsync(remoteUrl, observed);
         }
 
         if (TagsMatch(cachedTag, observed))
@@ -380,6 +388,26 @@ public static class BasisContentVersion
         }
 
         return new UpdateCheckResult(true, true, false, observed, null);
+    }
+
+    /// <summary>
+    /// Records the first validator seen for a pre-versioning cache entry. Kept as a small internal
+    /// seam so regression tests can verify that the UI is never told a baseline exists unless the
+    /// metadata actually reached disk.
+    /// </summary>
+    internal static async System.Threading.Tasks.Task<UpdateCheckResult> EstablishBaselineAsync(string remoteUrl, string observedTag)
+    {
+        if (!await MarkValidatedAsync(remoteUrl, observedTag))
+        {
+            return new UpdateCheckResult(
+                false,
+                false,
+                false,
+                observedTag,
+                "The current version was detected, but Basis could not save it to the local cache. Try refreshing the item or clearing its cached data.");
+        }
+
+        return new UpdateCheckResult(true, false, false, observedTag, null, baselineEstablished: true);
     }
 
     /// <summary>

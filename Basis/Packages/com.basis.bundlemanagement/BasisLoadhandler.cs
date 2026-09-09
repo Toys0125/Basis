@@ -558,7 +558,285 @@ public static class BasisLoadHandler
         return TryResolveStoredBeePath(discInfo, out _) || TryResolveStoredConnectorPath(discInfo, out _);
     }
 
-    private static bool TryLazyLoadDiscInfo(string metaUrl, string currentPlatform, out BasisBEEExtensionMeta info)
+    private sealed class DiscInfoCandidate
+    {
+        public string DiscKey;
+        public string MetaPath;
+        public BasisBEEExtensionMeta Info;
+        public DateTime MetaWriteTimeUtc;
+        public bool HasPayload;
+    }
+
+    /// <summary>
+    /// Deterministic ordering for duplicate .BME records that describe the same URL + platform.
+    /// Duplicate records can exist after a static URL is refreshed to a new UniqueVersion. The old
+    /// code let Directory.GetFiles/Task completion order decide which one won, so a restart could
+    /// resurrect a pre-versioning record with an empty CachedVersionTag.
+    /// </summary>
+    internal static bool IsPreferredDiscInfo(
+        BasisBEEExtensionMeta candidate,
+        bool candidateHasPayload,
+        DateTime candidateWriteTimeUtc,
+        BasisBEEExtensionMeta incumbent,
+        bool incumbentHasPayload,
+        DateTime incumbentWriteTimeUtc)
+    {
+        if (incumbent == null)
+        {
+            return true;
+        }
+
+        if (candidateHasPayload != incumbentHasPayload)
+        {
+            return candidateHasPayload;
+        }
+
+        long candidateValidated = candidate?.LastValidatedUnixUtc ?? 0;
+        long incumbentValidated = incumbent.LastValidatedUnixUtc;
+        if (candidateValidated != incumbentValidated)
+        {
+            return candidateValidated > incumbentValidated;
+        }
+
+        bool candidateHasTag = !string.IsNullOrWhiteSpace(candidate?.CachedVersionTag);
+        bool incumbentHasTag = !string.IsNullOrWhiteSpace(incumbent.CachedVersionTag);
+        if (candidateHasTag != incumbentHasTag)
+        {
+            return candidateHasTag;
+        }
+
+        int writeTimeComparison = candidateWriteTimeUtc.CompareTo(incumbentWriteTimeUtc);
+        if (writeTimeComparison != 0)
+        {
+            return writeTimeComparison > 0;
+        }
+
+        return string.CompareOrdinal(candidate?.UniqueVersion ?? string.Empty, incumbent.UniqueVersion ?? string.Empty) > 0;
+    }
+
+    private static void ConsiderDiscInfoCandidate(
+        Dictionary<string, DiscInfoCandidate> preferred,
+        List<DiscInfoCandidate> superseded,
+        DiscInfoCandidate candidate)
+    {
+        if (!preferred.TryGetValue(candidate.DiscKey, out DiscInfoCandidate incumbent))
+        {
+            preferred[candidate.DiscKey] = candidate;
+            return;
+        }
+
+        if (IsPreferredDiscInfo(candidate.Info, candidate.HasPayload, candidate.MetaWriteTimeUtc,
+            incumbent.Info, incumbent.HasPayload, incumbent.MetaWriteTimeUtc))
+        {
+            preferred[candidate.DiscKey] = candidate;
+            superseded.Add(incumbent);
+        }
+        else
+        {
+            superseded.Add(candidate);
+        }
+    }
+
+    private static HashSet<string> CollectDiscInfoPaths(BasisBEEExtensionMeta discInfo, string explicitMetaPath = null)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                paths.Add(value);
+            }
+        }
+
+        Add(explicitMetaPath);
+        Add(discInfo?.StoredLocal?.DownloadedBeeFileLocation);
+        Add(discInfo?.StoredLocal?.DownloadedConnectorFileLocation);
+
+        if (!string.IsNullOrWhiteSpace(discInfo?.UniqueVersion))
+        {
+            try { Add(BasisIOManagement.GetBeeCacheFilePath(discInfo.UniqueVersion, discInfo.DownloadedPlatform)); } catch { }
+            try { Add(BasisIOManagement.GetConnectorCacheFilePath(discInfo.UniqueVersion, discInfo.DownloadedPlatform)); } catch { }
+            try { Add(BasisIOManagement.GetMetaCacheFilePath(discInfo.UniqueVersion, discInfo.DownloadedPlatform)); } catch { }
+            try { Add(BasisIOManagement.GetLegacyBeeCacheFilePath(discInfo.UniqueVersion)); } catch { }
+            try { Add(BasisIOManagement.GetLegacyMetaCacheFilePath(discInfo.UniqueVersion)); } catch { }
+        }
+
+        return paths;
+    }
+
+    /// <summary>
+    /// Deletes the physical cache files belonging to one metadata record without touching the
+    /// URL+platform dictionary key. <paramref name="preserveInfo"/> protects any paths shared with
+    /// the winning record while duplicate cache generations are being collapsed.
+    /// </summary>
+    internal static void DeleteDiscInfoFiles(
+        BasisBEEExtensionMeta discInfo,
+        string explicitMetaPath = null,
+        BasisBEEExtensionMeta preserveInfo = null,
+        string preserveMetaPath = null)
+    {
+        lock (_discInfoScanLock)
+        {
+            HashSet<string> preserve = CollectDiscInfoPaths(preserveInfo, preserveMetaPath);
+            foreach (string filePath in CollectDiscInfoPaths(discInfo, explicitMetaPath))
+            {
+                if (preserve.Contains(filePath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (File.Exists(filePath))
+                    {
+                        File.Delete(filePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    BasisDebug.LogWarning($"Failed deleting superseded cache file {filePath}: {ex.Message}", BasisDebug.LogTag.Event);
+                }
+            }
+        }
+    }
+
+    private static readonly object _discInfoScanLock = new object();
+
+    private static Dictionary<string, DiscInfoCandidate> LoadPreferredDiscInfoCandidates(string folderPath, string canonicalUrlFilter = null)
+    {
+        // Lazy library preloads can ask for several URLs concurrently. Serialize the physical .BME
+        // scan so duplicate cleanup cannot race another scan, and so BasisSerialization's shared
+        // JsonSerializer is not used concurrently by this path.
+        lock (_discInfoScanLock)
+        {
+            return LoadPreferredDiscInfoCandidatesLocked(folderPath, canonicalUrlFilter);
+        }
+    }
+
+    internal static bool DeleteUnindexedDiscInfoFilesForUrl(string remoteUrl)
+    {
+        string canonicalUrl = BasisIOManagement.CanonicalizeRemoteUrl(remoteUrl);
+        string folderPath = BasisIOManagement.GenerateFolderPath(BasisBeeConstants.AssetBundlesFolder);
+        if (canonicalUrl.Length == 0 || !Directory.Exists(folderPath))
+        {
+            return false;
+        }
+
+        bool removedAny = false;
+        lock (_discInfoScanLock)
+        {
+            foreach (string metaPath in Directory.GetFiles(folderPath, $"*{BasisBeeConstants.BasisMetaExtension}"))
+            {
+                try
+                {
+                    byte[] data = File.ReadAllBytes(metaPath);
+                    BasisBEEExtensionMeta meta = BasisSerialization.DeserializeValue<BasisBEEExtensionMeta>(data);
+                    if (!string.Equals(
+                        BasisIOManagement.CanonicalizeRemoteUrl(meta?.StoredRemote?.RemoteBeeFileLocation),
+                        canonicalUrl,
+                        StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    DeleteDiscInfoFiles(meta, metaPath);
+                    removedAny = true;
+                }
+                catch (Exception ex)
+                {
+                    // Invalidation should not turn an unreadable unrelated metadata file into data
+                    // loss. Leave it in place when we cannot prove it belongs to this URL.
+                    BasisDebug.LogWarning($"Failed inspecting orphaned cache metadata {metaPath}: {ex.Message}", BasisDebug.LogTag.Event);
+                }
+            }
+        }
+
+        return removedAny;
+    }
+
+    private static Dictionary<string, DiscInfoCandidate> LoadPreferredDiscInfoCandidatesLocked(string folderPath, string canonicalUrlFilter)
+    {
+        var preferred = new Dictionary<string, DiscInfoCandidate>();
+        var superseded = new List<DiscInfoCandidate>();
+
+        foreach (string file in Directory.GetFiles(folderPath, $"*{BasisBeeConstants.BasisMetaExtension}"))
+        {
+            byte[] fileData;
+            try
+            {
+                fileData = File.ReadAllBytes(file);
+            }
+            catch (Exception ex)
+            {
+                // IO/permission failures are transient possibilities; do not destroy a metadata
+                // file merely because it could not be read on this attempt.
+                BasisDebug.LogWarning($"Failed reading disc info from {file}: {ex.Message}", BasisDebug.LogTag.Event);
+                continue;
+            }
+
+            BasisBEEExtensionMeta discInfo;
+            try
+            {
+                discInfo = BasisSerialization.DeserializeValue<BasisBEEExtensionMeta>(fileData);
+            }
+            catch (Exception ex)
+            {
+                BasisDebug.LogWarning($"Discarding malformed disc info {file}: {ex.Message}", BasisDebug.LogTag.Event);
+                try { File.Delete(file); } catch { }
+                continue;
+            }
+
+            string remoteUrl = discInfo?.StoredRemote?.RemoteBeeFileLocation;
+            if (string.IsNullOrWhiteSpace(remoteUrl))
+            {
+                BasisDebug.LogWarning($"Discarding malformed disc info {file}: metadata has no remote URL.", BasisDebug.LogTag.Event);
+                try { File.Delete(file); } catch { }
+                continue;
+            }
+
+            try
+            {
+                string canonicalUrl = BasisIOManagement.CanonicalizeRemoteUrl(remoteUrl);
+                if (canonicalUrlFilter != null && !string.Equals(canonicalUrl, canonicalUrlFilter, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var candidate = new DiscInfoCandidate
+                {
+                    DiscKey = GetDiscInfoKey(remoteUrl, discInfo.DownloadedPlatform),
+                    MetaPath = file,
+                    Info = discInfo,
+                    MetaWriteTimeUtc = File.GetLastWriteTimeUtc(file),
+                    HasPayload = HasAnyCachedPayload(discInfo),
+                };
+                ConsiderDiscInfoCandidate(preferred, superseded, candidate);
+            }
+            catch (Exception ex)
+            {
+                // Path probing can fail transiently too. Preserve the serialized metadata and let a
+                // later scan retry instead of turning a temporary filesystem error into data loss.
+                BasisDebug.LogWarning($"Failed inspecting disc info from {file}: {ex.Message}", BasisDebug.LogTag.Event);
+            }
+        }
+
+        foreach (DiscInfoCandidate stale in superseded)
+        {
+            if (preferred.TryGetValue(stale.DiscKey, out DiscInfoCandidate winner))
+            {
+                DeleteDiscInfoFiles(stale.Info, stale.MetaPath, winner.Info, winner.MetaPath);
+            }
+        }
+
+        foreach (KeyValuePair<string, DiscInfoCandidate> entry in preferred)
+        {
+            OnDiscData[entry.Key] = entry.Value.Info;
+        }
+
+        return preferred;
+    }
+
+    private static bool TryLazyLoadDiscInfo(string metaUrl, out BasisBEEExtensionMeta info)
     {
         info = null;
 
@@ -568,41 +846,27 @@ public static class BasisLoadHandler
             return false;
         }
 
-        BasisBEEExtensionMeta legacyCandidate = null;
         string canonicalUrl = BasisIOManagement.CanonicalizeRemoteUrl(metaUrl);
+        Dictionary<string, DiscInfoCandidate> preferred = LoadPreferredDiscInfoCandidates(path, canonicalUrl);
+        BasisBEEExtensionMeta legacyCandidate = null;
 
-        foreach (string file in Directory.GetFiles(path, $"*{BasisBeeConstants.BasisMetaExtension}"))
+        foreach (DiscInfoCandidate candidate in preferred.Values)
         {
-            try
+            BasisBEEExtensionMeta discInfo = candidate.Info;
+            if (!candidate.HasPayload)
             {
-                byte[] fileData = File.ReadAllBytes(file);
-                BasisBEEExtensionMeta discInfo = BasisSerialization.DeserializeValue<BasisBEEExtensionMeta>(fileData);
-                if (BasisIOManagement.CanonicalizeRemoteUrl(discInfo?.StoredRemote?.RemoteBeeFileLocation) != canonicalUrl)
-                {
-                    continue;
-                }
-
-                OnDiscData[GetDiscInfoKey(discInfo.StoredRemote.RemoteBeeFileLocation, discInfo.DownloadedPlatform)] = discInfo;
-
-                if (!HasAnyCachedPayload(discInfo))
-                {
-                    continue;
-                }
-
-                if (BasisIOManagement.CachePlatformMatchesCurrent(discInfo.DownloadedPlatform))
-                {
-                    info = discInfo;
-                    return true;
-                }
-
-                if (string.IsNullOrWhiteSpace(discInfo.DownloadedPlatform) && legacyCandidate == null)
-                {
-                    legacyCandidate = discInfo;
-                }
+                continue;
             }
-            catch (Exception ex)
+
+            if (BasisIOManagement.CachePlatformMatchesCurrent(discInfo.DownloadedPlatform))
             {
-                BasisDebug.LogWarning($"Failed lazy-loading disc info from {file}: {ex.Message}", BasisDebug.LogTag.Event);
+                info = discInfo;
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(discInfo.DownloadedPlatform))
+            {
+                legacyCandidate = discInfo;
             }
         }
 
@@ -660,8 +924,7 @@ public static class BasisLoadHandler
             return true;
         }
 
-        string currentPlatform = BasisIOManagement.GetCurrentCachePlatform();
-        if (TryLazyLoadDiscInfo(MetaURL, currentPlatform, out BasisBEEExtensionMeta lazyLoadedInfo))
+        if (TryLazyLoadDiscInfo(MetaURL, out BasisBEEExtensionMeta lazyLoadedInfo))
         {
             info = lazyLoadedInfo;
             return true;
@@ -680,8 +943,7 @@ public static class BasisLoadHandler
 
         return Task.Run<(bool, BasisBEEExtensionMeta)>(() =>
         {
-            string currentPlatform = BasisIOManagement.GetCurrentCachePlatform();
-            if (TryLazyLoadDiscInfo(MetaURL, currentPlatform, out BasisBEEExtensionMeta lazyInfo))
+            if (TryLazyLoadDiscInfo(MetaURL, out BasisBEEExtensionMeta lazyInfo))
             {
                 return (true, lazyInfo);
             }
@@ -689,38 +951,72 @@ public static class BasisLoadHandler
         });
     }
 
-    public static async Task AddDiscInfo(BasisBEEExtensionMeta discInfo)
+    public static async Task<bool> AddDiscInfo(BasisBEEExtensionMeta discInfo)
     {
-        string discKey = GetDiscInfoKey(discInfo.StoredRemote.RemoteBeeFileLocation, discInfo.DownloadedPlatform);
-        OnDiscData[discKey] = discInfo;
-        string filePath = BasisIOManagement.GetMetaCacheFilePath(discInfo.UniqueVersion, discInfo.DownloadedPlatform);
-        byte[] serializedData = BasisSerialization.SerializeValue(discInfo);
+        if (discInfo?.StoredRemote == null || string.IsNullOrWhiteSpace(discInfo.StoredRemote.RemoteBeeFileLocation) ||
+            string.IsNullOrWhiteSpace(discInfo.UniqueVersion))
+        {
+            BasisDebug.LogError("Failed to save disc info: metadata is missing its remote URL or UniqueVersion.", BasisDebug.LogTag.Event);
+            return false;
+        }
 
+        string discKey = GetDiscInfoKey(discInfo.StoredRemote.RemoteBeeFileLocation, discInfo.DownloadedPlatform);
+        string filePath;
+        byte[] serializedData;
         try
         {
-            if (!string.IsNullOrWhiteSpace(discInfo.UniqueVersion))
-            {
-                string legacyMetaPath = BasisIOManagement.GetLegacyMetaCacheFilePath(discInfo.UniqueVersion);
-                if (File.Exists(legacyMetaPath))
-                {
-                    File.Delete(legacyMetaPath);
-                }
-            }
-            string tempPath = filePath + ".tmp";
-            await File.WriteAllBytesAsync(tempPath, serializedData);
-            if (File.Exists(filePath))
-            {
-                File.Replace(tempPath, filePath, null);
-            }
-            else
-            {
-                File.Move(tempPath, filePath);
-            }
-            BasisDebug.Log($"Disc info saved to {filePath}", BasisDebug.LogTag.Event);
+            filePath = BasisIOManagement.GetMetaCacheFilePath(discInfo.UniqueVersion, discInfo.DownloadedPlatform);
+            serializedData = BasisSerialization.SerializeValue(discInfo);
         }
         catch (Exception ex)
         {
+            BasisDebug.LogError($"Failed to prepare disc info: {ex.Message}", BasisDebug.LogTag.Event);
+            return false;
+        }
+
+        string tempPath = filePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(tempPath, serializedData);
+
+            // Commit the new metadata and retire the previous generation under the same lock used
+            // by lazy/startup scans and invalidation. The potentially slow write stays outside the
+            // lock; only the atomic replace/index swap/cleanup is serialized.
+            lock (_discInfoScanLock)
+            {
+                string legacyMetaPath = BasisIOManagement.GetLegacyMetaCacheFilePath(discInfo.UniqueVersion);
+                if (!string.Equals(legacyMetaPath, filePath, StringComparison.OrdinalIgnoreCase) && File.Exists(legacyMetaPath))
+                {
+                    File.Delete(legacyMetaPath);
+                }
+
+                if (File.Exists(filePath))
+                {
+                    File.Replace(tempPath, filePath, null);
+                }
+                else
+                {
+                    File.Move(tempPath, filePath);
+                }
+
+                OnDiscData.TryGetValue(discKey, out BasisBEEExtensionMeta previous);
+                OnDiscData[discKey] = discInfo;
+
+                if (previous != null &&
+                    !string.Equals(previous.UniqueVersion, discInfo.UniqueVersion, StringComparison.Ordinal))
+                {
+                    DeleteDiscInfoFiles(previous, null, discInfo, filePath);
+                }
+            }
+
+            BasisDebug.Log($"Disc info saved to {filePath}", BasisDebug.LogTag.Event);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
             BasisDebug.LogError($"Failed to save disc info: {ex.Message}", BasisDebug.LogTag.Event);
+            return false;
         }
     }
 
@@ -749,36 +1045,19 @@ public static class BasisLoadHandler
         }
     }
 
-    private static async Task LoadAllDiscData()
+    private static Task LoadAllDiscData()
     {
         BasisDebug.Log("Loading all disc data...", BasisDebug.LogTag.Event);
         string path = BasisIOManagement.GenerateFolderPath(BasisBeeConstants.AssetBundlesFolder);
-        string[] files = Directory.GetFiles(path, $"*{BasisBeeConstants.BasisMetaExtension}");
 
-        List<Task> loadTasks = new List<Task>();
-
-        foreach (string file in files)
+        // Keep the scan off the Unity main thread, but perform its reads/deserialization sequentially
+        // inside that worker. The old task-per-file version raced duplicate URL+platform records and
+        // concurrently used BasisSerialization's shared JsonSerializer.
+        return Task.Run(() =>
         {
-            loadTasks.Add(Task.Run(async () =>
-            {
-               // BasisDebug.Log($"Loading file: {file}");
-                try
-                {
-                    byte[] fileData = await File.ReadAllBytesAsync(file);
-                    BasisBEEExtensionMeta discInfo = BasisSerialization.DeserializeValue<BasisBEEExtensionMeta>(fileData);
-                    OnDiscData[GetDiscInfoKey(discInfo.StoredRemote.RemoteBeeFileLocation, discInfo.DownloadedPlatform)] = discInfo;
-                }
-                catch (Exception ex)
-                {
-                    BasisDebug.LogError($"Failed to load disc info from {file}: {ex.Message}", BasisDebug.LogTag.Event);
-                    File.Delete(file);
-                }
-            }));
-        }
-
-        await Task.WhenAll(loadTasks);
-
-        BasisDebug.Log("Completed loading all disc data.");
+            LoadPreferredDiscInfoCandidates(path);
+            BasisDebug.Log("Completed loading all disc data.");
+        });
     }
 
     private static void CleanupFiles(BasisStoredEncryptedBundle bundle)

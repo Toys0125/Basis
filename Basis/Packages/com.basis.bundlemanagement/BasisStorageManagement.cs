@@ -150,9 +150,17 @@ public static class BasisStorageManagement
             }
         }
 
+        // Older builds could leave multiple UniqueVersion metadata files for one URL+platform while
+        // only indexing the newest one in OnDiscData. Invalidation must remove those orphaned
+        // generations too, otherwise a later lazy scan can resurrect the supposedly discarded copy.
+        if (BasisLoadHandler.DeleteUnindexedDiscInfoFilesForUrl(remoteUrl))
+        {
+            removedAny = true;
+        }
+
         if (!removedAny)
         {
-            BasisDebug.LogWarning($"No OnDiscData entry found for URL: {remoteUrl}", BasisDebug.LogTag.Event);
+            BasisDebug.LogWarning($"No cached entry found for URL: {remoteUrl}", BasisDebug.LogTag.Event);
             return false;
         }
 
@@ -292,22 +300,7 @@ public static class BasisStorageManagement
             return false;
         }
 
-        string beePath = meta.StoredLocal.DownloadedBeeFileLocation;
-        if (string.IsNullOrEmpty(beePath))
-        {
-            beePath = BasisIOManagement.GetBeeCacheFilePath(meta.UniqueVersion, meta.DownloadedPlatform);
-        }
-        TryDeleteFile(beePath);
-
-        string connectorPath = meta.StoredLocal.DownloadedConnectorFileLocation;
-        if (string.IsNullOrEmpty(connectorPath))
-        {
-            connectorPath = BasisIOManagement.GetConnectorCacheFilePath(meta.UniqueVersion, meta.DownloadedPlatform);
-        }
-        TryDeleteFile(connectorPath);
-
-        string metaPath = BasisIOManagement.GetMetaCacheFilePath(meta.UniqueVersion, meta.DownloadedPlatform);
-        TryDeleteFile(metaPath);
+        BasisLoadHandler.DeleteDiscInfoFiles(meta);
 
         BasisDebug.Log($"Deleted stored BEE file: {meta.UniqueVersion} [{meta.DownloadedPlatform}] (source: {meta.StoredRemote.RemoteBeeFileLocation})", BasisDebug.LogTag.Event);
         return true;
