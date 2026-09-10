@@ -78,28 +78,39 @@ public class BasisContentVersionPersistenceTests
     }
 
     [Test]
-    public async Task BaselineIsNotReportedEstablishedWhenItCannotBePersisted()
+    public async Task MissingBaselineDoesNotAssociateCurrentHostTagWithOldCachedBytes()
     {
         const string url = "https://example.com/no-version.bee";
-        string connectorPath = Path.Combine(_tempRoot, "manual.bec");
-        File.WriteAllBytes(connectorPath, new byte[] { 1 });
+        BasisBEEExtensionMeta meta = CreateMeta(url, "cached-v1", string.Empty, 0);
+        Assert.IsTrue(await BasisLoadHandler.AddDiscInfo(meta));
 
-        var meta = new BasisBEEExtensionMeta
-        {
-            StoredRemote = new BasisRemoteEncyptedBundle { RemoteBeeFileLocation = url },
-            StoredLocal = new BasisStoredEncryptedBundle { DownloadedConnectorFileLocation = connectorPath },
-            UniqueVersion = string.Empty,
-            DownloadedPlatform = BasisIOManagement.GetCurrentCachePlatform(),
-            CachedVersionTag = string.Empty,
-            LastValidatedUnixUtc = 0,
-        };
-        BasisLoadHandler.OnDiscData[BasisLoadHandler.GetDiscInfoKey(url, meta.DownloadedPlatform)] = meta;
+        var currentHost = new BasisIOManagement.BasisRemoteValidator("\"v2\"", null);
+        BasisContentVersion.UpdateCheckResult first = await BasisContentVersion.EvaluateValidatorAsync(url, string.Empty, currentHost);
 
-        BasisContentVersion.UpdateCheckResult result = await BasisContentVersion.EstablishBaselineAsync(url, "\"v1\"");
+        Assert.IsTrue(first.Succeeded);
+        Assert.IsTrue(first.BaselineMissing);
+        Assert.IsFalse(first.BaselineEstablished);
+        Assert.IsFalse(first.HasUpdate);
+        Assert.AreEqual("\"v2\"", first.ObservedTag);
+        Assert.AreEqual(string.Empty, await BasisContentVersion.GetCachedTagAsync(url),
+            "Observing the host's current tag must not label pre-existing cached bytes as that version.");
 
-        Assert.IsFalse(result.Succeeded);
-        Assert.IsFalse(result.BaselineEstablished);
-        Assert.AreEqual(string.Empty, meta.CachedVersionTag, "A failed persistence attempt must not mutate the recoverable in-memory baseline.");
+        // Reproduce the Editor flow where the user clicks No, then checks again. The second check
+        // must still report a missing baseline instead of falsely claiming the old cached BEE is v2.
+        BasisContentVersion.UpdateCheckResult second = await BasisContentVersion.EvaluateValidatorAsync(
+            url,
+            await BasisContentVersion.GetCachedTagAsync(url),
+            currentHost);
+        Assert.IsTrue(second.BaselineMissing);
+        Assert.IsFalse(second.BaselineEstablished);
+        Assert.IsFalse(second.HasUpdate);
+
+        // Also prove a restart cannot resurrect a tag that was never verified against these bytes.
+        BasisLoadHandler.OnDiscData.Clear();
+        (bool found, BasisBEEExtensionMeta reloaded) = await BasisLoadHandler.IsMetaDataOnDiscAsync(url);
+        Assert.IsTrue(found);
+        Assert.AreEqual(string.Empty, reloaded.CachedVersionTag);
+        Assert.AreEqual(0, reloaded.LastValidatedUnixUtc);
     }
 
     [Test]

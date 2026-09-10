@@ -6187,6 +6187,14 @@
       "value": "{0} had no recorded version yet, so this first check had nothing to compare against. The version published right now has been recorded, and future checks will detect changes properly.\n\nIf you updated this content before now, refresh it anyway?"
     },
     {
+      "key": "library.dialog.checkForUpdate.baselineMissing.title",
+      "value": "No Saved Version"
+    },
+    {
+      "key": "library.dialog.checkForUpdate.baselineMissing.body",
+      "value": "{0} has no recorded version for the copy already cached on this device, so Basis cannot tell whether it matches what is currently hosted.\n\nRefresh it now to download the current BEE and establish a trustworthy version baseline? If you choose No, the cached copy is kept and the next check will still report that no saved version is available."
+    },
+    {
       "key": "library.dialog.checkForUpdate.available.title",
       "value": "Update Available"
     },

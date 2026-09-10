@@ -92,14 +92,14 @@ namespace Basis.BasisUI
                 return await ApplyRefresh(panel, item, title);
             }
 
-            // First ever check on this entry: there was no recorded version, so "unchanged" is an
-            // assumption rather than a comparison. Say that plainly and let the user force a refresh,
-            // because a re-upload made before this check looks identical to no change at all.
-            if (result.BaselineEstablished)
+            // No recorded validator means we cannot prove the cached bytes match what the host serves
+            // today. Do not record the host's current validator against old bytes; only a successful
+            // refresh can establish that relationship safely.
+            if (result.BaselineMissing)
             {
                 bool forceRefresh = await PromptYesNo(panel,
-                    BasisLocalization.Get("library.dialog.checkForUpdate.baseline.title"),
-                    BasisLocalization.Get("library.dialog.checkForUpdate.baseline.body", title));
+                    BasisLocalization.Get("library.dialog.checkForUpdate.baselineMissing.title"),
+                    BasisLocalization.Get("library.dialog.checkForUpdate.baselineMissing.body", title));
 
                 if (!forceRefresh)
                 {

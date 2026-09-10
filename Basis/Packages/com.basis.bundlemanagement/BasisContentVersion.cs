@@ -301,20 +301,33 @@ public static class BasisContentVersion
         /// </summary>
         public readonly bool VersioningUnavailable;
         /// <summary>
-        /// This check had no recorded version to compare against and has just adopted the host's
-        /// current one as the baseline. "No update" is therefore an assumption, not a comparison —
-        /// the UI should say so and still offer a refresh, because a genuine re-upload made before
-        /// the very first check is indistinguishable from no change at all.
+        /// This check had no recorded validator to compare against. The host's current validator was
+        /// observed but was deliberately NOT attached to the existing cached bytes, because those
+        /// bytes may have been downloaded before the host was updated. The UI should offer a refresh;
+        /// only a successful fetch of the current BEE may establish the first trustworthy baseline.
+        /// </summary>
+        public readonly bool BaselineMissing;
+        /// <summary>
+        /// Legacy compatibility member. Update checks no longer establish a baseline merely by
+        /// observing the host, because that can associate a new validator with old cached bytes.
         /// </summary>
         public readonly bool BaselineEstablished;
         public readonly string ObservedTag;
         public readonly string Error;
 
-        public UpdateCheckResult(bool succeeded, bool hasUpdate, bool versioningUnavailable, string observedTag, string error, bool baselineEstablished = false)
+        public UpdateCheckResult(
+            bool succeeded,
+            bool hasUpdate,
+            bool versioningUnavailable,
+            string observedTag,
+            string error,
+            bool baselineEstablished = false,
+            bool baselineMissing = false)
         {
             Succeeded = succeeded;
             HasUpdate = hasUpdate;
             VersioningUnavailable = versioningUnavailable;
+            BaselineMissing = baselineMissing;
             BaselineEstablished = baselineEstablished;
             ObservedTag = observedTag ?? string.Empty;
             Error = error;
@@ -350,7 +363,19 @@ public static class BasisContentVersion
             return new UpdateCheckResult(false, false, false, null, result.Error);
         }
 
-        BasisIOManagement.BasisRemoteValidator validator = result.Value;
+        return await EvaluateValidatorAsync(remoteUrl, cachedTag, result.Value);
+    }
+
+    /// <summary>
+    /// Applies a host validator to the locally recorded cache state. Kept separate from the HTTP
+    /// request so the important cache-identity rules can be regression tested without a web server.
+    /// </summary>
+    internal static async System.Threading.Tasks.Task<UpdateCheckResult> EvaluateValidatorAsync(
+        string remoteUrl,
+        string cachedTag,
+        BasisIOManagement.BasisRemoteValidator validator)
+    {
+        cachedTag ??= string.Empty;
 
         // The host itself confirmed our copy is current — the strongest and cheapest answer.
         if (validator.NotModified)
@@ -367,18 +392,13 @@ public static class BasisContentVersion
         string observed = validator.Tag;
 
         // No baseline: the entry predates versioning, or was cached by a fetch that never saw a
-        // validator. EVERY entry cached before this feature existed lands here, and reporting an
-        // update would tell the user their whole library was out of date and re-download all of it
-        // on the strength of no evidence whatsoever. Adopt what the host currently serves as the
-        // baseline instead and report no update — the honest reading of "nothing says this changed".
-        //
-        // Deliberately NOT the same rule as CacheSatisfies, which treats unknown as stale: there a
-        // peer has actively asserted a different version, which IS evidence of a change. Here
-        // nobody has claimed anything. The cost of being wrong is one stale copy until the next
-        // check, and BaselineEstablished tells the UI to offer a refresh anyway.
+        // validator. The host's validator describes what is published NOW; it does not prove that
+        // the bytes already on disk are that same revision. Recording it here would let an old BEE
+        // masquerade as current after the user declines the offered refresh. Keep the baseline empty
+        // until a successful download writes metadata for the bytes it actually fetched.
         if (cachedTag.Length == 0)
         {
-            return await EstablishBaselineAsync(remoteUrl, observed);
+            return new UpdateCheckResult(true, false, false, observed, null, baselineMissing: true);
         }
 
         if (TagsMatch(cachedTag, observed))
@@ -388,26 +408,6 @@ public static class BasisContentVersion
         }
 
         return new UpdateCheckResult(true, true, false, observed, null);
-    }
-
-    /// <summary>
-    /// Records the first validator seen for a pre-versioning cache entry. Kept as a small internal
-    /// seam so regression tests can verify that the UI is never told a baseline exists unless the
-    /// metadata actually reached disk.
-    /// </summary>
-    internal static async System.Threading.Tasks.Task<UpdateCheckResult> EstablishBaselineAsync(string remoteUrl, string observedTag)
-    {
-        if (!await MarkValidatedAsync(remoteUrl, observedTag))
-        {
-            return new UpdateCheckResult(
-                false,
-                false,
-                false,
-                observedTag,
-                "The current version was detected, but Basis could not save it to the local cache. Try refreshing the item or clearing its cached data.");
-        }
-
-        return new UpdateCheckResult(true, false, false, observedTag, null, baselineEstablished: true);
     }
 
     /// <summary>
