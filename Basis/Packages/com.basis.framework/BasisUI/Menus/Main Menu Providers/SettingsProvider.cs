@@ -1869,10 +1869,27 @@ namespace Basis.BasisUI
             dropdownAntialiasing.Descriptor.SetTitle(BasisLocalization.Get("settings.graphics.antialiasing"));
             dropdownAntialiasing.Descriptor.SetTooltip(BasisLocalization.Get("settings.graphics.antialiasing.tooltip"));
             dropdownAntialiasing.AssignLocalizedEntries(
-                new List<string> { "Off","MSAA 2X","MSAA 4X","MSAA 8X","Linear","Point","FSR"/*,"STP"*/ },
-                new List<string> { "ui.option.off", "settings.graphics.aa.msaa2x", "settings.graphics.aa.msaa4x", "settings.graphics.aa.msaa8x", "settings.graphics.aa.linear", "settings.graphics.aa.point", "settings.graphics.aa.fsr" },
+                new List<string> { "Off", "MSAA 2X", "MSAA 4X", "MSAA 8X" },
+                new List<string> { "ui.option.off", "settings.graphics.aa.msaa2x", "settings.graphics.aa.msaa4x", "settings.graphics.aa.msaa8x" },
                 new List<string> { "settings.graphics.aa.off.tooltip" });
             dropdownAntialiasing.AssignBinding(BasisSettingsDefaults.Antialiasing);
+
+            PanelDropdown dropdownUpscaling = PanelDropdown.CreateNewEntry(qualityGroup.ContentParent);
+            dropdownUpscaling.Descriptor.SetTitle("Upscaling (Experimental)");
+            dropdownUpscaling.Descriptor.SetTooltip("Selects the render upscaler. DLSS uses Basis's XR-aware Unity 6.5 integration on supported NVIDIA Windows systems.");
+            List<string> upscalerValues = new() { "Automatic", "Bilinear", "Nearest-Neighbor", "FSR 1.0" };
+            List<string> upscalerLabels = new() { "Automatic", "Bilinear", "Nearest-Neighbor", "AMD FSR 1.0" };
+#if ENABLE_UPSCALER_FRAMEWORK && UNITY_STANDALONE_WIN
+            if (BasisDeviceManagement.IsUserInDesktop())
+            {
+                upscalerValues.Add("FSR 2");
+                upscalerLabels.Add("AMD FSR 2");
+            }
+            upscalerValues.Add("DLSS");
+            upscalerLabels.Add("NVIDIA DLSS 4");
+#endif
+            dropdownUpscaling.AssignEntries(upscalerValues, upscalerLabels);
+            dropdownUpscaling.AssignBinding(BasisSettingsDefaults.Upscaling);
 
             if (BasisDeviceManagement.IsUserInDesktop())
             {
@@ -3539,6 +3556,7 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.QualityLevel.ResetToDefault();
             BasisSettingsDefaults.ShadowQuality.ResetToDefault();
             BasisSettingsDefaults.Antialiasing.ResetToDefault();
+            BasisSettingsDefaults.Upscaling.ResetToDefault();
             BasisSettingsDefaults.VSync.ResetToDefault();
             BasisSettingsDefaults.VSyncCapFps.ResetToDefault();
             BasisSettingsDefaults.HeadsetRefreshRate.ResetToDefault();

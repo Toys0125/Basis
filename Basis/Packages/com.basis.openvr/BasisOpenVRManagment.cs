@@ -608,7 +608,9 @@ namespace Basis.Scripts.Device_Management.Devices.OpenVR
 
             float userScale = SMModuleRenderResolutionURP.UserRenderScale;
             float recommendedMax = Mathf.Max(grownWidth, grownHeight);
-            float targetMax = recommendedMax * userScale;
+            // With XR DLSS active the compositor-sized eye texture is the output target; the
+            // user's render scale is applied inside URP to the pre-DLSS image instead.
+            float targetMax = recommendedMax * (BasisDlssXrState.IsActive ? 1f : userScale);
             float currentMax = Mathf.Max(XRSettings.eyeTextureWidth, XRSettings.eyeTextureHeight);
 
             if (!BasisOpenVRResolutionPolicy.TryComputeEyeTextureScale(targetMax, currentMax, XRSettings.eyeTextureResolutionScale, BasisOpenVRResolutionPolicy.DefaultDeadband, out float scale))
@@ -622,7 +624,7 @@ namespace Basis.Scripts.Device_Management.Devices.OpenVR
             }
 
             XRSettings.eyeTextureResolutionScale = scale;
-            BasisDebug.Log($"OpenVR resolution: eye texture scaled {scale:F3}× to {targetMax:F0} (compositor {recommendedMax:F0}, user {userScale:F2}, was {currentMax:F0})", BasisDebug.LogTag.Device);
+            BasisDebug.Log($"OpenVR resolution: eye texture scaled {scale:F3}× to {targetMax:F0} (compositor {recommendedMax:F0}, user {userScale:F2}, DLSS {BasisDlssXrState.IsActive}, was {currentMax:F0})", BasisDebug.LogTag.Device);
             return true;
         }
         /// <summary>

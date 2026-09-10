@@ -380,7 +380,10 @@ namespace UnityEngine.Rendering.Universal
             // Configure initial XR settings
             MSAASamples msaaSamples = (MSAASamples)Mathf.Clamp(Mathf.NextPowerOfTwo(QualitySettings.antiAliasing), (int)MSAASamples.None, (int)MSAASamples.MSAA8x);
             XRSystem.SetDisplayMSAASamples(msaaSamples);
-            XRSystem.SetRenderScale(asset.renderScale);
+#if ENABLE_UPSCALER_FRAMEWORK
+            if (asset.upscalerName != BasisDlssXrUpscaler.UpscalerName)
+#endif
+                XRSystem.SetRenderScale(asset.renderScale);
 
             Lightmapping.SetDelegate(lightsDelegate);
 
@@ -1660,17 +1663,24 @@ namespace UnityEngine.Rendering.Universal
 
             cameraData.xr = XRSystem.emptyPass;
             var renderScaleXR = cameraData.renderScale;
+            bool preserveExternalXrBackbufferScale = false;
 #if ENABLE_UPSCALER_FRAMEWORK
             if (activeUpscaler != null)
             {
                 // XRSystem.SetRenderScale() will change the resolution for back buffers on XR.
-                // When IUpscaler is enabled, must be set renderScaleXR to 1 to disable this behavior.
-                // If the value of cameraData.renderScale and renderScaleXR are 0.5, the scale for UpscalingIO.preUpscaleResolution is 0.25.
+                // When IUpscaler is enabled, normally set renderScaleXR to 1 so the render scale
+                // is applied only to the pre-upscale image. Basis DLSS is the exception: OpenVR
+                // may already own a compositor-corrected XR backbuffer scale, which must remain
+                // untouched while cameraData.renderScale controls the DLSS input resolution.
                 if (activeUpscaler.supportsXR)
+                {
                     renderScaleXR = 1.0f;
+                    preserveExternalXrBackbufferScale = activeUpscaler.name == BasisDlssXrUpscaler.UpscalerName;
+                }
             }
 #endif
-            XRSystem.SetRenderScale(renderScaleXR);
+            if (!preserveExternalXrBackbufferScale)
+                XRSystem.SetRenderScale(renderScaleXR);
 
             var commonOpaqueFlags = SortingCriteria.CommonOpaque;
             var noFrontToBackOpaqueFlags = SortingCriteria.SortingLayer | SortingCriteria.RenderQueue | SortingCriteria.OptimizeStateChanges | SortingCriteria.CanvasOrder;

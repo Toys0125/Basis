@@ -1,113 +1,249 @@
 using Basis.BasisUI;
+using Basis.Scripts.Device_Management;
 using Basis.Scripts.Drivers;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+
 public class SMModuleAntialiasingURP : BasisSettingsBase
 {
+    private const string UpscalerAutomatic = "Automatic";
+    private const string UpscalerBilinear = "Bilinear";
+    private const string UpscalerNearest = "Nearest-Neighbor";
+    private const string UpscalerFsr1 = "FidelityFX Super Resolution 1.0";
+    private const string UpscalerFsr2 = "FidelityFX Super Resolution 2";
+
     public Camera Camera;
     public UniversalAdditionalCameraData Data;
     public int LowmsaaSampleCount = 2;
     public int MediumLowmsaaSampleCount = 4;
     public int HighmsaaSampleCount = 8;
+
     public override void ValidSettingsChange(string matchedSettingName, string optionValue)
     {
-        if(matchedSettingName != BasisSettingsDefaults.Antialiasing.BindingKey)
-        {
+        bool antialiasingChanged = matchedSettingName == BasisSettingsDefaults.Antialiasing.BindingKey;
+        bool upscalingChanged = matchedSettingName == BasisSettingsDefaults.Upscaling.BindingKey;
+        if (!antialiasingChanged && !upscalingChanged)
             return;
-        }
-        UniversalRenderPipelineAsset Asset = (UniversalRenderPipelineAsset)QualitySettings.renderPipeline;
-        if (Asset == null)
+
+        UniversalRenderPipelineAsset asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
+        if (asset == null)
         {
             BasisDebug.LogError("Missing Asset Pipeline!");
             return;
         }
-        if (Camera == null)
+
+        if (upscalingChanged)
         {
-            if (BasisLocalCameraDriver.Instance != null)
-            {
-                Camera = BasisLocalCameraDriver.Instance.Camera;
-                Data = BasisLocalCameraDriver.Instance.CameraData;
-            }
-            if (Camera == null)
-            {
-                Camera = Camera.main;
-#if UNITY_SERVER
-                if (Camera != null)
-                {
-                    Camera.TryGetComponent<UniversalAdditionalCameraData>(out Data);
-                }
-#endif
-            }
+            ApplyUpscaling(asset, optionValue);
+            return;
         }
-        if (Camera == null || Data == null)
+
+        if (!TryResolveCamera())
         {
             BasisDebug.LogError("Missing Camera Or Data!");
             return;
         }
+
         BasisDebug.Log($"Antialiasing Changed to {optionValue}", BasisDebug.LogTag.Local);
         switch (optionValue)
         {
             case "off":
             case "msaa off":
-                Asset.msaaSampleCount = 1;
-                Camera.allowMSAA = false;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
-                Asset.upscalingFilter = UpscalingFilterSelection.Auto;
+                ApplyMsaa(asset, 1, false);
                 break;
             case "msaa 2x":
-                Asset.msaaSampleCount = LowmsaaSampleCount;
-                Camera.allowMSAA = true;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
-                Asset.upscalingFilter = UpscalingFilterSelection.Auto;
+                DisableTemporalUpscalerForMsaa(asset);
+                ApplyMsaa(asset, LowmsaaSampleCount, true);
                 break;
             case "msaa 4x":
-                Asset.msaaSampleCount = MediumLowmsaaSampleCount;
-                Camera.allowMSAA = true;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
-                Asset.upscalingFilter = UpscalingFilterSelection.Auto;
+                DisableTemporalUpscalerForMsaa(asset);
+                ApplyMsaa(asset, MediumLowmsaaSampleCount, true);
                 break;
             case "msaa 8x":
-                Asset.msaaSampleCount = HighmsaaSampleCount;
-                Camera.allowMSAA = true;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
-                Asset.upscalingFilter = UpscalingFilterSelection.Auto;
+                DisableTemporalUpscalerForMsaa(asset);
+                ApplyMsaa(asset, HighmsaaSampleCount, true);
                 break;
+
+            // Compatibility with values saved before upscaling became a separate setting.
             case "linear":
-                Asset.msaaSampleCount = 1;
-                Asset.upscalingFilter = UpscalingFilterSelection.Linear;
-                Camera.allowMSAA = false;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
+                MigrateLegacyUpscalerSetting(asset, "Bilinear");
                 break;
             case "point":
-                Asset.msaaSampleCount = 1;
-                Asset.upscalingFilter = UpscalingFilterSelection.Point;
-                Camera.allowMSAA = false;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
+                MigrateLegacyUpscalerSetting(asset, "Nearest-Neighbor");
                 break;
             case "fsr":
-                Asset.msaaSampleCount = 1;
-                Asset.upscalingFilter = UpscalingFilterSelection.FSR;
-                Camera.allowMSAA = false;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
+                MigrateLegacyUpscalerSetting(asset, "FSR 1.0");
                 break;
             case "stp":
-                Asset.msaaSampleCount = 1;
-                Asset.upscalingFilter = UpscalingFilterSelection.STP;
-                Camera.allowMSAA = false;
-                Data.antialiasing = AntialiasingMode.None;
-                Data.antialiasingQuality = AntialiasingQuality.Low;
+                ApplyMsaa(asset, 1, false);
+#if ENABLE_UPSCALER_FRAMEWORK
+                BasisDlssXrState.SetActive(false);
+                asset.upscalerName = "Spatial-Temporal Post-Processing";
+#else
+                asset.upscalingFilter = UpscalingFilterSelection.STP;
+#endif
                 break;
         }
     }
+
+    private bool TryResolveCamera()
+    {
+        if (Camera != null && Data != null)
+            return true;
+
+        if (BasisLocalCameraDriver.Instance != null)
+        {
+            Camera = BasisLocalCameraDriver.Instance.Camera;
+            Data = BasisLocalCameraDriver.Instance.CameraData;
+        }
+
+        if (Camera == null)
+            Camera = Camera.main;
+
+        if (Camera != null && Data == null)
+            Camera.TryGetComponent(out Data);
+
+        return Camera != null && Data != null;
+    }
+
+    private void ApplyMsaa(UniversalRenderPipelineAsset asset, int sampleCount, bool enabled)
+    {
+        asset.msaaSampleCount = sampleCount;
+        Camera.allowMSAA = enabled;
+        Data.antialiasing = AntialiasingMode.None;
+        Data.antialiasingQuality = AntialiasingQuality.Low;
+    }
+
+    private void MigrateLegacyUpscalerSetting(UniversalRenderPipelineAsset asset, string upscalingValue)
+    {
+        BasisSettingsDefaults.Antialiasing.SetValue("Off");
+        BasisSettingsDefaults.Upscaling.SetValue(upscalingValue);
+        ApplyMsaa(asset, 1, false);
+        ApplyUpscaling(asset, upscalingValue.ToLowerInvariant());
+    }
+
+    private static void DisableTemporalUpscalerForMsaa(UniversalRenderPipelineAsset asset)
+    {
+#if ENABLE_UPSCALER_FRAMEWORK
+        if (asset.upscalerName == UpscalerFsr2 || asset.upscalerName == BasisDlssXrState.UpscalerName)
+        {
+            BasisDlssXrState.SetActive(false);
+            BasisSettingsDefaults.Upscaling.SetValue("Automatic");
+            asset.upscalerName = UpscalerAutomatic;
+            BasisDebug.LogWarning("MSAA is incompatible with temporal upscaling. Upscaling was reset to Automatic.");
+        }
+#endif
+    }
+
+    private static void ApplyUpscaling(UniversalRenderPipelineAsset asset, string optionValue)
+    {
+        string requestedName = optionValue switch
+        {
+            "bilinear" => UpscalerBilinear,
+            "nearest-neighbor" => UpscalerNearest,
+            "point" => UpscalerNearest,
+            "fsr" => UpscalerFsr1,
+            "fsr 1.0" => UpscalerFsr1,
+            "fsr1" => UpscalerFsr1,
+            "fsr 2" => UpscalerFsr2,
+            "fsr2" => UpscalerFsr2,
+            "dlss" => BasisDlssXrState.UpscalerName,
+            _ => UpscalerAutomatic,
+        };
+
+        bool dlssRequested = requestedName == BasisDlssXrState.UpscalerName;
+        bool fsr2Requested = requestedName == UpscalerFsr2;
+
+        if (fsr2Requested && BasisDeviceManagement.IsCurrentModeVR())
+        {
+            BasisDebug.LogWarning("Unity's FSR 2 provider is not XR-enabled. Falling back to Automatic in VR.");
+            requestedName = UpscalerAutomatic;
+            fsr2Requested = false;
+        }
+
+#if !(ENABLE_UPSCALER_FRAMEWORK && (UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN))
+        if (dlssRequested || fsr2Requested)
+        {
+            BasisDebug.LogWarning("The selected temporal vendor upscaler is unavailable on this platform. Falling back to Automatic.");
+            requestedName = UpscalerAutomatic;
+            dlssRequested = false;
+            fsr2Requested = false;
+        }
+#else
+        if (dlssRequested && !BasisDlssXrUpscaler.IsRuntimeSupported())
+        {
+            BasisDebug.LogWarning("DLSS is unavailable on this NVIDIA GPU, driver, or graphics API. Falling back to Automatic.");
+            requestedName = UpscalerAutomatic;
+            dlssRequested = false;
+        }
+#endif
+
+        if (dlssRequested && BasisDeviceManagement.IsCurrentModeVR())
+        {
+            BasisDlssXrState.SetActive(true);
+            if (!BasisDlssXrState.EnsureCompatibleTextureLayout())
+            {
+                BasisDebug.LogWarning("The active XR runtime cannot provide separate eye textures required by Basis DLSS VR. Falling back to Automatic.");
+                BasisDlssXrState.SetActive(false);
+                requestedName = UpscalerAutomatic;
+                dlssRequested = false;
+            }
+        }
+        else
+        {
+            BasisDlssXrState.SetActive(false);
+        }
+
+        bool temporalVendorUpscaler = dlssRequested || fsr2Requested;
+        if (temporalVendorUpscaler)
+        {
+            asset.msaaSampleCount = 1;
+            BasisSettingsDefaults.Antialiasing.SetValue("Off");
+        }
+
+#if ENABLE_UPSCALER_FRAMEWORK
+        if (!IsRegisteredUpscaler(requestedName))
+        {
+            BasisDebug.LogWarning($"Upscaler '{requestedName}' is unavailable on this platform. Falling back to Automatic.");
+            BasisDlssXrState.SetActive(false);
+            requestedName = UpscalerAutomatic;
+        }
+
+        asset.upscalerName = requestedName;
+#else
+        asset.upscalingFilter = requestedName switch
+        {
+            UpscalerBilinear => UpscalingFilterSelection.Linear,
+            UpscalerNearest => UpscalingFilterSelection.Point,
+            UpscalerFsr1 => UpscalingFilterSelection.FSR,
+            _ => UpscalingFilterSelection.Auto,
+        };
+#endif
+
+        BasisDebug.Log($"Upscaling Changed to {requestedName}", BasisDebug.LogTag.Local);
+    }
+
+#if ENABLE_UPSCALER_FRAMEWORK
+    private static bool IsRegisteredUpscaler(string requestedName)
+    {
+        if (RenderPipelineManager.currentPipeline is not UniversalRenderPipeline pipeline)
+        {
+            // Settings can be loaded before URP constructs its runtime registry.
+            return true;
+        }
+
+        foreach (string availableName in pipeline.availableUpscalerNames)
+        {
+            if (string.Equals(availableName, requestedName, System.StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+#endif
+
     public override void ChangedSettings()
     {
     }
 }
-

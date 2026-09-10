@@ -40,11 +40,18 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
     private void OnEnable()
     {
         BasisDeviceManagement.OnBootModeChanged += OnBootModeChanged;
+        BasisDlssXrState.ActiveChanged += OnDlssXrActiveChanged;
     }
 
     private void OnDisable()
     {
         BasisDeviceManagement.OnBootModeChanged -= OnBootModeChanged;
+        BasisDlssXrState.ActiveChanged -= OnDlssXrActiveChanged;
+    }
+
+    private void OnDlssXrActiveChanged(bool active)
+    {
+        ReapplyDisplaySettings();
     }
 
     private void OnBootModeChanged(string mode)
@@ -119,6 +126,29 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
 
         if (XRSettings.enabled && BasisDeviceManagement.IsCurrentModeVR())
         {
+            if (BasisDlssXrState.IsActive)
+            {
+                BasisDlssXrState.EnsureCompatibleTextureLayout();
+
+                // Keep the XR backbuffer at the runtime/compositor target and let URP render the
+                // lower-resolution DLSS input. This avoids applying the user's scale twice.
+                if (ExternalXRScaleOwner)
+                {
+                    UserRenderScaleChanged?.Invoke(option);
+                }
+                else if (!Mathf.Approximately(XRSettings.eyeTextureResolutionScale, 1f))
+                {
+                    XRSettings.eyeTextureResolutionScale = 1f;
+                }
+
+                if (asset != null && !Mathf.Approximately(asset.renderScale, option))
+                {
+                    asset.renderScale = option;
+                    BasisDebug.Log($"DLSS VR render scale set to {option:F3}", BasisDebug.LogTag.Video);
+                }
+                return;
+            }
+
             if (asset != null && !Mathf.Approximately(asset.renderScale, 1f))
             {
                 asset.renderScale = 1f;
