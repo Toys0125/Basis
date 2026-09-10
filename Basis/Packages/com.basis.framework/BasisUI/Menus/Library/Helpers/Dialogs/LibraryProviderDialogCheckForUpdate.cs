@@ -89,7 +89,7 @@ namespace Basis.BasisUI
                     return false;
                 }
 
-                return await ApplyRefresh(panel, item, title);
+                return await ApplyRefresh(panel, item, title, result.ObservedTag);
             }
 
             // No recorded validator means we cannot prove the cached bytes match what the host serves
@@ -106,7 +106,7 @@ namespace Basis.BasisUI
                     return false;
                 }
 
-                return await ApplyRefresh(panel, item, title);
+                return await ApplyRefresh(panel, item, title, result.ObservedTag);
             }
 
             if (!result.HasUpdate)
@@ -126,7 +126,7 @@ namespace Basis.BasisUI
                 return false;
             }
 
-            return await ApplyRefresh(panel, item, title);
+            return await ApplyRefresh(panel, item, title, result.ObservedTag);
         }
 
         /// <summary>
@@ -134,7 +134,7 @@ namespace Basis.BasisUI
         /// avatar currently being worn it is re-equipped, which also rebroadcasts the new version to
         /// everyone else (OnAvatarSwitched drives SendOutAvatarChange) so their caches invalidate too.
         /// </summary>
-        private static async Task<bool> ApplyRefresh(BasisMenuPanel panel, BasisDataStoreItemKeys.ItemKey item, string title)
+        private static async Task<bool> ApplyRefresh(BasisMenuPanel panel, BasisDataStoreItemKeys.ItemKey item, string title, string observedTag)
         {
             bool wasWorn = IsCurrentlyWornAvatar(item);
 
@@ -157,6 +157,30 @@ namespace Basis.BasisUI
             try
             {
                 await CachedMetaData.PreloadMetaDataForItem(item);
+
+                // The update check already observed a host validator. Some providers omit
+                // ETag/Last-Modified on the 206 range responses used by connector-only refreshes,
+                // which would otherwise save the new connector with an empty CachedVersionTag and
+                // make every future check look like the first one. If the download itself did not
+                // capture a validator, verify the host is still on the version we checked before
+                // attaching that validator to the freshly fetched bytes.
+                if (!string.IsNullOrWhiteSpace(observedTag))
+                {
+                    try
+                    {
+                        bool baselineReady = await BasisContentVersion.FinalizeRefreshBaselineAsync(item.Url, observedTag);
+                        if (!baselineReady)
+                        {
+                            BasisDebug.LogWarning($"Refreshed {item.Url}, but could not establish a stable update-check baseline. The next check may ask to refresh again.", BasisDebug.LogTag.Event);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Baseline bookkeeping is secondary to the refresh itself. In particular, a
+                        // worn avatar must still be reloaded if the follow-up validator request fails.
+                        BasisDebug.LogWarning($"Refreshed {item.Url}, but baseline finalization failed: {ex.Message}", BasisDebug.LogTag.Event);
+                    }
+                }
 
                 if (wasWorn)
                 {

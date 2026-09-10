@@ -248,10 +248,24 @@ public static class BasisContentVersion
     /// Stamps the observed validator so a cache entry written before versioning stops reporting
     /// "unknown" after the first successful check.
     /// </summary>
-    public static async System.Threading.Tasks.Task<bool> MarkValidatedAsync(string remoteUrl, string observedTag)
+    public static System.Threading.Tasks.Task<bool> MarkValidatedAsync(string remoteUrl, string observedTag)
+    {
+        return MarkValidatedAsync(remoteUrl, observedTag, expectedUniqueVersion: null);
+    }
+
+    internal static async System.Threading.Tasks.Task<bool> MarkValidatedAsync(
+        string remoteUrl,
+        string observedTag,
+        string expectedUniqueVersion)
     {
         (bool found, BasisBEEExtensionMeta meta) = await BasisLoadHandler.IsMetaDataOnDiscAsync(remoteUrl);
         if (!found || meta == null)
+        {
+            return false;
+        }
+
+        if (expectedUniqueVersion != null &&
+            !string.Equals(meta.UniqueVersion, expectedUniqueVersion, StringComparison.Ordinal))
         {
             return false;
         }
@@ -284,7 +298,9 @@ public static class BasisContentVersion
             return false;
         }
 
-        return await BasisLoadHandler.AddDiscInfo(validated);
+        // Commit only if the same cache generation is still current. A validator check can overlap
+        // another refresh; without this guard an older result could relabel a newer generation.
+        return await BasisLoadHandler.AddDiscInfo(validated, meta.UniqueVersion);
     }
 
     /// <summary>Outcome of asking a host whether cached content is still current.</summary>
@@ -408,6 +424,84 @@ public static class BasisContentVersion
         }
 
         return new UpdateCheckResult(true, true, false, observed, null);
+    }
+
+    /// <summary>
+    /// Finishes establishing a validator baseline after the replacement connector/BEE has actually
+    /// been fetched. Range responses do not always repeat ETag/Last-Modified even when the host's
+    /// HEAD response does, so a successful refresh can otherwise leave CachedVersionTag empty and
+    /// make every later update check look like the first one again.
+    ///
+    /// <para>If the download itself recorded a validator, nothing else is needed. Otherwise we
+    /// re-check the host using the validator observed immediately before the refresh. Only 304 or
+    /// the same validator proves the host stayed on that revision across the download window; if it
+    /// changed, leave the baseline empty rather than label the fetched bytes with the wrong tag.</para>
+    /// </summary>
+    internal static async System.Threading.Tasks.Task<bool> FinalizeRefreshBaselineAsync(
+        string remoteUrl,
+        string expectedObservedTag,
+        System.Threading.CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(remoteUrl) || string.IsNullOrWhiteSpace(expectedObservedTag))
+        {
+            return false;
+        }
+
+        (bool found, BasisBEEExtensionMeta refreshedMeta) = await BasisLoadHandler.IsMetaDataOnDiscAsync(remoteUrl);
+        if (!found || refreshedMeta == null || string.IsNullOrWhiteSpace(refreshedMeta.UniqueVersion))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(refreshedMeta.CachedVersionTag))
+        {
+            // Prefer the validator captured by the actual download, even if the host changed between
+            // the original check and the fetch. It describes the bytes that are now on disk.
+            return true;
+        }
+
+        string refreshedUniqueVersion = refreshedMeta.UniqueVersion;
+        BeeResult<BasisIOManagement.BasisRemoteValidator> result =
+            await BasisIOManagement.FetchRemoteValidatorAsync(remoteUrl, expectedObservedTag, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return false;
+        }
+
+        return await FinalizeRefreshBaselineFromValidatorAsync(
+            remoteUrl,
+            expectedObservedTag,
+            refreshedUniqueVersion,
+            result.Value);
+    }
+
+    /// <summary>Testable half of <see cref="FinalizeRefreshBaselineAsync"/> after the post-fetch host check.</summary>
+    internal static async System.Threading.Tasks.Task<bool> FinalizeRefreshBaselineFromValidatorAsync(
+        string remoteUrl,
+        string expectedObservedTag,
+        string expectedUniqueVersion,
+        BasisIOManagement.BasisRemoteValidator validator)
+    {
+        if (string.IsNullOrWhiteSpace(expectedObservedTag))
+        {
+            return false;
+        }
+
+        string verifiedTag;
+        if (validator.NotModified)
+        {
+            verifiedTag = expectedObservedTag.Trim();
+        }
+        else if (validator.HasValue && TagsMatch(expectedObservedTag, validator.Tag))
+        {
+            verifiedTag = validator.Tag;
+        }
+        else
+        {
+            return false;
+        }
+
+        return await MarkValidatedAsync(remoteUrl, verifiedTag, expectedUniqueVersion);
     }
 
     /// <summary>

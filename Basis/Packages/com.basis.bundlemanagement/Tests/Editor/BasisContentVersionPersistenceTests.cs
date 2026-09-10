@@ -114,6 +114,78 @@ public class BasisContentVersionPersistenceTests
     }
 
     [Test]
+    public async Task FinalizeRefreshBaselinePersistsPrecheckedTagWhenPostFetchHostStillMatches()
+    {
+        const string url = "https://example.com/refreshed.bee";
+        BasisBEEExtensionMeta refreshed = CreateMeta(url, "refreshed-v2", string.Empty, 0);
+        Assert.IsTrue(await BasisLoadHandler.AddDiscInfo(refreshed));
+
+        var postFetchHost = new BasisIOManagement.BasisRemoteValidator(null, null, notModified: true);
+        bool established = await BasisContentVersion.FinalizeRefreshBaselineFromValidatorAsync(
+            url,
+            "\"v2\"",
+            "refreshed-v2",
+            postFetchHost);
+
+        Assert.IsTrue(established);
+        Assert.AreEqual("\"v2\"", await BasisContentVersion.GetCachedTagAsync(url));
+
+        BasisLoadHandler.OnDiscData.Clear();
+        (bool found, BasisBEEExtensionMeta reloaded) = await BasisLoadHandler.IsMetaDataOnDiscAsync(url);
+        Assert.IsTrue(found);
+        Assert.AreEqual("\"v2\"", reloaded.CachedVersionTag);
+        Assert.Greater(reloaded.LastValidatedUnixUtc, 0);
+    }
+
+    [Test]
+    public async Task FinalizeRefreshBaselineLeavesTagEmptyWhenHostChangedDuringRefresh()
+    {
+        const string url = "https://example.com/changed-during-refresh.bee";
+        BasisBEEExtensionMeta refreshed = CreateMeta(url, "refreshed-v2", string.Empty, 0);
+        Assert.IsTrue(await BasisLoadHandler.AddDiscInfo(refreshed));
+
+        var postFetchHost = new BasisIOManagement.BasisRemoteValidator("\"v3\"", null);
+        bool established = await BasisContentVersion.FinalizeRefreshBaselineFromValidatorAsync(
+            url,
+            "\"v2\"",
+            "refreshed-v2",
+            postFetchHost);
+
+        Assert.IsFalse(established);
+        Assert.AreEqual(string.Empty, await BasisContentVersion.GetCachedTagAsync(url));
+
+        BasisLoadHandler.OnDiscData.Clear();
+        (bool found, BasisBEEExtensionMeta reloaded) = await BasisLoadHandler.IsMetaDataOnDiscAsync(url);
+        Assert.IsTrue(found);
+        Assert.AreEqual(string.Empty, reloaded.CachedVersionTag);
+        Assert.AreEqual(0, reloaded.LastValidatedUnixUtc);
+    }
+
+    [Test]
+    public async Task FinalizeRefreshBaselineCannotOverwriteNewerCacheGeneration()
+    {
+        const string url = "https://example.com/concurrent-refresh.bee";
+        BasisBEEExtensionMeta v2 = CreateMeta(url, "refreshed-v2", string.Empty, 0);
+        Assert.IsTrue(await BasisLoadHandler.AddDiscInfo(v2));
+
+        // Another refresh wins before the older post-fetch validator result is committed.
+        BasisBEEExtensionMeta v3 = CreateMeta(url, "refreshed-v3", "\"v3\"", 10);
+        Assert.IsTrue(await BasisLoadHandler.AddDiscInfo(v3));
+
+        var stalePostFetchResult = new BasisIOManagement.BasisRemoteValidator(null, null, notModified: true);
+        bool established = await BasisContentVersion.FinalizeRefreshBaselineFromValidatorAsync(
+            url,
+            "\"v2\"",
+            "refreshed-v2",
+            stalePostFetchResult);
+
+        Assert.IsFalse(established);
+        Assert.IsTrue(BasisLoadHandler.IsMetaDataOnDisc(url, out BasisBEEExtensionMeta current));
+        Assert.AreEqual("refreshed-v3", current.UniqueVersion);
+        Assert.AreEqual("\"v3\"", current.CachedVersionTag);
+    }
+
+    [Test]
     public async Task AddDiscInfoSupersedesPreviousGenerationAndDeletesItsFiles()
     {
         const string url = "https://example.com/static-url.bee";

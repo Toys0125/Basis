@@ -951,7 +951,7 @@ public static class BasisLoadHandler
         });
     }
 
-    public static async Task<bool> AddDiscInfo(BasisBEEExtensionMeta discInfo)
+    public static async Task<bool> AddDiscInfo(BasisBEEExtensionMeta discInfo, string expectedCurrentUniqueVersion = null)
     {
         if (discInfo?.StoredRemote == null || string.IsNullOrWhiteSpace(discInfo.StoredRemote.RemoteBeeFileLocation) ||
             string.IsNullOrWhiteSpace(discInfo.UniqueVersion))
@@ -984,6 +984,16 @@ public static class BasisLoadHandler
             // lock; only the atomic replace/index swap/cleanup is serialized.
             lock (_discInfoScanLock)
             {
+                OnDiscData.TryGetValue(discKey, out BasisBEEExtensionMeta previous);
+                if (expectedCurrentUniqueVersion != null &&
+                    (previous == null || !string.Equals(previous.UniqueVersion, expectedCurrentUniqueVersion, StringComparison.Ordinal)))
+                {
+                    // A newer refresh replaced the generation while this metadata update was being
+                    // prepared. Never let an older validation result overwrite that newer entry.
+                    try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                    return false;
+                }
+
                 string legacyMetaPath = BasisIOManagement.GetLegacyMetaCacheFilePath(discInfo.UniqueVersion);
                 if (!string.Equals(legacyMetaPath, filePath, StringComparison.OrdinalIgnoreCase) && File.Exists(legacyMetaPath))
                 {
@@ -999,7 +1009,6 @@ public static class BasisLoadHandler
                     File.Move(tempPath, filePath);
                 }
 
-                OnDiscData.TryGetValue(discKey, out BasisBEEExtensionMeta previous);
                 OnDiscData[discKey] = discInfo;
 
                 if (previous != null &&
