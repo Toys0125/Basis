@@ -108,7 +108,7 @@ namespace UnityEngine.Rendering.Universal
                 return false;
             }
 
-            device = UnityEngine.NVIDIA.GraphicsDevice.CreateGraphicsDevice();
+            device = UnityEngine.NVIDIA.GraphicsDevice.device ?? UnityEngine.NVIDIA.GraphicsDevice.CreateGraphicsDevice();
             if (device == null || !device.IsFeatureAvailable(GraphicsDeviceFeature.DLSS))
             {
                 Debug.LogWarning("[Basis DLSS] DLSS is not available on this GPU/driver.");
