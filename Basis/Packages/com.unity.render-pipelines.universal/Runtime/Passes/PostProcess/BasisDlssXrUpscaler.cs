@@ -1,12 +1,15 @@
-#if ENABLE_UPSCALER_FRAMEWORK && ENABLE_NVIDIA_MODULE
+#if ENABLE_UPSCALER_FRAMEWORK
 using System;
 using System.Collections.Generic;
 using UnityEngine.Experimental.Rendering;
+#if ENABLE_NVIDIA && ENABLE_NVIDIA_MODULE
 using UnityEngine.NVIDIA;
+#endif
 using UnityEngine.Rendering.RenderGraphModule;
 
 namespace UnityEngine.Rendering.Universal
 {
+#if ENABLE_NVIDIA && ENABLE_NVIDIA_MODULE
     /// <summary>
     /// NVIDIA DLSS Super Resolution integration for URP that is safe to use with XR multipass.
     /// Unity's stock 6.5 DLSS IUpscaler currently reports supportsXR=false and owns one temporal
@@ -319,5 +322,21 @@ namespace UnityEngine.Rendering.Universal
 #endif
         }
     }
+#else
+    /// <summary>
+    /// Compile-time fallback for platforms where Unity does not expose its NVIDIA module.
+    /// This keeps URP and Basis settings portable while preventing an unavailable DLSS
+    /// implementation from registering with the upscaler framework.
+    /// </summary>
+    public sealed class BasisDlssXrUpscaler : AbstractUpscaler
+    {
+        public const string UpscalerName = "Basis NVIDIA DLSS 4 XR";
+        public static bool IsRuntimeSupported() => false;
+        public override string name => UpscalerName;
+        public override bool isTemporal => true;
+        public override bool supportsSharpening => false;
+        public override bool supportsXR => false;
+    }
+#endif
 }
 #endif
