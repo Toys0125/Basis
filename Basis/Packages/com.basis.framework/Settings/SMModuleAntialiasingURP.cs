@@ -23,7 +23,8 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
     {
         bool antialiasingChanged = matchedSettingName == BasisSettingsDefaults.Antialiasing.BindingKey;
         bool upscalingChanged = matchedSettingName == BasisSettingsDefaults.Upscaling.BindingKey;
-        if (!antialiasingChanged && !upscalingChanged)
+        bool upscalingQualityChanged = matchedSettingName == BasisSettingsDefaults.UpscalingQuality.BindingKey;
+        if (!antialiasingChanged && !upscalingChanged && !upscalingQualityChanged)
             return;
 
         UniversalRenderPipelineAsset asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
@@ -33,9 +34,16 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
             return;
         }
 
+        if (upscalingQualityChanged)
+        {
+            ApplyUpscalingQuality(asset, optionValue);
+            return;
+        }
+
         if (upscalingChanged)
         {
             ApplyUpscaling(asset, optionValue);
+            ApplyUpscalingQuality(asset, BasisSettingsDefaults.UpscalingQuality.RawValue);
             return;
         }
 
@@ -222,6 +230,49 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
 #endif
 
         BasisDebug.Log($"Upscaling Changed to {requestedName}", BasisDebug.LogTag.Local);
+    }
+
+    private static void ApplyUpscalingQuality(UniversalRenderPipelineAsset asset, string optionValue)
+    {
+        string quality = string.IsNullOrWhiteSpace(optionValue)
+            ? "automatic"
+            : optionValue.Trim().ToLowerInvariant();
+
+#if ENABLE_UPSCALER_FRAMEWORK
+        BasisDlssXrUpscaler.SetQualityMode(quality);
+
+        if (asset.upscalerName == UpscalerFsr2)
+        {
+            UpscalerOptions options = asset.GetUpscalerOptions(UpscalerFsr2);
+            if (options == null)
+            {
+                BasisDebug.LogWarning("FSR2 quality options are unavailable; keeping the current Render Resolution setting.");
+                return;
+            }
+
+            System.Type optionsType = options.GetType();
+            System.Reflection.PropertyInfo fixedResolutionProperty = optionsType.GetProperty("fixedResolutionMode");
+            System.Reflection.PropertyInfo qualityProperty = optionsType.GetProperty("fsr2QualityMode");
+            bool fixedResolution = quality != "automatic";
+            fixedResolutionProperty?.SetValue(options, fixedResolution);
+
+            if (fixedResolution && qualityProperty != null && qualityProperty.PropertyType.IsEnum)
+            {
+                string enumName = quality switch
+                {
+                    "balanced" => "Balanced",
+                    "performance" => "Performance",
+                    "ultra performance" => "UltraPerformance",
+                    _ => "Quality",
+                };
+
+                object enumValue = System.Enum.Parse(qualityProperty.PropertyType, enumName);
+                qualityProperty.SetValue(options, enumValue);
+            }
+        }
+#endif
+
+        BasisDebug.Log($"Upscaling Quality Changed to {quality}", BasisDebug.LogTag.Local);
     }
 
 #if ENABLE_UPSCALER_FRAMEWORK

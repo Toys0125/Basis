@@ -73,6 +73,7 @@ namespace UnityEngine.Rendering.Universal
         private Vector2 _jitter;
         private bool _ready;
         private bool _warnedUnsupportedStereoLayout;
+        private static string _qualityMode = "automatic";
 
         public BasisDlssXrUpscaler()
         {
@@ -91,6 +92,13 @@ namespace UnityEngine.Rendering.Universal
 #else
             return false;
 #endif
+        }
+
+        public static void SetQualityMode(string qualityMode)
+        {
+            _qualityMode = string.IsNullOrWhiteSpace(qualityMode)
+                ? "automatic"
+                : qualityMode.Trim().ToLowerInvariant();
         }
 
         private static bool TryCreateDevice(out UnityEngine.NVIDIA.GraphicsDevice device)
@@ -133,9 +141,18 @@ namespace UnityEngine.Rendering.Universal
 
         public override void NegotiatePreUpscaleResolution(ref Vector2Int preUpscaleResolution, Vector2Int postUpscaleResolution)
         {
-            // Basis uses its existing Render Resolution setting as the DLSS input scale. Keeping
-            // the caller's pre-upscale resolution also avoids a second, hidden quality scale being
-            // applied on top of the user's VR resolution preference.
+            if (_qualityMode != "automatic" && _device != null)
+            {
+                DLSSQuality quality = ResolveQuality(preUpscaleResolution, postUpscaleResolution);
+                _device.GetOptimalSettings(
+                    (uint)postUpscaleResolution.x,
+                    (uint)postUpscaleResolution.y,
+                    quality,
+                    out OptimalDLSSSettingsData optimalSettings);
+                preUpscaleResolution.x = (int)optimalSettings.outRenderWidth;
+                preUpscaleResolution.y = (int)optimalSettings.outRenderHeight;
+            }
+
             _inputResolution = preUpscaleResolution;
             _outputResolution = postUpscaleResolution;
         }
@@ -168,7 +185,7 @@ namespace UnityEngine.Rendering.Universal
             _inputResolution = io.preUpscaleResolution;
             _outputResolution = io.postUpscaleResolution;
 
-            DLSSQuality quality = ChooseQuality(io.preUpscaleResolution, io.postUpscaleResolution);
+            DLSSQuality quality = ResolveQuality(io.preUpscaleResolution, io.postUpscaleResolution);
             ViewKey key = new(io.cameraInstanceID, io.eyeIndex);
             if (!_views.TryGetValue(key, out ViewState state))
             {
@@ -297,10 +314,23 @@ namespace UnityEngine.Rendering.Universal
             settings.outputRTHeight = data.ColorOutputSizeY;
             settings.quality = data.Quality;
             state.Context = _device.CreateFeature(cmd, settings);
+            Debug.Log($"[Basis DLSS] Running {data.Quality}: {data.ColorInputSizeX}x{data.ColorInputSizeY} -> {data.ColorOutputSizeX}x{data.ColorOutputSizeY}");
         }
 
-        private static DLSSQuality ChooseQuality(Vector2Int input, Vector2Int output)
+        private static DLSSQuality ResolveQuality(Vector2Int input, Vector2Int output)
         {
+            switch (_qualityMode)
+            {
+                case "quality":
+                    return DLSSQuality.MaximumQuality;
+                case "balanced":
+                    return DLSSQuality.Balanced;
+                case "performance":
+                    return DLSSQuality.MaximumPerformance;
+                case "ultra performance":
+                    return DLSSQuality.UltraPerformance;
+            }
+
             float scale = output.x > 0 ? (float)input.x / output.x : 1.0f;
             if (scale >= 0.62f)
                 return DLSSQuality.MaximumQuality;
@@ -332,6 +362,7 @@ namespace UnityEngine.Rendering.Universal
     {
         public const string UpscalerName = "Basis NVIDIA DLSS 4 XR";
         public static bool IsRuntimeSupported() => false;
+        public static void SetQualityMode(string qualityMode) { }
         public override string name => UpscalerName;
         public override bool isTemporal => true;
         public override bool supportsSharpening => false;

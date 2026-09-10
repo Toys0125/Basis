@@ -1891,6 +1891,27 @@ namespace Basis.BasisUI
             dropdownUpscaling.AssignEntries(upscalerValues, upscalerLabels);
             dropdownUpscaling.AssignBinding(BasisSettingsDefaults.Upscaling);
 
+            PanelDropdown dropdownUpscalingQuality = PanelDropdown.CreateNewEntry(qualityGroup.ContentParent);
+            dropdownUpscalingQuality.Descriptor.SetTitle("Upscaling Quality");
+            dropdownUpscalingQuality.Descriptor.SetTooltip("Automatic keeps the Render Resolution setting. Quality, Balanced, Performance, and Ultra Performance use the temporal upscaler's vendor-recommended fixed input resolution.");
+            dropdownUpscalingQuality.AssignEntries(new List<string>
+            {
+                "Automatic",
+                "Quality",
+                "Balanced",
+                "Performance",
+                "Ultra Performance"
+            });
+            dropdownUpscalingQuality.AssignBinding(BasisSettingsDefaults.UpscalingQuality);
+
+            bool ShowUpscalingQuality(string value) => value == "FSR 2" || value == "DLSS";
+            dropdownUpscalingQuality.Descriptor.SetActive(ShowUpscalingQuality(dropdownUpscaling.Value));
+            dropdownUpscaling.OnValueChanged += value =>
+            {
+                dropdownUpscalingQuality.Descriptor.SetActive(ShowUpscalingQuality(value));
+                qualityGroup.ForceRebuild();
+            };
+
             if (BasisDeviceManagement.IsUserInDesktop())
             {
                 PanelDropdown dropdownVSync = PanelDropdown.CreateNewEntry(qualityGroup.ContentParent);
@@ -3557,6 +3578,7 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.ShadowQuality.ResetToDefault();
             BasisSettingsDefaults.Antialiasing.ResetToDefault();
             BasisSettingsDefaults.Upscaling.ResetToDefault();
+            BasisSettingsDefaults.UpscalingQuality.ResetToDefault();
             BasisSettingsDefaults.VSync.ResetToDefault();
             BasisSettingsDefaults.VSyncCapFps.ResetToDefault();
             BasisSettingsDefaults.HeadsetRefreshRate.ResetToDefault();
