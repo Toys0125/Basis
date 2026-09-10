@@ -37,6 +37,8 @@ namespace UnityEngine.Rendering.Universal
         internal const string k_UpscalerName_Linear = "Bilinear";
         internal const string k_UpscalerName_FSR1 = "FidelityFX Super Resolution 1.0";
         internal const string k_UpscalerName_STP = "Spatial-Temporal Post-Processing";
+        internal const string k_UpscalerName_FSR2 = "FidelityFX Super Resolution 2";
+        internal const string k_UpscalerName_DLSS = "Deep Learning Super Sampling 4";
         internal static readonly int k_UpscalerHash_Point = Shader.PropertyToID(k_UpscalerName_Point);
         internal static readonly int k_UpscalerHash_Linear = Shader.PropertyToID(k_UpscalerName_Linear);
         internal static readonly int k_UpscalerHash_FSR1 = Shader.PropertyToID(k_UpscalerName_FSR1);
@@ -288,6 +290,7 @@ namespace UnityEngine.Rendering.Universal
 
 #if ENABLE_UPSCALER_FRAMEWORK
         internal static Upscaling upscaling;
+        private static bool s_WarnedFsr2RuntimeUnavailable;
 
         /// <summary>
         /// Gets the list of available upscaler names registered with the upscaling framework.
@@ -439,6 +442,7 @@ namespace UnityEngine.Rendering.Universal
             UpscalerRegistry.Register<FSR1Upscaler>(k_UpscalerName_FSR1);
 
             EnsureVendorUpscalerOptions(asset);
+            EnsureVendorUpscalerRuntimeReady();
             upscaling = new Upscaling(asset.upscalerOptions, k_EmbeddedUpscalerTypes, k_UpscalerSortOrder);
 #endif
         }
@@ -446,8 +450,11 @@ namespace UnityEngine.Rendering.Universal
 #if ENABLE_UPSCALER_FRAMEWORK
         private static void EnsureVendorUpscalerOptions(UniversalRenderPipelineAsset asset)
         {
-            EnsureUpscalerOptions(asset, "FidelityFX Super Resolution 2", "UnityEngine.Rendering.FSR2Options, Unity.RenderPipelines.Core.Runtime");
-            EnsureUpscalerOptions(asset, "Deep Learning Super Sampling 4", "UnityEngine.Rendering.DLSSOptions, Unity.RenderPipelines.Core.Runtime");
+            // FSR2Options and DLSSOptions are declared in the global namespace in Core RP 17.5.
+            // Resolve them from the UpscalerOptions assembly directly so a preselected vendor
+            // upscaler always receives a real options object during Upscaling construction.
+            EnsureUpscalerOptions(asset, k_UpscalerName_FSR2, "FSR2Options");
+            EnsureUpscalerOptions(asset, k_UpscalerName_DLSS, "DLSSOptions");
         }
 
         private static void EnsureUpscalerOptions(UniversalRenderPipelineAsset asset, string upscalerName, string optionsTypeName)
@@ -455,7 +462,7 @@ namespace UnityEngine.Rendering.Universal
             if (asset.GetUpscalerOptions(upscalerName) != null)
                 return;
 
-            Type optionsType = Type.GetType(optionsTypeName, false);
+            Type optionsType = typeof(UpscalerOptions).Assembly.GetType(optionsTypeName, false);
             if (optionsType == null || !typeof(UpscalerOptions).IsAssignableFrom(optionsType))
                 return;
 
@@ -466,6 +473,29 @@ namespace UnityEngine.Rendering.Universal
             options.hideFlags = HideFlags.DontSave;
             options.upscalerName = upscalerName;
             asset.upscalerOptions.Add(options);
+        }
+
+        private static void EnsureVendorUpscalerRuntimeReady()
+        {
+#if ENABLE_AMD && ENABLE_AMD_MODULE
+            // Unity's stock FSR2IUpscaler checks IsLoaded() before it stores the supplied
+            // FSR2Options. If the plugin has not auto-loaded yet, its constructor returns
+            // early with m_Options still null and the first resolution negotiation throws.
+            if (!UnityEngine.AMD.AMDUnityPlugin.IsLoaded())
+                UnityEngine.AMD.AMDUnityPlugin.Load();
+#endif
+        }
+
+        private static string ResolveRuntimeUpscalerName(string requestedName)
+        {
+#if ENABLE_AMD && ENABLE_AMD_MODULE
+            if (requestedName == k_UpscalerName_FSR2
+                && (!UnityEngine.AMD.AMDUnityPlugin.IsLoaded() || UnityEngine.AMD.GraphicsDevice.device == null))
+            {
+                return k_UpscalerName_Auto;
+            }
+#endif
+            return requestedName;
         }
 #endif
 
@@ -617,7 +647,14 @@ namespace UnityEngine.Rendering.Universal
                 UniversalRenderPipelineDebugDisplaySettings.Instance.UpdateMaterials();
 #endif
 #if ENABLE_UPSCALER_FRAMEWORK
-                upscaling.SetActiveUpscaler(asset.upscalerName);
+                string requestedUpscalerName = asset.upscalerName;
+                string runtimeUpscalerName = ResolveRuntimeUpscalerName(requestedUpscalerName);
+                if (runtimeUpscalerName != requestedUpscalerName && !s_WarnedFsr2RuntimeUnavailable)
+                {
+                    s_WarnedFsr2RuntimeUnavailable = true;
+                    Debug.LogWarning($"Upscaler '{requestedUpscalerName}' is selected but its runtime device is unavailable. Falling back to {runtimeUpscalerName} for this session.");
+                }
+                upscaling.SetActiveUpscaler(runtimeUpscalerName);
 #endif
                 // URP uses the camera's allowDynamicResolution flag to decide if useDynamicScale should be enabled for camera render targets.
                 // However, the RTHandle system has an additional setting that controls if useDynamicScale will be set for render targets allocated via RTHandles.
