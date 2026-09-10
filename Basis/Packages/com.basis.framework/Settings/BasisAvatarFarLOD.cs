@@ -177,7 +177,9 @@ public static class BasisAvatarFarLOD
             sTickUnscaledTime >= remote.FarLodNextFetchRetryTime)
         {
             string requestedSource = remote.AlwaysRequestedAvatar?.BasisRemoteBundleEncrypted.RemoteBeeFileLocation;
-            if (!string.IsNullOrEmpty(requestedSource) && remote.FarLodOverrideSource != requestedSource)
+            string requestedVersionTag = remote.AlwaysRequestedAvatar?.BasisRemoteBundleEncrypted.RemoteVersionTag;
+            if (!string.IsNullOrEmpty(requestedSource) &&
+                !OverrideMatchesRequestedVersion(remote, requestedSource, requestedVersionTag))
             {
                 remote.FarLodNextFetchRetryTime = sTickUnscaledTime + 10f;
                 RequestFarLodPayload(remote, remote.AlwaysRequestedAvatar);
@@ -291,7 +293,11 @@ public static class BasisAvatarFarLOD
         {
             return;
         }
-        CaptureFarLodFallback(remote, connector, bundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation);
+        CaptureFarLodFallback(
+            remote,
+            connector,
+            bundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation,
+            bundle.BasisRemoteBundleEncrypted.RemoteVersionTag);
     }
 
     /// <summary>
@@ -299,17 +305,20 @@ public static class BasisAvatarFarLOD
     /// SAME connector to every wearer of that avatar, so the payload string is one instance
     /// referenced by all of them, never N copies.
     /// </summary>
-    public static void CaptureFarLodFallback(BasisRemotePlayer remote, BasisBundleConnector connector, string source)
+    public static void CaptureFarLodFallback(BasisRemotePlayer remote, BasisBundleConnector connector, string source, string sourceVersionTag = null)
     {
         if (remote == null || connector == null || string.IsNullOrEmpty(source))
         {
             return;
         }
+
         if (string.IsNullOrEmpty(connector.FarLodBase64))
         {
-            // Remember that this source was inspected and had nothing — stops the transmit
-            // tick's fetch retry from re-reading a known payload-less bee forever.
+            // Remember that this exact source VERSION was inspected and had nothing — stops the
+            // transmit tick's fetch retry from re-reading it forever without pinning a future
+            // republish at the same URL to the old "no far LOD" result.
             remote.FarLodOverrideSource = source;
+            remote.FarLodOverrideSourceVersionTag = sourceVersionTag;
             remote.FarLodOverridePayload = null;
             remote.FarLodOverrideVersion = null;
             return;
@@ -319,13 +328,31 @@ public static class BasisAvatarFarLOD
             BasisDebug.LogWarning($"Far avatar capture for {remote.DisplayName} declined: connector has no UniqueVersion.", BasisDebug.LogTag.Avatar);
             return;
         }
-        if (remote.FarLodOverrideSource != source || string.IsNullOrEmpty(remote.FarLodOverridePayload))
+
+        bool sourceChanged = !OverrideMatchesRequestedVersion(remote, source, sourceVersionTag);
+        bool connectorChanged = !string.Equals(remote.FarLodOverrideVersion, connector.UniqueVersion, System.StringComparison.Ordinal);
+        if (sourceChanged || connectorChanged || string.IsNullOrEmpty(remote.FarLodOverridePayload))
         {
             remote.FarLodOverridePayload = connector.FarLodBase64;
             remote.FarLodOverrideVersion = connector.UniqueVersion;
             remote.FarLodOverrideSource = source;
+            remote.FarLodOverrideSourceVersionTag = sourceVersionTag;
             remote.ResetFarLodForNewAvatar();
         }
+    }
+
+    /// <summary>
+    /// Whether a cached far-LOD payload belongs to the requested static-URL version. Unlike
+    /// BasisContentVersion.TagsMatch, two empty tags are equal here: an unversioned legacy request
+    /// should continue to behave exactly as it did before versioning existed.
+    /// </summary>
+    public static bool OverrideMatchesRequestedVersion(BasisRemotePlayer remote, string source, string sourceVersionTag)
+    {
+        return remote != null && SameRequestedVersion(
+            remote.FarLodOverrideSource,
+            remote.FarLodOverrideSourceVersionTag,
+            source,
+            sourceVersionTag);
     }
 
     private static readonly SemaphoreSlim sConnectorFetchGate = new SemaphoreSlim(4);
@@ -348,13 +375,11 @@ public static class BasisAvatarFarLOD
     }
 
     /// <summary>
-    /// Connector fetches shared per bee URL: N wearers of one avatar await ONE ranged
-    /// download instead of racing N tasks through the gate. The old per-player fetches each
-    /// started a 30s budget that also covered the QUEUE — in a same-avatar lobby everyone
-    /// past the first gate-width waited out their budget behind identical downloads and got
-    /// cancelled. Completed successes stay cached so later wearers capture instantly;
-    /// failures are evicted so the tick's per-player backoff retries with a fresh fetch.
-    /// Main-thread access only.
+    /// Connector fetches shared per bee URL + declared version: N wearers of one avatar await ONE
+    /// ranged download instead of racing N tasks through the gate, while a republish at the same
+    /// static URL gets a distinct fetch and can never reuse the previous version's connector.
+    /// Completed successes stay cached so later wearers capture instantly; failures are evicted so
+    /// the tick's per-player backoff retries with a fresh fetch. Main-thread access only.
     /// </summary>
     private sealed class ConnectorFetch
     {
@@ -363,8 +388,27 @@ public static class BasisAvatarFarLOD
         public bool Transient;
     }
 
-    private static readonly Dictionary<string, Task<ConnectorFetch>> sConnectorFetchesByUrl = new Dictionary<string, Task<ConnectorFetch>>(8);
+    private static readonly Dictionary<string, Task<ConnectorFetch>> sConnectorFetchesByVersion = new Dictionary<string, Task<ConnectorFetch>>(8);
     private static readonly List<string> sConnectorSweepScratch = new List<string>(4);
+
+    internal static string ConnectorFetchKey(string url, string versionTag)
+    {
+        string canonicalUrl = BasisIOManagement.CanonicalizeRemoteUrl(url);
+        string normalizedVersion = BasisContentVersion.Normalize(versionTag);
+        return normalizedVersion.Length == 0 ? canonicalUrl : $"{canonicalUrl}|{normalizedVersion}";
+    }
+
+    internal static bool SameRequestedVersion(string leftUrl, string leftVersionTag, string rightUrl, string rightVersionTag)
+    {
+        return string.Equals(
+                   BasisIOManagement.CanonicalizeRemoteUrl(leftUrl),
+                   BasisIOManagement.CanonicalizeRemoteUrl(rightUrl),
+                   System.StringComparison.Ordinal) &&
+               string.Equals(
+                   BasisContentVersion.Normalize(leftVersionTag),
+                   BasisContentVersion.Normalize(rightVersionTag),
+                   System.StringComparison.Ordinal);
+    }
 
     public static async void RequestFarLodPayload(BasisRemotePlayer remote, BasisLoadableBundle bundle)
     {
@@ -380,14 +424,16 @@ public static class BasisAvatarFarLOD
         }
 
         string url = bundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation;
+        string requestedVersionTag = bundle.BasisRemoteBundleEncrypted.RemoteVersionTag;
+        string fetchKey = ConnectorFetchKey(url, requestedVersionTag);
         remote.FarLodConnectorFetchInFlight = true;
         try
         {
-            if (!sConnectorFetchesByUrl.TryGetValue(url, out Task<ConnectorFetch> fetch))
+            if (!sConnectorFetchesByVersion.TryGetValue(fetchKey, out Task<ConnectorFetch> fetch))
             {
                 SweepConnectorFetches();
                 fetch = FetchConnectorForUrl(url, bundle);
-                sConnectorFetchesByUrl[url] = fetch;
+                sConnectorFetchesByVersion[fetchKey] = fetch;
             }
 
             ConnectorFetch result = await fetch;
@@ -398,9 +444,9 @@ public static class BasisAvatarFarLOD
                 // (corrupt/unreadable bee) stay cached so every wearer's retry resolves
                 // instantly without hammering the host for a bee that will never parse.
                 if (result.Transient &&
-                    sConnectorFetchesByUrl.TryGetValue(url, out Task<ConnectorFetch> current) && current == fetch)
+                    sConnectorFetchesByVersion.TryGetValue(fetchKey, out Task<ConnectorFetch> current) && current == fetch)
                 {
-                    sConnectorFetchesByUrl.Remove(url);
+                    sConnectorFetchesByVersion.Remove(fetchKey);
                 }
                 return;
             }
@@ -408,12 +454,14 @@ public static class BasisAvatarFarLOD
             {
                 return;
             }
-            // Identity by bee URL, not instance — a second avatar message during the fetch
-            // recreates AlwaysRequestedAvatar as a new object for the same bee.
+
+            // A second avatar message can land while this fetch is in flight. Apply the result only
+            // if BOTH the URL and its declared version are still the request this player wants.
             string currentSource = remote.AlwaysRequestedAvatar?.BasisRemoteBundleEncrypted.RemoteBeeFileLocation;
-            if (currentSource == url)
+            string currentVersionTag = remote.AlwaysRequestedAvatar?.BasisRemoteBundleEncrypted.RemoteVersionTag;
+            if (SameRequestedVersion(currentSource, currentVersionTag, url, requestedVersionTag))
             {
-                CaptureFarLodFallback(remote, result.Connector, url);
+                CaptureFarLodFallback(remote, result.Connector, url, requestedVersionTag);
             }
         }
         catch (System.Exception e)
@@ -483,12 +531,12 @@ public static class BasisAvatarFarLOD
     /// <summary>Bounds the per-URL cache; dropping a completed success only costs a refetch.</summary>
     private static void SweepConnectorFetches()
     {
-        if (sConnectorFetchesByUrl.Count < 32)
+        if (sConnectorFetchesByVersion.Count < 32)
         {
             return;
         }
         sConnectorSweepScratch.Clear();
-        foreach (KeyValuePair<string, Task<ConnectorFetch>> entry in sConnectorFetchesByUrl)
+        foreach (KeyValuePair<string, Task<ConnectorFetch>> entry in sConnectorFetchesByVersion)
         {
             if (entry.Value.IsCompleted)
             {
@@ -497,7 +545,7 @@ public static class BasisAvatarFarLOD
         }
         for (int Index = 0; Index < sConnectorSweepScratch.Count; Index++)
         {
-            sConnectorFetchesByUrl.Remove(sConnectorSweepScratch[Index]);
+            sConnectorFetchesByVersion.Remove(sConnectorSweepScratch[Index]);
         }
     }
 

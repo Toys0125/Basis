@@ -40,6 +40,27 @@ namespace Basis.BasisUI
             LibraryLoadProgress.ReportProgress(uniqueID, progress, eventDescription);
         }
 
+        private static async Task<string> ResolveRecordedVersionTag(BasisDataStoreItemKeys.ItemKey item, CachedMetaData.CachedContent cached)
+        {
+            string current = cached?.BasisLoadableBundle?.BasisRemoteBundleEncrypted?.RemoteVersionTag ?? string.Empty;
+            if (item == null || item.EmbeddedSettings.IsEmbedded || BasisIOManagement.IsLocalBeeUrl(item.Url))
+            {
+                return current;
+            }
+
+            try
+            {
+                string recorded = await BasisContentVersion.GetCachedTagAsync(item.Url);
+                return string.IsNullOrWhiteSpace(recorded) ? current : recorded;
+            }
+            catch (Exception ex)
+            {
+                // Version bookkeeping must never make an otherwise valid library item unloadable.
+                BasisDebug.LogWarning($"Could not resolve recorded content version for {item.Url}: {ex.Message}", BasisDebug.LogTag.Event);
+                return current;
+            }
+        }
+
         public static async Task LoadAvatar(BasisDataStoreItemKeys.ItemKey item)
         {
             LastAvatarReachabilityWarning = null;
@@ -59,6 +80,10 @@ namespace Basis.BasisUI
             BasisLocalPlayer.Instance.ProgressReportAvatarLoad.OnProgressReport += ForwardProgress;
 
             BasisLoadableBundle bundle = cachedMeta.BasisLoadableBundle;
+            if (bundle?.BasisRemoteBundleEncrypted != null)
+            {
+                bundle.BasisRemoteBundleEncrypted.RemoteVersionTag = await ResolveRecordedVersionTag(item, cachedMeta);
+            }
             BasisDebug.Log($"LoadAvatar({item.Url}) -> bundle = {bundle.BasisBundleConnector.BasisBundleDescription.AssetBundleName}");
 
             // Fire reachability check in parallel with the avatar load
@@ -293,9 +318,15 @@ namespace Basis.BasisUI
 
             if (CachedMetaData.TryGetMeta(item.Url, out var cached) || (item.EmbeddedSettings.IsEmbedded && item.EmbeddedSettings.SourceType == BasisDataStoreItemKeys.EmbeddedSource.Addressable))
             {
+                string versionTag = await ResolveRecordedVersionTag(item, cached);
+                if (cached?.BasisLoadableBundle?.BasisRemoteBundleEncrypted != null)
+                {
+                    cached.BasisLoadableBundle.BasisRemoteBundleEncrypted.RemoteVersionTag = versionTag;
+                }
+
                 if (desiredNetworkType == BundledContentHolder.NetworkType.Predownload)
                 {
-                    bool requested = BasisNetworkSpawnItem.RequestGameObjectLoad(item.Pass, item.Url, Vector3.zero, Quaternion.identity, Vector3.one, persistent, admin, modifyScale, out _, loadStrategy: 3);
+                    bool requested = BasisNetworkSpawnItem.RequestGameObjectLoad(item.Pass, item.Url, Vector3.zero, Quaternion.identity, Vector3.one, persistent, admin, modifyScale, out _, loadStrategy: 3, versionTag: versionTag);
                     if (requested)
                     {
                         BasisDebug.Log($"Requested predownload for prop {item.Url}", BasisDebug.LogTag.Networking);
@@ -425,7 +456,7 @@ namespace Basis.BasisUI
                         {
                             try
                             {
-                                bool ok = BasisNetworkSpawnItem.RequestGameObjectLoad(item.Pass, item.Url, finalPos, finalRot, finalScale, persistent, admin, modifyScale, out LocalLoadResource syncResource, loadStrategy: 2);
+                                bool ok = BasisNetworkSpawnItem.RequestGameObjectLoad(item.Pass, item.Url, finalPos, finalRot, finalScale, persistent, admin, modifyScale, out LocalLoadResource syncResource, loadStrategy: 2, versionTag: versionTag);
                                 if (ok)
                                 {
                                     if (handOff)
@@ -539,7 +570,7 @@ namespace Basis.BasisUI
                         {
                             try
                             {
-                                bool ok = BasisNetworkSpawnItem.RequestGameObjectLoad(item.Pass, item.Url, finalPos, finalRot, finalScale, persistent, admin, modifyScale, out LocalLoadResource loadedProp);
+                                bool ok = BasisNetworkSpawnItem.RequestGameObjectLoad(item.Pass, item.Url, finalPos, finalRot, finalScale, persistent, admin, modifyScale, out LocalLoadResource loadedProp, versionTag: versionTag);
 
                                 if (ok && !string.IsNullOrEmpty(loadedProp.LoadedNetID))
                                 {
@@ -577,6 +608,12 @@ namespace Basis.BasisUI
         {
             if (CachedMetaData.TryGetMeta(item.Url, out var cached))
             {
+                string versionTag = await ResolveRecordedVersionTag(item, cached);
+                if (cached?.BasisLoadableBundle?.BasisRemoteBundleEncrypted != null)
+                {
+                    cached.BasisLoadableBundle.BasisRemoteBundleEncrypted.RemoteVersionTag = versionTag;
+                }
+
                 switch (desiredNetworkType)
                 {
                     case BundledContentHolder.NetworkType.Local:
@@ -662,7 +699,7 @@ namespace Basis.BasisUI
                     case BundledContentHolder.NetworkType.Networked:
                         try
                         {
-                            bool ok = BasisNetworkSpawnItem.RequestSceneLoad(item.Pass, item.Url, persistent, admin, out LocalLoadResource loadedProp);
+                            bool ok = BasisNetworkSpawnItem.RequestSceneLoad(item.Pass, item.Url, persistent, admin, out LocalLoadResource loadedProp, versionTag: versionTag);
 
                             if (ok && !string.IsNullOrEmpty(loadedProp.LoadedNetID))
                             {
@@ -681,7 +718,7 @@ namespace Basis.BasisUI
                     case BundledContentHolder.NetworkType.Synchronized:
                         try
                         {
-                            bool ok = BasisNetworkSpawnItem.RequestSceneLoad(item.Pass, item.Url, persistent, admin, out LocalLoadResource syncResource, loadStrategy: 2);
+                            bool ok = BasisNetworkSpawnItem.RequestSceneLoad(item.Pass, item.Url, persistent, admin, out LocalLoadResource syncResource, loadStrategy: 2, versionTag: versionTag);
                             if (ok)
                             {
                                 BasisDebug.Log($"Requested synchronized SceneLoad for {item.Url}, NetID={syncResource.LoadedNetID}", BasisDebug.LogTag.Networking);
@@ -699,7 +736,7 @@ namespace Basis.BasisUI
                     case BundledContentHolder.NetworkType.Predownload:
                         try
                         {
-                            bool ok = BasisNetworkSpawnItem.RequestSceneLoad(item.Pass, item.Url, persistent, admin, out _, loadStrategy: 3);
+                            bool ok = BasisNetworkSpawnItem.RequestSceneLoad(item.Pass, item.Url, persistent, admin, out _, loadStrategy: 3, versionTag: versionTag);
                             if (ok)
                             {
                                 BasisDebug.Log($"Requested predownload for world {item.Url}", BasisDebug.LogTag.Networking);

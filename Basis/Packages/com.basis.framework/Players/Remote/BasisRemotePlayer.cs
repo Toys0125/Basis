@@ -93,6 +93,11 @@ namespace Basis.Scripts.BasisSdk.Players
         public string FarLodOverrideVersion;
         /// <summary>Bee URL the override payload was captured from — detects avatar changes.</summary>
         public string FarLodOverrideSource;
+        /// <summary>
+        /// Network content-version tag associated with <see cref="FarLodOverrideSource"/>. The URL
+        /// alone is not an identity because creators can republish a new avatar at the same address.
+        /// </summary>
+        public string FarLodOverrideSourceVersionTag;
         public bool FarLodConnectorFetchInFlight;
         /// <summary>
         /// True once the transmit tick has run the join-time representation pass for this
@@ -112,6 +117,7 @@ namespace Basis.Scripts.BasisSdk.Players
             FarLodOverridePayload = null;
             FarLodOverrideVersion = null;
             FarLodOverrideSource = null;
+            FarLodOverrideSourceVersionTag = null;
             _farLodPayloadState = 0;
         }
 
@@ -795,7 +801,9 @@ namespace Basis.Scripts.BasisSdk.Players
                         // heavy the real avatar is, and for players whose bundle was never
                         // downloaded only the connector is fetched — never the bundle.
                         string source = BasisLoadableBundle?.BasisRemoteBundleEncrypted.RemoteBeeFileLocation;
-                        if (!string.IsNullOrEmpty(FarLodOverridePayload) && FarLodOverrideSource != source)
+                        string requestedVersionTag = BasisLoadableBundle?.BasisRemoteBundleEncrypted.RemoteVersionTag;
+                        if (!string.IsNullOrEmpty(FarLodOverridePayload) &&
+                            !BasisAvatarFarLOD.OverrideMatchesRequestedVersion(this, source, requestedVersionTag))
                         {
                             ClearFarLodStandIn();
                         }

@@ -21,6 +21,7 @@ public class BasisContentSphere : BasisInteractableObject
     public string SphereNetID { get; private set; }
     public string ContentURL { get; private set; }
     public string UnlockPassword { get; private set; }
+    public string VersionTag { get; private set; }
     public ContentShareType ContentType { get; private set; }
     public ushort CreatorPlayerID { get; private set; }
     public string CreatorUUID { get; private set; }
@@ -42,11 +43,12 @@ public class BasisContentSphere : BasisInteractableObject
     public static float RotationSpeed = 30f;
     public static int MaxTitleNameLength = 24;
     public Texture2D texture;
-    public void Initialize(string sphereNetID, string contentURL, string unlockPassword, ContentShareType contentType, ushort creatorPlayerID, string creatorUUID, string creatorDisplayName)
+    public void Initialize(string sphereNetID, string contentURL, string unlockPassword, string versionTag, ContentShareType contentType, ushort creatorPlayerID, string creatorUUID, string creatorDisplayName)
     {
         SphereNetID = sphereNetID;
         ContentURL = contentURL;
         UnlockPassword = unlockPassword;
+        VersionTag = versionTag ?? string.Empty;
         ContentType = contentType;
         CreatorPlayerID = creatorPlayerID;
         CreatorUUID = creatorUUID;
@@ -229,6 +231,7 @@ public class BasisContentSphere : BasisInteractableObject
             BasisRemoteBundleEncrypted = new BasisRemoteEncyptedBundle
             {
                 RemoteBeeFileLocation = ContentURL,
+                RemoteVersionTag = VersionTag,
                 IsNetworkSourced = true
             },
             UnlockPassword = UnlockPassword,
@@ -345,6 +348,27 @@ public class BasisContentSphere : BasisInteractableObject
             Url = ContentURL,
             Pass = UnlockPassword,
         };
+
+        // Verify the sharer's version claim against the host before saving. This also refreshes the
+        // connector metadata on disk, so the library's later load can recover the recorded tag even
+        // though ItemKey itself remains backward-compatible and stores only URL/password.
+        if (!string.IsNullOrWhiteSpace(VersionTag))
+        {
+            try
+            {
+                BasisTrackedBundleWrapper wrapper = new BasisTrackedBundleWrapper { LoadableBundle = ToLoadableBundle() };
+                using CancellationTokenSource verifyCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                BasisMetaLoadResult verified = await BasisBeeManagement.HandleMetaOnlyLoad(wrapper, new BasisProgressReport(), verifyCts.Token);
+                if (!verified.Loaded)
+                {
+                    BasisDebug.LogWarning($"Shared content sphere {SphereNetID} version could not be verified before saving (transient={verified.IsTransient}).", BasisDebug.LogTag.Networking);
+                }
+            }
+            catch (Exception ex)
+            {
+                BasisDebug.LogWarning($"Shared content sphere {SphereNetID} version verification failed before saving ({ex.GetType().Name}).", BasisDebug.LogTag.Networking);
+            }
+        }
 
         await BasisDataStoreItemKeys.AddNewKey(key);
         BasisDebug.Log($"Saved content sphere to library: {ContentURL} as {mode}", BasisDebug.LogTag.Networking);

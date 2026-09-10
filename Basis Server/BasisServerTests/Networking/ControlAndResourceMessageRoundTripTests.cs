@@ -1071,6 +1071,7 @@ public class ControlAndResourceMessageRoundTripTests
             LoadedNetID = "net-α",
             UnlockPassword = "pässwörd",
             CombinedURL = "https://example.com/bundle#雪",
+            VersionTag = "W/\"etag-v2\"",
             UUIDOfCreator = "creator-9",
             IsAdminLocked = true,
             Persist = true,
@@ -1098,6 +1099,7 @@ public class ControlAndResourceMessageRoundTripTests
         Assert.Equal("net-α", back.LoadedNetID);
         Assert.Equal("pässwörd", back.UnlockPassword);
         Assert.Equal("https://example.com/bundle#雪", back.CombinedURL);
+        Assert.Equal("W/\"etag-v2\"", back.VersionTag);
         Assert.Equal("creator-9", back.UUIDOfCreator);
         Assert.True(back.IsAdminLocked);
         Assert.True(back.Persist);
@@ -1126,6 +1128,7 @@ public class ControlAndResourceMessageRoundTripTests
             LoadedNetID = "scene-1",
             UnlockPassword = "",
             CombinedURL = "https://example.com/world",
+            VersionTag = "LM:Tue, 02 Jan 2024 00:00:00 GMT",
             UUIDOfCreator = "creator",
             IsAdminLocked = false,
             Persist = true,
@@ -1145,6 +1148,7 @@ public class ControlAndResourceMessageRoundTripTests
         Assert.Equal("scene-1", back.LoadedNetID);
         Assert.Equal(string.Empty, back.UnlockPassword);
         Assert.Equal("https://example.com/world", back.CombinedURL);
+        Assert.Equal("LM:Tue, 02 Jan 2024 00:00:00 GMT", back.VersionTag);
         Assert.True(back.Persist);
         Assert.Equal((byte)2, back.LoadStrategy);
         Assert.Equal(0f, back.PositionX);
@@ -1161,6 +1165,7 @@ public class ControlAndResourceMessageRoundTripTests
             LoadedNetID = "net-β",
             UnlockPassword = "pw",
             CombinedURL = "https://a/b",
+            VersionTag = "\"version-3\"",
             UUIDOfCreator = "c",
             IsAdminLocked = true,
             Persist = false,
@@ -1188,6 +1193,32 @@ public class ControlAndResourceMessageRoundTripTests
         back.Serialize(second);
 
         Assert.Equal(first.CopyData(), second.CopyData());
+        Assert.Equal("\"version-3\"", back.VersionTag);
+    }
+
+    [Fact]
+    public void LocalLoadResource_LegacyPayloadWithoutVersionTag_DecodesEmpty()
+    {
+        // Exact pre-versioning scene payload. New readers must accept packets from older clients
+        // and servers that end immediately after LoadStrategy.
+        var writer = new NetDataWriter();
+        writer.Put((byte)1);
+        writer.Put("legacy-net");
+        writer.Put("pw");
+        writer.Put("https://example.com/legacy-world");
+        writer.Put("creator");
+        writer.Put(false);
+        writer.Put(true);
+        writer.Put(false);
+        writer.Put(false);
+        writer.Put(false);
+        writer.Put((byte)0);
+
+        var back = new LocalLoadResource();
+        back.Deserialize(ReaderFor(writer));
+
+        Assert.Equal("https://example.com/legacy-world", back.CombinedURL);
+        Assert.Equal(string.Empty, back.VersionTag);
     }
 
     [Theory]
@@ -1512,6 +1543,7 @@ public class ControlAndResourceMessageRoundTripTests
             SphereNetID = "sphere-β-42",
             ContentURL = "https://example.com/bundle?v=1&q=日本",
             UnlockPassword = "pässword",
+            VersionTag = "W/\"share-v2\"",
             ContentType = type,
             PositionX = -12.5f,
             PositionY = 0.03125f,
@@ -1525,10 +1557,30 @@ public class ControlAndResourceMessageRoundTripTests
         Assert.Equal("sphere-β-42", back.SphereNetID);
         Assert.Equal("https://example.com/bundle?v=1&q=日本", back.ContentURL);
         Assert.Equal("pässword", back.UnlockPassword);
+        Assert.Equal("W/\"share-v2\"", back.VersionTag);
         Assert.Equal(type, back.ContentType);
         Assert.Equal(-12.5f, back.PositionX);
         Assert.Equal(0.03125f, back.PositionY);
         Assert.Equal(4096f, back.PositionZ);
+    }
+
+    [Fact]
+    public void ContentShareMessage_LegacyPayloadWithoutVersionTag_DecodesEmpty()
+    {
+        var writer = new NetDataWriter();
+        writer.Put("legacy-sphere");
+        writer.Put("https://example.com/legacy.bee");
+        writer.Put("pw");
+        writer.Put((byte)ContentShareType.Prop);
+        writer.Put(1f);
+        writer.Put(2f);
+        writer.Put(3f);
+
+        var back = new ContentShareMessage();
+        back.Deserialize(ReaderFor(writer));
+
+        Assert.Equal("legacy-sphere", back.SphereNetID);
+        Assert.Equal(string.Empty, back.VersionTag);
     }
 
     [Fact]
@@ -1564,6 +1616,7 @@ public class ControlAndResourceMessageRoundTripTests
                 SphereNetID = "sphere-1",
                 ContentURL = "https://cdn/av",
                 UnlockPassword = "pw",
+                VersionTag = "\"world-v4\"",
                 ContentType = ContentShareType.World,
                 PositionX = 1f,
                 PositionY = 2f,
@@ -1581,6 +1634,7 @@ public class ControlAndResourceMessageRoundTripTests
         Assert.Equal("sphere-1", back.contentShareMessage.SphereNetID);
         Assert.Equal("https://cdn/av", back.contentShareMessage.ContentURL);
         Assert.Equal("pw", back.contentShareMessage.UnlockPassword);
+        Assert.Equal("\"world-v4\"", back.contentShareMessage.VersionTag);
         Assert.Equal(ContentShareType.World, back.contentShareMessage.ContentType);
         Assert.Equal(1f, back.contentShareMessage.PositionX);
         Assert.Equal(2f, back.contentShareMessage.PositionY);

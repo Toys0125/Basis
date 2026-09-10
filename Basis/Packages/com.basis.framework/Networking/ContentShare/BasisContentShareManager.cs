@@ -60,18 +60,42 @@ public static class BasisContentShareManager
             BasisDebug.LogError("Invalid content URL or password for content share.", BasisDebug.LogTag.Networking);
             return;
         }
-        await PlaceAndDrop(contentURL, unlockPassword, contentType);
+
+        string versionTag = string.Empty;
+        if (contentType == ContentShareType.Avatar || contentType == ContentShareType.Prop || contentType == ContentShareType.World)
+        {
+            try
+            {
+                versionTag = await BasisContentVersion.GetCachedTagAsync(contentURL);
+            }
+            catch (Exception ex)
+            {
+                // Sharing the link still works for legacy/unversioned content if local version
+                // bookkeeping is unavailable; the receiver simply gets no freshness claim.
+                BasisDebug.LogWarning($"Could not attach cached content version to {contentType} share ({ex.GetType().Name}).", BasisDebug.LogTag.Networking);
+            }
+        }
+        await PlaceAndDrop(contentURL, unlockPassword, contentType, versionTag);
     }
 
     /// <summary>
     /// Drops a content share sphere using an existing BasisLoadableBundle.
     /// </summary>
-    public static void DropContentSphere(BasisLoadableBundle bundle, ContentShareType contentType)
+    public static async void DropContentSphere(BasisLoadableBundle bundle, ContentShareType contentType)
     {
-        DropContentSphere(
+        if (bundle?.BasisRemoteBundleEncrypted == null ||
+            string.IsNullOrEmpty(bundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation) ||
+            string.IsNullOrEmpty(bundle.UnlockPassword))
+        {
+            BasisDebug.LogError("Cannot share a content bundle with an empty URL or password.", BasisDebug.LogTag.Networking);
+            return;
+        }
+
+        await PlaceAndDrop(
             bundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation,
             bundle.UnlockPassword,
-            contentType
+            contentType,
+            bundle.BasisRemoteBundleEncrypted.RemoteVersionTag
         );
     }
 
@@ -122,7 +146,7 @@ public static class BasisContentShareManager
     /// The half every share has in common: let the player put the orb somewhere, then tell the
     /// server about it. A cancelled placement drops nothing.
     /// </summary>
-    private static async Task PlaceAndDrop(string contentURL, string unlockPassword, ContentShareType contentType)
+    private static async Task PlaceAndDrop(string contentURL, string unlockPassword, ContentShareType contentType, string versionTag = null)
     {
         BasisDeviceManagement deviceInstance = BasisDeviceManagement.Instance;
         if (!deviceInstance.FindDevice(out BasisInput input, BasisDominantHand.DominantRole) &&
@@ -156,6 +180,7 @@ public static class BasisContentShareManager
             SphereNetID = BasisGenerateUniqueID.GenerateUniqueID(),
             ContentURL = contentURL,
             UnlockPassword = unlockPassword,
+            VersionTag = versionTag ?? string.Empty,
             ContentType = contentType,
             PositionX = finalPos.x,
             PositionY = finalPos.y,
@@ -305,6 +330,7 @@ public static class BasisContentShareManager
                 msg.SphereNetID,
                 msg.ContentURL,
                 msg.UnlockPassword,
+                msg.VersionTag,
                 msg.ContentType,
                 serverMsg.playerIdMessage.playerID,
                 serverMsg.SharerUUID,

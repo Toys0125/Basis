@@ -66,6 +66,7 @@ public static class BasisNetworkPreloadManager
                 BasisRemoteBundleEncrypted = new BasisRemoteEncyptedBundle()
                 {
                     RemoteBeeFileLocation = resource.CombinedURL,
+                    RemoteVersionTag = resource.VersionTag,
                     IsNetworkSourced = true
                 },
                 UnlockPassword = resource.UnlockPassword,
@@ -81,8 +82,19 @@ public static class BasisNetworkPreloadManager
 
             await BasisLoadHandler.EnsureInitializationComplete();
 
-            // Check if the full BEE file is already on disk
+            // Check if the full BEE file is already on disk. A network resource may explicitly
+            // name a newer version at the SAME URL, so run the same host-verified cache gate used
+            // by normal bundle loads before treating the on-disc bytes as preload-ready.
             var (isOnDisc, metaInfo) = await BasisLoadHandler.IsMetaDataOnDiscAsync(resource.CombinedURL);
+            if (isOnDisc && !await BasisBeeManagement.CacheIsCurrentForRequestedVersionAsync(
+                    wrapper,
+                    metaInfo,
+                    resource.CombinedURL,
+                    evictStaleCache: true,
+                    cancel))
+            {
+                isOnDisc = false;
+            }
 
             BasisBundleGenerated generated;
             long sectionLength;
@@ -132,8 +144,16 @@ public static class BasisNetworkPreloadManager
                     StoredRemote = wrapper.LoadableBundle.BasisRemoteBundleEncrypted.Clone(),
                     StoredLocal = wrapper.LoadableBundle.BasisLocalEncryptedBundle,
                     UniqueVersion = wrapper.LoadableBundle.BasisBundleConnector.UniqueVersion,
+                    DownloadedPlatform = generated.Platform,
+                    CachedVersionTag = !string.IsNullOrWhiteSpace(wrapper.ObservedVersionTag)
+                        ? wrapper.ObservedVersionTag.Trim()
+                        : (string.IsNullOrWhiteSpace(resource.VersionTag) ? string.Empty : resource.VersionTag.Trim()),
+                    LastValidatedUnixUtc = BasisContentVersion.NowUnixUtc(),
                 };
-                await BasisLoadHandler.AddDiscInfo(newDiscInfo);
+                if (!await BasisLoadHandler.AddDiscInfo(newDiscInfo))
+                {
+                    throw new Exception($"Downloaded {resource.CombinedURL}, but failed to persist its cache metadata.");
+                }
                 BasisStorageManagement.EnforceCacheSizeLimit();
             }
 

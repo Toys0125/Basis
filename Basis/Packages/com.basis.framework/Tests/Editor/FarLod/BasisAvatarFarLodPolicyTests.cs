@@ -104,4 +104,43 @@ public class BasisAvatarFarLodPolicyTests
             BuildRemote(blocked: false, hasPayload: true, inRange: false, failed: false, alwaysShow: false, loading: false)),
             "master switch off drops to the loading dummy");
     }
+
+    [Test]
+    public void FarLodOverride_SameStaticUrlButNewVersion_DoesNotMatch()
+    {
+        BasisRemotePlayer remote = BuildRemote(blocked: false, hasPayload: true, inRange: false, failed: false, alwaysShow: false, loading: false);
+        remote.FarLodOverrideSource = "https://EXAMPLE.com/avatar.bee";
+        remote.FarLodOverrideSourceVersionTag = "\"etag-v1\"";
+
+        Assert.IsTrue(BasisAvatarFarLOD.OverrideMatchesRequestedVersion(
+            remote, "https://example.com/avatar.bee", "W/\"etag-v1\""),
+            "equivalent URL/ETag spellings should keep the cached far avatar");
+
+        Assert.IsFalse(BasisAvatarFarLOD.OverrideMatchesRequestedVersion(
+            remote, "https://example.com/avatar.bee", "\"etag-v2\""),
+            "a republish at the same URL must invalidate the previous far avatar");
+    }
+
+    [Test]
+    public void FarLodConnectorFetchKey_SeparatesVersionsAtSameUrl()
+    {
+        string v1 = BasisAvatarFarLOD.ConnectorFetchKey("https://EXAMPLE.com/avatar.bee", "\"etag-v1\"");
+        string v1Weak = BasisAvatarFarLOD.ConnectorFetchKey("https://example.com/avatar.bee", "W/\"etag-v1\"");
+        string v2 = BasisAvatarFarLOD.ConnectorFetchKey("https://example.com/avatar.bee", "\"etag-v2\"");
+
+        Assert.AreEqual(v1, v1Weak, "equivalent validator spellings should share one connector fetch");
+        Assert.AreNotEqual(v1, v2, "a new static-URL version must not reuse the old connector task");
+    }
+
+    [Test]
+    public void FarLodOverride_LegacyUnversionedSourceStillMatchesItself()
+    {
+        BasisRemotePlayer remote = BuildRemote(blocked: false, hasPayload: true, inRange: false, failed: false, alwaysShow: false, loading: false);
+        remote.FarLodOverrideSource = "https://example.com/avatar.bee";
+        remote.FarLodOverrideSourceVersionTag = string.Empty;
+
+        Assert.IsTrue(BasisAvatarFarLOD.OverrideMatchesRequestedVersion(
+            remote, "https://example.com/avatar.bee", null),
+            "two unversioned legacy records should retain pre-versioning behavior");
+    }
 }

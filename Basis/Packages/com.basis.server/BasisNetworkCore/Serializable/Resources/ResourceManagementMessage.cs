@@ -17,6 +17,12 @@ public static partial class SerializableBasis
         public string LoadedNetID;
         public string UnlockPassword;
         public string CombinedURL;
+        /// <summary>
+        /// Opaque content-version tag for <see cref="CombinedURL"/>. Appended to the wire format so
+        /// older clients/servers can ignore it, while newer receivers can distinguish a republish at
+        /// the same static URL from the bytes they already have cached.
+        /// </summary>
+        public string VersionTag;
 
         //will never remove this item from the server,
         //if off when player count on server is zero it will be removed.
@@ -94,6 +100,8 @@ public static partial class SerializableBasis
                 ScaleZ = Writer.GetFloat();
             }
 
+            // Optional trailing field: packets produced before static-URL versioning simply end here.
+            VersionTag = Writer.AvailableBytes >= 2 ? Writer.GetString() : string.Empty;
         }
         public void Serialize(NetDataWriter Writer)
         {
@@ -123,6 +131,10 @@ public static partial class SerializableBasis
                 Writer.Put(ScaleY);
                 Writer.Put(ScaleZ);
             }
+
+            // Keep this last for backward compatibility: older readers stop after the original
+            // fields, while newer readers tolerate packets that do not contain this string.
+            Writer.Put(VersionTag ?? string.Empty);
         }
     }
 

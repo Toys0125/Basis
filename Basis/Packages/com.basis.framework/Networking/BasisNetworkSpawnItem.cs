@@ -19,7 +19,7 @@ using static SerializableBasis;
 public static class BasisNetworkSpawnItem
 {
     private static CancellationTokenSource _loadCts = new CancellationTokenSource();
-    public static bool RequestSceneLoad(string UnlockPassword, string CombinedURL, bool Persist, bool Admin, out LocalLoadResource localLoadResource, byte loadStrategy = 0)
+    public static bool RequestSceneLoad(string UnlockPassword, string CombinedURL, bool Persist, bool Admin, out LocalLoadResource localLoadResource, byte loadStrategy = 0, string versionTag = null)
     {
         if (string.IsNullOrEmpty(CombinedURL) || string.IsNullOrEmpty(UnlockPassword))
         {
@@ -36,6 +36,7 @@ public static class BasisNetworkSpawnItem
             Mode = 1,
             CombinedURL = CombinedURL,
             UnlockPassword = UnlockPassword,
+            VersionTag = versionTag ?? string.Empty,
             UUIDOfCreator = BasisLocalPlayer.Instance.UUID,
             IsAdminLocked = Admin,
             Persist = Persist,
@@ -51,7 +52,7 @@ public static class BasisNetworkSpawnItem
         return true;
     }
 
-    public static bool RequestGameObjectLoad(string UnlockPassword, string CombinedURL, Vector3 Position, Quaternion Rotation, Vector3 Scale, bool Persistent, bool Admin, bool ModifysScale, out LocalLoadResource LocalLoadResource, byte loadStrategy = 0)
+    public static bool RequestGameObjectLoad(string UnlockPassword, string CombinedURL, Vector3 Position, Quaternion Rotation, Vector3 Scale, bool Persistent, bool Admin, bool ModifysScale, out LocalLoadResource LocalLoadResource, byte loadStrategy = 0, string versionTag = null)
     {
         if (string.IsNullOrEmpty(CombinedURL) || string.IsNullOrEmpty(UnlockPassword))
         {
@@ -68,6 +69,7 @@ public static class BasisNetworkSpawnItem
             Mode = 0,
             CombinedURL = CombinedURL,
             UnlockPassword = UnlockPassword,
+            VersionTag = versionTag ?? string.Empty,
             UUIDOfCreator = BasisLocalPlayer.Instance.UUID,
             IsAdminLocked = Admin,
             Persist = Persistent,
@@ -167,6 +169,7 @@ public static class BasisNetworkSpawnItem
             BasisRemoteBundleEncrypted = new BasisRemoteEncyptedBundle()
             {
                 RemoteBeeFileLocation = localLoadResource.CombinedURL,
+                RemoteVersionTag = localLoadResource.VersionTag,
                 IsNetworkSourced = true
             },
             UnlockPassword = localLoadResource.UnlockPassword,
@@ -280,6 +283,7 @@ public static class BasisNetworkSpawnItem
             BasisRemoteBundleEncrypted = new BasisRemoteEncyptedBundle()
             {
                 RemoteBeeFileLocation = localLoadResource.CombinedURL,
+                RemoteVersionTag = localLoadResource.VersionTag,
                 IsNetworkSourced = true
             },
             UnlockPassword = localLoadResource.UnlockPassword,

@@ -68,7 +68,7 @@ public static class BasisBeeManagement
     /// a failed re-download into silent loss of the user's saved item. Bypassing still refreshes —
     /// the re-download rewrites the entry — it just leaves the old payload for the LRU sweep.
     /// </param>
-    private static async Task<bool> CacheIsCurrentForRequestedVersionAsync(BasisTrackedBundleWrapper wrapper, BasisBEEExtensionMeta metaInfo, string beeLocation, bool evictStaleCache, CancellationToken cancellationToken)
+    internal static async Task<bool> CacheIsCurrentForRequestedVersionAsync(BasisTrackedBundleWrapper wrapper, BasisBEEExtensionMeta metaInfo, string beeLocation, bool evictStaleCache, CancellationToken cancellationToken)
     {
         string requestedVersionTag = wrapper?.LoadableBundle?.BasisRemoteBundleEncrypted?.RemoteVersionTag;
         if (BasisContentVersion.ShouldUseCache(metaInfo, requestedVersionTag, beeLocation))

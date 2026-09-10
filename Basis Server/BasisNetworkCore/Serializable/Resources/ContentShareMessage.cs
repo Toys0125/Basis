@@ -64,6 +64,13 @@ public static partial class SerializableBasis
         public string UnlockPassword;
 
         /// <summary>
+        /// Opaque version tag for bundle-backed shares. Appended to the original wire format so
+        /// older peers ignore it and newer recipients can verify static-URL content freshness.
+        /// Empty for server/inline-payload shares and legacy senders.
+        /// </summary>
+        public string VersionTag;
+
+        /// <summary>
         /// What kind of content this sphere represents.
         /// </summary>
         public ContentShareType ContentType;
@@ -84,6 +91,7 @@ public static partial class SerializableBasis
             PositionX = reader.GetFloat();
             PositionY = reader.GetFloat();
             PositionZ = reader.GetFloat();
+            VersionTag = reader.AvailableBytes >= 2 ? reader.GetString() : string.Empty;
         }
 
         public void Serialize(NetDataWriter writer)
@@ -95,6 +103,7 @@ public static partial class SerializableBasis
             writer.Put(PositionX);
             writer.Put(PositionY);
             writer.Put(PositionZ);
+            writer.Put(VersionTag ?? string.Empty);
         }
     }
 
