@@ -7,7 +7,9 @@
   "dependencies": {
     "com.unity.render-pipelines.core": "17.5.0",
     "com.unity.shadergraph": "17.5.0",
-    "com.unity.render-pipelines.universal-config": "17.5.0"
+    "com.unity.render-pipelines.universal-config": "17.5.0",
+    "com.unity.modules.amd": "1.0.0",
+    "com.unity.modules.nvidia": "1.0.0"
   },
   "keywords": [
     "graphics",
