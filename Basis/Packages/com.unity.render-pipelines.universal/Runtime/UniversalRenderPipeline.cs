@@ -438,9 +438,36 @@ namespace UnityEngine.Rendering.Universal
             UpscalerRegistry.Register<PointUpscaler>(k_UpscalerName_Point);
             UpscalerRegistry.Register<FSR1Upscaler>(k_UpscalerName_FSR1);
 
+            EnsureVendorUpscalerOptions(asset);
             upscaling = new Upscaling(asset.upscalerOptions, k_EmbeddedUpscalerTypes, k_UpscalerSortOrder);
 #endif
         }
+
+#if ENABLE_UPSCALER_FRAMEWORK
+        private static void EnsureVendorUpscalerOptions(UniversalRenderPipelineAsset asset)
+        {
+            EnsureUpscalerOptions(asset, "FidelityFX Super Resolution 2", "UnityEngine.Rendering.FSR2Options, Unity.RenderPipelines.Core.Runtime");
+            EnsureUpscalerOptions(asset, "Deep Learning Super Sampling 4", "UnityEngine.Rendering.DLSSOptions, Unity.RenderPipelines.Core.Runtime");
+        }
+
+        private static void EnsureUpscalerOptions(UniversalRenderPipelineAsset asset, string upscalerName, string optionsTypeName)
+        {
+            if (asset.GetUpscalerOptions(upscalerName) != null)
+                return;
+
+            Type optionsType = Type.GetType(optionsTypeName, false);
+            if (optionsType == null || !typeof(UpscalerOptions).IsAssignableFrom(optionsType))
+                return;
+
+            UpscalerOptions options = ScriptableObject.CreateInstance(optionsType) as UpscalerOptions;
+            if (options == null)
+                return;
+
+            options.hideFlags = HideFlags.DontSave;
+            options.upscalerName = upscalerName;
+            asset.upscalerOptions.Add(options);
+        }
+#endif
 
         /// <inheritdoc/>
         protected override void Dispose(bool disposing)
