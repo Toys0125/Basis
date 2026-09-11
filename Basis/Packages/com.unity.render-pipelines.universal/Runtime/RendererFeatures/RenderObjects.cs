@@ -226,6 +226,7 @@ namespace UnityEngine.Rendering.Universal
             renderObjectsAfterUpscalingPass = afterUpscalingMask != 0
                 ? CreatePass($"{settings.passTag} After Upscaling", RenderPassEvent.AfterRenderingPostProcessing, filter, afterUpscalingMask)
                 : null;
+            renderObjectsAfterUpscalingPass?.SetUseNonJitteredProjection(true);
         }
 
         private RenderObjectsPass CreatePass(string passTag, RenderPassEvent renderPassEvent, FilterSettings filter, int layerMask)

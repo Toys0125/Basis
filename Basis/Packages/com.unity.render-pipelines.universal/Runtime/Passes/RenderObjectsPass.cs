@@ -14,6 +14,12 @@ namespace UnityEngine.Rendering.Universal
         RenderQueueType renderQueueType;
         FilteringSettings m_FilteringSettings;
         RenderObjects.CustomCameraSettings m_CameraSettings;
+        bool m_UseNonJitteredProjection;
+
+        internal void SetUseNonJitteredProjection(bool value)
+        {
+            m_UseNonJitteredProjection = value;
+        }
 
         /// <summary>
         /// The override material to use.
@@ -145,6 +151,7 @@ namespace UnityEngine.Rendering.Universal
             Rect pixelRect = passData.cameraData.pixelRect;
             float cameraAspect = (float)pixelRect.width / (float)pixelRect.height;
 
+            bool matricesOverridden = false;
             if (passData.cameraSettings.overrideCamera)
             {
                 if (passData.cameraData.xr.enabled)
@@ -162,7 +169,17 @@ namespace UnityEngine.Rendering.Universal
                     viewMatrix.SetColumn(3, cameraTranslation + passData.cameraSettings.offset);
 
                     RenderingUtils.SetViewAndProjectionMatrices(cmd, viewMatrix, projectionMatrix, false);
+                    matricesOverridden = true;
                 }
+            }
+            else if (passData.useNonJitteredProjection && !passData.cameraData.xr.enabled)
+            {
+                // A layer redrawn after a temporal upscaler is already at display resolution. Drawing it
+                // with the frame's TAA/FSR2/DLSS projection jitter makes head-locked UI visibly hop even
+                // though the scene behind it has already been stabilized by the upscaler.
+                Matrix4x4 projectionMatrix = GL.GetGPUProjectionMatrix(passData.cameraData.GetProjectionMatrixNoJitter(0), isYFlipped);
+                RenderingUtils.SetViewAndProjectionMatrices(cmd, passData.cameraData.GetViewMatrix(), projectionMatrix, false);
+                matricesOverridden = true;
             }
 
             var activeDebugHandler = GetActiveDebugHandler(passData.cameraData);
@@ -175,7 +192,9 @@ namespace UnityEngine.Rendering.Universal
                 cmd.DrawRendererList(rendererList);
             }
 
-            if (passData.cameraSettings.overrideCamera && passData.cameraSettings.restoreCamera && !passData.cameraData.xr.enabled)
+            bool restoreCameraMatrices = passData.useNonJitteredProjection
+                || (passData.cameraSettings.overrideCamera && passData.cameraSettings.restoreCamera);
+            if (matricesOverridden && restoreCameraMatrices && !passData.cameraData.xr.enabled)
             {
                 RenderingUtils.SetViewAndProjectionMatrices(cmd, passData.cameraData.GetViewMatrix(), GL.GetGPUProjectionMatrix(passData.cameraData.GetProjectionMatrix(0), isYFlipped), false);
             }
@@ -185,6 +204,7 @@ namespace UnityEngine.Rendering.Universal
         {
             internal RenderObjects.CustomCameraSettings cameraSettings;
             internal RenderPassEvent renderPassEvent;
+            internal bool useNonJitteredProjection;
 
             internal TextureHandle color;
             internal RendererListHandle rendererListHdl;
@@ -200,6 +220,7 @@ namespace UnityEngine.Rendering.Universal
         {
             passData.cameraSettings = m_CameraSettings;
             passData.renderPassEvent = renderPassEvent;
+            passData.useNonJitteredProjection = m_UseNonJitteredProjection;
             passData.cameraData = cameraData;
         }
 
