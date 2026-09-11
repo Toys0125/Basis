@@ -489,7 +489,7 @@ namespace UnityEngine.Rendering.Universal
         private static string ResolveRuntimeUpscalerName(string requestedName)
         {
 #if ENABLE_AMD && ENABLE_AMD_MODULE
-            if (requestedName == k_UpscalerName_FSR2
+            if ((requestedName == k_UpscalerName_FSR2 || requestedName == BasisFsr2Upscaler.UpscalerName)
                 && (!UnityEngine.AMD.AMDUnityPlugin.IsLoaded() || UnityEngine.AMD.GraphicsDevice.device == null))
             {
                 return k_UpscalerName_Auto;

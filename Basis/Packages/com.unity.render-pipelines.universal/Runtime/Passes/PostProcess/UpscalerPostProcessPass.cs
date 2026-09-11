@@ -50,7 +50,8 @@ namespace UnityEngine.Rendering.Universal
             io.motionVectorDomain = UpscalingIO.MotionVectorDomain.NDC;
             io.motionVectorDirection = UpscalingIO.MotionVectorDirection.PreviousFrameToCurrentFrame;
             io.jitteredMotionVectors = false; // URP has no jittering in MVs
-            io.subpixelJitter = cameraData.subpixelJitter;
+            // Core RP 17.5 does not expose subpixel jitter on UpscalingIO. Basis temporal
+            // providers read cameraData.subpixelJitter directly from this frame instead.
             // io.exposureTexture; // TODO: set exposure texture when available
             io.preExposureValue = 1.0f; // TODO: set if exposure value is pre-multiplied
             io.hdrDisplayInformation = cameraData.isHDROutputActive ? cameraData.hdrDisplayInformation : new HDROutputUtils.HDRDisplayInformation(-1, -1, -1, 160.0f);
