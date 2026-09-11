@@ -300,7 +300,11 @@ namespace UnityEngine.Rendering.Universal
             UniversalLightData lightData = frameData.Get<UniversalLightData>();
             UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
 
-            TextureHandle sceneColor = resourceData.activeColorTexture;
+            // During post processing URP may already have switched the active target to the system
+            // backbuffer. Built-in backbuffer handles do not expose a RenderGraph descriptor, so use
+            // cameraColor here: the temporal upscaler writes its full-resolution result there and the
+            // remaining post-processing passes also consume cameraColor.
+            TextureHandle sceneColor = resourceData.cameraColor;
             TextureDesc sceneDesc = sceneColor.GetDescriptor(renderGraph);
 
             TextureDesc overlayColorDesc = sceneDesc;
