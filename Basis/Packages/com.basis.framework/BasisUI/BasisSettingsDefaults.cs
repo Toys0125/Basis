@@ -634,6 +634,7 @@ namespace Basis.BasisUI
         public static BasisSettingsBinding<string> Antialiasing = new("antialiasing", new BasisPlatformDefault<string> { windows = "msaa 2x", android = "msaa 4x", ios = "msaa 4x", linux = "msaa 2x", other = "msaa 2x" });
         public static BasisSettingsBinding<string> Upscaling = new("upscaling", new BasisPlatformDefault<string>("automatic"));
         public static BasisSettingsBinding<string> UpscalingQuality = new("upscalingquality", new BasisPlatformDefault<string>("automatic"));
+        public static BasisSettingsBinding<bool> ConservativeTemporalMotionVectors = new("conservativetemporalmotionvectors", new BasisPlatformDefault<bool>(false));
 
         public static BasisSettingsBinding<bool> DevVariableRateShading = new("devvariablerateshading", new BasisPlatformDefault<bool>(false));
         public static BasisSettingsBinding<bool> DevVariableRateShadingDesktop = new("devvariablerateshadingdesktop", new BasisPlatformDefault<bool>(false));
@@ -2567,6 +2568,7 @@ namespace Basis.BasisUI
             Antialiasing.LoadBindingValue();
             Upscaling.LoadBindingValue();
             UpscalingQuality.LoadBindingValue();
+            ConservativeTemporalMotionVectors.LoadBindingValue();
             DevVariableRateShading.LoadBindingValue();
             DevVariableRateShadingDesktop.LoadBindingValue();
             DevGiDebugView.LoadBindingValue();

@@ -24,8 +24,22 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
         bool antialiasingChanged = matchedSettingName == BasisSettingsDefaults.Antialiasing.BindingKey;
         bool upscalingChanged = matchedSettingName == BasisSettingsDefaults.Upscaling.BindingKey;
         bool upscalingQualityChanged = matchedSettingName == BasisSettingsDefaults.UpscalingQuality.BindingKey;
-        if (!antialiasingChanged && !upscalingChanged && !upscalingQualityChanged)
+        bool conservativeMotionVectorsChanged = matchedSettingName == BasisSettingsDefaults.ConservativeTemporalMotionVectors.BindingKey;
+        if (!antialiasingChanged && !upscalingChanged && !upscalingQualityChanged && !conservativeMotionVectorsChanged)
             return;
+
+        if (conservativeMotionVectorsChanged)
+        {
+            if (bool.TryParse(optionValue, out bool enabled))
+            {
+                UniversalRenderPipeline.BasisConservativeTemporalMotionVectors = enabled;
+                if (enabled && !SystemInfo.supportsConservativeRaster)
+                    BasisDebug.LogWarning("Conservative temporal motion vectors are enabled, but this GPU/API does not support conservative rasterization.");
+                else
+                    BasisDebug.Log($"Conservative temporal motion vectors {(enabled ? "enabled" : "disabled")}", BasisDebug.LogTag.Local);
+            }
+            return;
+        }
 
         UniversalRenderPipelineAsset asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
         if (asset == null)

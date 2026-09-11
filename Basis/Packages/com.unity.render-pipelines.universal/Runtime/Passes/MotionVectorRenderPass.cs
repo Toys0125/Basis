@@ -143,10 +143,30 @@ namespace UnityEngine.Rendering.Universal
             passData.cameraMaterial = m_CameraMaterial;
         }
 
+        private static bool UseConservativeObjectRasterization()
+        {
+#if ENABLE_UPSCALER_FRAMEWORK
+            if (!UniversalRenderPipeline.BasisConservativeTemporalMotionVectors || !SystemInfo.supportsConservativeRaster)
+                return false;
+
+            IUpscaler activeUpscaler = UniversalRenderPipeline.upscaling?.activeUpscaler;
+            return activeUpscaler != null
+                && (activeUpscaler.name == BasisFsr2Upscaler.UpscalerName
+                    || activeUpscaler.name == BasisDlssXrUpscaler.UpscalerName);
+#else
+            return false;
+#endif
+        }
+
         private void InitRendererLists(ref PassData passData, ref CullingResults cullResults, bool supportsDynamicBatching, RenderGraph renderGraph)
         {
             var drawingSettings = GetDrawingSettings(passData.camera, supportsDynamicBatching);
             var renderStateBlock = new RenderStateBlock(RenderStateMask.Nothing);
+            if (UseConservativeObjectRasterization())
+            {
+                renderStateBlock.mask = RenderStateMask.Raster;
+                renderStateBlock.rasterState = new RasterState(conservative: true);
+            }
             RenderingUtils.CreateRendererListWithRenderStateBlock(renderGraph, ref cullResults, drawingSettings, m_FilteringSettings, renderStateBlock, ref passData.rendererListHdl);
         }
 
