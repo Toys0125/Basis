@@ -361,6 +361,28 @@ Shader "Hidden/Universal/CoreBlit"
             }
             ENDHLSL
         }
+
+        // 25: Composite premultiplied native-resolution UI over an upscaled scene.
+        Pass
+        {
+            Name "BasisPostUpscaleOverlayComposite"
+            ZWrite Off ZTest Always Blend Off Cull Off
+
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragmentBasisPostUpscaleOverlayComposite
+
+            TEXTURE2D_X(_BasisPostUpscaleOverlayTexture);
+
+            half4 FragmentBasisPostUpscaleOverlayComposite(Varyings input) : SV_Target
+            {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+                half4 sceneColor = FragBlit(input, sampler_LinearClamp);
+                half4 overlayColor = SAMPLE_TEXTURE2D_X(_BasisPostUpscaleOverlayTexture, sampler_LinearClamp, input.texcoord);
+                return overlayColor + sceneColor * (1.0h - overlayColor.a);
+            }
+            ENDHLSL
+        }
     }
 
     Fallback Off
