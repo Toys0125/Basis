@@ -161,7 +161,10 @@ namespace UnityEngine.Rendering.Universal
             UniversalPostProcessingData postProcessingData = frameData.Get<UniversalPostProcessingData>();
             bool temporalUpscalerActive = postProcessingData.activeUpscaler != null && postProcessingData.activeUpscaler.isTemporal;
             if (temporalUpscalerActive)
+            {
                 m_UpscalerPostProcessPass.RecordRenderGraph(renderGraph, frameData);
+                cameraData.renderer.RecordCustomRenderGraphPassesAfterTemporalUpscaling(renderGraph);
+            }
 #else
             m_StpPostProcessPass.RecordRenderGraph(renderGraph, frameData);
 #endif

@@ -226,7 +226,11 @@ namespace UnityEngine.Rendering.Universal
             renderObjectsAfterUpscalingPass = afterUpscalingMask != 0
                 ? CreatePass($"{settings.passTag} After Upscaling", RenderPassEvent.AfterRenderingPostProcessing, filter, afterUpscalingMask)
                 : null;
-            renderObjectsAfterUpscalingPass?.SetUseNonJitteredProjection(true);
+            if (renderObjectsAfterUpscalingPass != null)
+            {
+                renderObjectsAfterUpscalingPass.SetUseNonJitteredProjection(true);
+                renderObjectsAfterUpscalingPass.renderAfterTemporalUpscaling = true;
+            }
         }
 
         private RenderObjectsPass CreatePass(string passTag, RenderPassEvent renderPassEvent, FilterSettings filter, int layerMask)
@@ -270,8 +274,10 @@ namespace UnityEngine.Rendering.Universal
                 || UniversalRenderer.IsOffscreenDepthTexture(ref renderingData.cameraData))
                 return;
 
-            bool isUpscaling = renderingData.cameraData.imageScalingMode == ImageScalingMode.Upscaling;
-            if (!isUpscaling || renderObjectsAfterUpscalingPass == null)
+            bool isTemporalVendorUpscaling = renderingData.cameraData.imageScalingMode == ImageScalingMode.Upscaling
+                && renderingData.cameraData.IsTemporalAAEnabled()
+                && UniversalRenderPipeline.IsBasisTemporalUpscalerActive();
+            if (!isTemporalVendorUpscaling || renderObjectsAfterUpscalingPass == null)
             {
                 renderer.EnqueuePass(renderObjectsPass);
                 return;

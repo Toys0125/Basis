@@ -48,6 +48,18 @@ namespace UnityEngine.Rendering.Universal
         // vendor temporal upscaler and hardware conservative-raster support before using it.
         public static bool BasisConservativeTemporalMotionVectors { get; set; }
 
+        internal static bool IsBasisTemporalUpscalerActive()
+        {
+#if ENABLE_UPSCALER_FRAMEWORK
+            IUpscaler activeUpscaler = upscaling?.activeUpscaler;
+            return activeUpscaler != null && activeUpscaler.isTemporal
+                && (activeUpscaler.name == BasisFsr2Upscaler.UpscalerName
+                    || activeUpscaler.name == BasisDlssXrUpscaler.UpscalerName);
+#else
+            return false;
+#endif
+        }
+
 #if ENABLE_UPSCALER_FRAMEWORK
         internal class AutoUpscaler : AbstractUpscaler
         {

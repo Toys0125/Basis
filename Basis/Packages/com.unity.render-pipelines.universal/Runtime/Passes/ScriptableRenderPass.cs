@@ -255,6 +255,7 @@ namespace UnityEngine.Rendering.Universal
         protected internal string passName{ get { return m_PassName; } }
 
         internal bool isBlitRenderPass { get; set; }
+        internal bool renderAfterTemporalUpscaling { get; set; }
         
         // index to track the position in the current frame
         internal int renderPassQueueIndex { get; set; }

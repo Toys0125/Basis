@@ -194,7 +194,11 @@ namespace UnityEngine.Rendering.Universal.Internal
 
             var filterSettings = m_FilteringSettings;
             filterSettings.batchLayerMask = passData.batchLayerMask;
-            if (!m_IsOpaque && cameraData.imageScalingMode == ImageScalingMode.Upscaling && m_RenderAfterUpscalingLayerMask != 0)
+            if (!m_IsOpaque
+                && cameraData.imageScalingMode == ImageScalingMode.Upscaling
+                && cameraData.IsTemporalAAEnabled()
+                && UniversalRenderPipeline.IsBasisTemporalUpscalerActive()
+                && m_RenderAfterUpscalingLayerMask != 0)
             {
                 // Layers redrawn by a RenderObjects feature after upscaling must not also be
                 // rasterized into the low-resolution source image. Otherwise temporal/spatial

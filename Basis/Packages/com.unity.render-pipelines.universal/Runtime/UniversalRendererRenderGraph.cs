@@ -1340,7 +1340,9 @@ namespace UnityEngine.Rendering.Universal
             bool hasCaptureActions = cameraData.captureActions != null && cameraData.resolveFinalTarget;
 
             //We'll skip RecordCustomRenderGraphPasses(RenderPassEvent.AfterRenderingPostProcessing) if this is false so be careful when changing the check.
-            bool hasPassesAfterPostProcessing = activeRenderPassQueue.Find(x => x.renderPassEvent >= RenderPassEvent.AfterRenderingPostProcessing && x.renderPassEvent < RenderPassEvent.AfterRendering) != null;
+            bool hasPassesAfterPostProcessing = activeRenderPassQueue.Find(x => !x.renderAfterTemporalUpscaling
+                && x.renderPassEvent >= RenderPassEvent.AfterRenderingPostProcessing
+                && x.renderPassEvent < RenderPassEvent.AfterRendering) != null;
 
             bool xrDepthTargetResolved = resourceData.activeDepthID == UniversalResourceData.ActiveID.BackBuffer;
 
