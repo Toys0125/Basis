@@ -17,6 +17,12 @@ namespace UnityEngine.Rendering.Universal.Internal
         List<ShaderTagId> m_ShaderTagIdList = new List<ShaderTagId>();
 
         bool m_IsOpaque;
+        int m_RenderAfterUpscalingLayerMask;
+
+        internal void SetRenderAfterUpscalingLayerMask(int layerMask)
+        {
+            m_RenderAfterUpscalingLayerMask = layerMask;
+        }
 
         /// <summary>
         /// Used to indicate whether transparent objects should receive shadows or not.
@@ -188,6 +194,14 @@ namespace UnityEngine.Rendering.Universal.Internal
 
             var filterSettings = m_FilteringSettings;
             filterSettings.batchLayerMask = passData.batchLayerMask;
+            if (!m_IsOpaque && cameraData.imageScalingMode == ImageScalingMode.Upscaling && m_RenderAfterUpscalingLayerMask != 0)
+            {
+                // Layers redrawn by a RenderObjects feature after upscaling must not also be
+                // rasterized into the low-resolution source image. Otherwise temporal/spatial
+                // upscalers process one copy and the full-resolution pass blends a second copy
+                // over it, producing soft or doubled UI.
+                filterSettings.layerMask &= ~m_RenderAfterUpscalingLayerMask;
+            }
 #if UNITY_EDITOR
             // When rendering the preview camera, we want the layer mask to be forced to Everything
             if (cameraData.isPreviewCamera)

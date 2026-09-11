@@ -50,6 +50,13 @@ namespace UnityEngine.Rendering.Universal
             public FilterSettings filterSettings = new FilterSettings();
 
             /// <summary>
+            /// Optional subset of <see cref="FilterSettings.LayerMask"/> that should be drawn
+            /// after image upscaling instead of before post processing. This is intended for
+            /// native-resolution UI that must not be fed through FSR/DLSS.
+            /// </summary>
+            public LayerMask renderAfterUpscalingLayerMask = 0;
+
+            /// <summary>
             /// The override material to use.
             /// </summary>
             public Material overrideMaterial = null;
@@ -187,6 +194,13 @@ namespace UnityEngine.Rendering.Universal
         public RenderObjectsSettings settings = new RenderObjectsSettings();
 
         RenderObjectsPass renderObjectsPass;
+        RenderObjectsPass renderObjectsBeforeUpscalingPass;
+        RenderObjectsPass renderObjectsAfterUpscalingPass;
+
+        /// <summary>
+        /// Layers this feature removes from the normal transparent pass while upscaling is active.
+        /// </summary>
+        internal int renderAfterUpscalingLayerMask => settings.renderAfterUpscalingLayerMask.value & settings.filterSettings.LayerMask.value;
 
         /// <inheritdoc/>
         public override void Create()
@@ -201,34 +215,51 @@ namespace UnityEngine.Rendering.Universal
             if (settings.Event < RenderPassEvent.BeforeRenderingPrePasses)
                 settings.Event = RenderPassEvent.BeforeRenderingPrePasses;
 
-            renderObjectsPass = new RenderObjectsPass(settings.passTag, settings.Event, filter.PassNames,
-                filter.RenderQueueType, filter.LayerMask, settings.cameraSettings);
+            int afterUpscalingMask = renderAfterUpscalingLayerMask;
+            int beforeUpscalingMask = filter.LayerMask.value & ~afterUpscalingMask;
+
+            // Preserve the original single-pass path whenever the camera is not being upscaled.
+            renderObjectsPass = CreatePass(settings.passTag, settings.Event, filter, filter.LayerMask.value);
+            renderObjectsBeforeUpscalingPass = afterUpscalingMask != 0 && beforeUpscalingMask != 0
+                ? CreatePass($"{settings.passTag} Before Upscaling", settings.Event, filter, beforeUpscalingMask)
+                : null;
+            renderObjectsAfterUpscalingPass = afterUpscalingMask != 0
+                ? CreatePass($"{settings.passTag} After Upscaling", RenderPassEvent.AfterRenderingPostProcessing, filter, afterUpscalingMask)
+                : null;
+        }
+
+        private RenderObjectsPass CreatePass(string passTag, RenderPassEvent renderPassEvent, FilterSettings filter, int layerMask)
+        {
+            RenderObjectsPass pass = new RenderObjectsPass(passTag, renderPassEvent, filter.PassNames,
+                filter.RenderQueueType, layerMask, settings.cameraSettings);
 
             switch (settings.overrideMode)
             {
                 case RenderObjectsSettings.OverrideMaterialMode.None:
-                    renderObjectsPass.overrideMaterial = null;
-                    renderObjectsPass.overrideShader = null;
+                    pass.overrideMaterial = null;
+                    pass.overrideShader = null;
                     break;
                 case RenderObjectsSettings.OverrideMaterialMode.Material:
-                    renderObjectsPass.overrideMaterial = settings.overrideMaterial;
-                    renderObjectsPass.overrideMaterialPassIndex = settings.overrideMaterialPassIndex;
-                    renderObjectsPass.overrideShader = null;
+                    pass.overrideMaterial = settings.overrideMaterial;
+                    pass.overrideMaterialPassIndex = settings.overrideMaterialPassIndex;
+                    pass.overrideShader = null;
                     break;
                 case RenderObjectsSettings.OverrideMaterialMode.Shader:
-                    renderObjectsPass.overrideMaterial = null;
-                    renderObjectsPass.overrideShader = settings.overrideShader;
-                    renderObjectsPass.overrideShaderPassIndex = settings.overrideShaderPassIndex;
+                    pass.overrideMaterial = null;
+                    pass.overrideShader = settings.overrideShader;
+                    pass.overrideShaderPassIndex = settings.overrideShaderPassIndex;
                     break;
             }
 
             if (settings.overrideDepthState)
-                renderObjectsPass.SetDepthState(settings.enableWrite, settings.depthCompareFunction);
+                pass.SetDepthState(settings.enableWrite, settings.depthCompareFunction);
 
             if (settings.stencilSettings.overrideStencilState)
-                renderObjectsPass.SetStencilState(settings.stencilSettings.stencilReference,
+                pass.SetStencilState(settings.stencilSettings.stencilReference,
                     settings.stencilSettings.stencilCompareFunction, settings.stencilSettings.passOperation,
                     settings.stencilSettings.failOperation, settings.stencilSettings.zFailOperation);
+
+            return pass;
         }
 
         /// <inheritdoc/>
@@ -237,7 +268,17 @@ namespace UnityEngine.Rendering.Universal
             if (renderingData.cameraData.cameraType == CameraType.Preview
                 || UniversalRenderer.IsOffscreenDepthTexture(ref renderingData.cameraData))
                 return;
-            renderer.EnqueuePass(renderObjectsPass);
+
+            bool isUpscaling = renderingData.cameraData.imageScalingMode == ImageScalingMode.Upscaling;
+            if (!isUpscaling || renderObjectsAfterUpscalingPass == null)
+            {
+                renderer.EnqueuePass(renderObjectsPass);
+                return;
+            }
+
+            if (renderObjectsBeforeUpscalingPass != null)
+                renderer.EnqueuePass(renderObjectsBeforeUpscalingPass);
+            renderer.EnqueuePass(renderObjectsAfterUpscalingPass);
         }
     }
 }

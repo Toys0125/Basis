@@ -393,12 +393,20 @@ namespace UnityEngine.Rendering.Universal
 
             m_DrawSkyboxPass = new DrawSkyboxPass(RenderPassEvent.BeforeRenderingSkybox);
             m_CopyColorPass = new CopyColorPass(RenderPassEvent.AfterRenderingSkybox, m_SamplingMaterial, m_BlitMaterial);
+
+            int renderAfterUpscalingLayerMask = 0;
+            foreach (ScriptableRendererFeature feature in rendererFeatures)
+            {
+                if (feature is RenderObjects renderObjects && feature.isActive)
+                    renderAfterUpscalingLayerMask |= renderObjects.renderAfterUpscalingLayerMask;
+            }
 #if ENABLE_ADAPTIVE_PERFORMANCE
             if (needTransparencyPass)
 #endif
             {
                 m_TransparentSettingsPass = new TransparentSettingsPass(RenderPassEvent.BeforeRenderingTransparents, data.shadowTransparentReceive);
                 m_RenderTransparentForwardPass = new DrawObjectsPass(URPProfileId.DrawTransparentObjects, false, RenderPassEvent.BeforeRenderingTransparents, RenderQueueRange.transparent, data.transparentLayerMask, m_DefaultStencilState, stencilData.stencilReference);
+                m_RenderTransparentForwardPass.SetRenderAfterUpscalingLayerMask(renderAfterUpscalingLayerMask);
             }
             m_OnRenderObjectCallbackPass = new InvokeOnRenderObjectCallbackPass(RenderPassEvent.BeforeRenderingPostProcessing);
 

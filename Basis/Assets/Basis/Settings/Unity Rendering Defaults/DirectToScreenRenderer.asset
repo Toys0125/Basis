@@ -315,6 +315,9 @@ MonoBehaviour:
         serializedVersion: 2
         m_Bits: 2592
       PassNames: []
+    renderAfterUpscalingLayerMask:
+      serializedVersion: 2
+      m_Bits: 512
     overrideMaterial: {fileID: 0}
     overrideMaterialPassIndex: 0
     overrideShader: {fileID: 0}
