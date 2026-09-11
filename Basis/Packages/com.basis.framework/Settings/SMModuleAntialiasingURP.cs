@@ -24,19 +24,16 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
         bool antialiasingChanged = matchedSettingName == BasisSettingsDefaults.Antialiasing.BindingKey;
         bool upscalingChanged = matchedSettingName == BasisSettingsDefaults.Upscaling.BindingKey;
         bool upscalingQualityChanged = matchedSettingName == BasisSettingsDefaults.UpscalingQuality.BindingKey;
-        bool conservativeMotionVectorsChanged = matchedSettingName == BasisSettingsDefaults.ConservativeTemporalMotionVectors.BindingKey;
-        if (!antialiasingChanged && !upscalingChanged && !upscalingQualityChanged && !conservativeMotionVectorsChanged)
+        bool motionVectorEdgeRepairChanged = matchedSettingName == BasisSettingsDefaults.TemporalMotionVectorEdgeRepair.BindingKey;
+        if (!antialiasingChanged && !upscalingChanged && !upscalingQualityChanged && !motionVectorEdgeRepairChanged)
             return;
 
-        if (conservativeMotionVectorsChanged)
+        if (motionVectorEdgeRepairChanged)
         {
             if (bool.TryParse(optionValue, out bool enabled))
             {
-                UniversalRenderPipeline.BasisConservativeTemporalMotionVectors = enabled;
-                if (enabled && !SystemInfo.supportsConservativeRaster)
-                    BasisDebug.LogWarning("Conservative temporal motion vectors are enabled, but this GPU/API does not support conservative rasterization.");
-                else
-                    BasisDebug.Log($"Conservative temporal motion vectors {(enabled ? "enabled" : "disabled")}", BasisDebug.LogTag.Local);
+                UniversalRenderPipeline.BasisTemporalMotionVectorEdgeRepair = enabled;
+                BasisDebug.Log($"Temporal motion-vector edge repair {(enabled ? "enabled" : "disabled")}", BasisDebug.LogTag.Local);
             }
             return;
         }

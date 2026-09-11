@@ -44,9 +44,9 @@ namespace UnityEngine.Rendering.Universal
         internal static readonly int k_UpscalerHash_FSR1 = Shader.PropertyToID(k_UpscalerName_FSR1);
         internal static readonly int k_UpscalerHash_STP = Shader.PropertyToID(k_UpscalerName_STP);
 
-        // Basis experimental A/B control. The motion-vector pass additionally requires an active
-        // vendor temporal upscaler and hardware conservative-raster support before using it.
-        public static bool BasisConservativeTemporalMotionVectors { get; set; }
+        // Basis experimental A/B control. When enabled, temporal vendor upscalers receive a
+        // depth-aware repaired motion-vector texture instead of the raw URP motion-vector texture.
+        public static bool BasisTemporalMotionVectorEdgeRepair { get; set; }
 
         internal static bool IsBasisTemporalUpscalerActive()
         {

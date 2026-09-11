@@ -1904,20 +1904,20 @@ namespace Basis.BasisUI
             });
             dropdownUpscalingQuality.AssignBinding(BasisSettingsDefaults.UpscalingQuality);
 
-            PanelToggle toggleConservativeMotionVectors = PanelToggle.CreateNewEntry(qualityGroup.ContentParent);
-            toggleConservativeMotionVectors.Descriptor.SetTitle("Conservative Motion Vectors (Experimental)");
-            toggleConservativeMotionVectors.Descriptor.SetTooltip("Expands object motion-vector raster coverage for thin geometry while FSR 2 or DLSS is active. Intended for A/B quality and GPU-cost benchmarking.");
-            toggleConservativeMotionVectors.AssignBinding(BasisSettingsDefaults.ConservativeTemporalMotionVectors);
+            PanelToggle toggleMotionVectorEdgeRepair = PanelToggle.CreateNewEntry(qualityGroup.ContentParent);
+            toggleMotionVectorEdgeRepair.Descriptor.SetTitle("Motion Vector Edge Repair (Experimental)");
+            toggleMotionVectorEdgeRepair.Descriptor.SetTooltip("Repairs isolated motion-vector edge outliers using neighboring samples only when their scene depth matches. Intended for A/B quality and GPU-cost benchmarking with FSR 2 or DLSS.");
+            toggleMotionVectorEdgeRepair.AssignBinding(BasisSettingsDefaults.TemporalMotionVectorEdgeRepair);
 
             bool ShowTemporalUpscalerOptions(string value) => value == "FSR 2" || value == "DLSS";
             bool showTemporalUpscalerOptions = ShowTemporalUpscalerOptions(dropdownUpscaling.Value);
             dropdownUpscalingQuality.Descriptor.SetActive(showTemporalUpscalerOptions);
-            toggleConservativeMotionVectors.Descriptor.SetActive(showTemporalUpscalerOptions);
+            toggleMotionVectorEdgeRepair.Descriptor.SetActive(showTemporalUpscalerOptions);
             dropdownUpscaling.OnValueChanged += value =>
             {
                 bool visible = ShowTemporalUpscalerOptions(value);
                 dropdownUpscalingQuality.Descriptor.SetActive(visible);
-                toggleConservativeMotionVectors.Descriptor.SetActive(visible);
+                toggleMotionVectorEdgeRepair.Descriptor.SetActive(visible);
                 qualityGroup.ForceRebuild();
             };
 
@@ -3588,7 +3588,7 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.Antialiasing.ResetToDefault();
             BasisSettingsDefaults.Upscaling.ResetToDefault();
             BasisSettingsDefaults.UpscalingQuality.ResetToDefault();
-            BasisSettingsDefaults.ConservativeTemporalMotionVectors.ResetToDefault();
+            BasisSettingsDefaults.TemporalMotionVectorEdgeRepair.ResetToDefault();
             BasisSettingsDefaults.VSync.ResetToDefault();
             BasisSettingsDefaults.VSyncCapFps.ResetToDefault();
             BasisSettingsDefaults.HeadsetRefreshRate.ResetToDefault();

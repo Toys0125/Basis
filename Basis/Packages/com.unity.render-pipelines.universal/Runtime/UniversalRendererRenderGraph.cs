@@ -948,6 +948,8 @@ namespace UnityEngine.Rendering.Universal
         private void RenderMotionVectors(RenderGraph renderGraph, UniversalResourceData resourceData)
         {
             m_MotionVectorPass.Render(renderGraph, frameData, resourceData.cameraDepthTexture, resourceData.motionVectorColor, resourceData.motionVectorDepth);
+            resourceData.motionVectorColor = m_MotionVectorEdgeRepairPass.Render(
+                renderGraph, resourceData.motionVectorColor, resourceData.cameraDepthTexture);
         }
 
         private void ExecuteScheduledDepthCopyWithMotion(RenderGraph renderGraph, UniversalResourceData resourceData, bool renderMotionVectors)

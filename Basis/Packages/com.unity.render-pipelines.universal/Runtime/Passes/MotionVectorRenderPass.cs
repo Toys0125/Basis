@@ -143,32 +143,10 @@ namespace UnityEngine.Rendering.Universal
             passData.cameraMaterial = m_CameraMaterial;
         }
 
-        private static bool UseConservativeObjectRasterization()
-        {
-#if ENABLE_UPSCALER_FRAMEWORK
-            if (!UniversalRenderPipeline.BasisConservativeTemporalMotionVectors || !SystemInfo.supportsConservativeRaster)
-                return false;
-
-            IUpscaler activeUpscaler = UniversalRenderPipeline.upscaling?.activeUpscaler;
-            return activeUpscaler != null
-                && (activeUpscaler.name == BasisFsr2Upscaler.UpscalerName
-                    || activeUpscaler.name == BasisDlssXrUpscaler.UpscalerName);
-#else
-            return false;
-#endif
-        }
-
         private void InitRendererLists(ref PassData passData, ref CullingResults cullResults, bool supportsDynamicBatching, RenderGraph renderGraph)
         {
             var drawingSettings = GetDrawingSettings(passData.camera, supportsDynamicBatching);
             var renderStateBlock = new RenderStateBlock(RenderStateMask.Nothing);
-            if (UseConservativeObjectRasterization())
-            {
-                renderStateBlock.mask = RenderStateMask.Raster;
-                RasterState rasterState = RasterState.defaultValue;
-                rasterState.conservative = true;
-                renderStateBlock.rasterState = rasterState;
-            }
             RenderingUtils.CreateRendererListWithRenderStateBlock(renderGraph, ref cullResults, drawingSettings, m_FilteringSettings, renderStateBlock, ref passData.rendererListHdl);
         }
 
@@ -242,6 +220,85 @@ namespace UnityEngine.Rendering.Universal
                     });
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Experimental post-filter for temporal-upscaler motion vectors. It repairs isolated motion-vector
+    /// outliers only when neighboring samples belong to approximately the same visible depth surface.
+    /// Unlike conservative rasterization, it never changes mesh raster state or deliberately expands
+    /// foreground motion vectors onto background depth pixels.
+    /// </summary>
+    sealed class MotionVectorEdgeRepairPass : IDisposable
+    {
+        const string k_TargetName = "_MotionVectorTextureEdgeRepaired";
+        static readonly int s_DepthTextureId = Shader.PropertyToID("_MotionVectorRepairDepth");
+        static readonly int s_SourceSizeId = Shader.PropertyToID("_SourceSize");
+        static readonly int s_MotionVectorTextureId = Shader.PropertyToID(MotionVectorRenderPass.k_MotionVectorTextureName);
+
+        readonly ProfilingSampler m_ProfilingSampler = new ProfilingSampler("Motion Vector Edge Repair");
+        Material m_Material;
+
+        internal MotionVectorEdgeRepairPass(Shader shader)
+        {
+            if (shader != null)
+                m_Material = CoreUtils.CreateEngineMaterial(shader);
+        }
+
+        public void Dispose()
+        {
+            CoreUtils.Destroy(m_Material);
+            m_Material = null;
+        }
+
+        private class PassData
+        {
+            internal TextureHandle source;
+            internal TextureHandle depth;
+            internal Material material;
+        }
+
+        internal TextureHandle Render(RenderGraph renderGraph, in TextureHandle source, in TextureHandle depth)
+        {
+            if (m_Material == null
+                || !source.IsValid()
+                || !depth.IsValid()
+                || !UniversalRenderPipeline.BasisTemporalMotionVectorEdgeRepair
+                || !UniversalRenderPipeline.IsBasisTemporalUpscalerActive())
+            {
+                return source;
+            }
+
+            TextureHandle destination = PostProcessUtils.CreateCompatibleTexture(
+                renderGraph, source, k_TargetName, true, FilterMode.Point);
+
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(
+                       "Motion Vector Edge Repair", out var passData, m_ProfilingSampler))
+            {
+                passData.source = source;
+                passData.depth = depth;
+                passData.material = m_Material;
+
+                builder.UseTexture(source, AccessFlags.Read);
+                builder.UseTexture(depth, AccessFlags.Read);
+                builder.SetRenderAttachment(destination, 0, AccessFlags.Write);
+                builder.AllowGlobalStateModification(true);
+                builder.SetGlobalTextureAfterPass(destination, s_MotionVectorTextureId);
+
+                builder.SetRenderFunc(static (PassData data, RasterGraphContext context) =>
+                {
+                    RTHandle sourceHandle = data.source;
+                    data.material.SetTexture(s_DepthTextureId, data.depth);
+                    data.material.SetVector(s_SourceSizeId, PostProcessUtils.CalcShaderSourceSize(sourceHandle));
+
+                    Vector2 viewportScale = sourceHandle.useScaling
+                        ? new Vector2(sourceHandle.rtHandleProperties.rtHandleScale.x, sourceHandle.rtHandleProperties.rtHandleScale.y)
+                        : Vector2.one;
+                    Blitter.BlitTexture(context.cmd, sourceHandle, viewportScale, data.material, 0);
+                });
+            }
+
+            return destination;
         }
     }
 }

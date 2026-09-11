@@ -132,6 +132,7 @@ namespace UnityEngine.Rendering.Universal
         DepthOnlyPass m_DepthPrepass;
         DepthNormalOnlyPass m_DepthNormalPrepass;
         MotionVectorRenderPass m_MotionVectorPass;
+        MotionVectorEdgeRepairPass m_MotionVectorEdgeRepairPass;
         MainLightShadowCasterPass m_MainLightShadowCasterPass;
         AdditionalLightsShadowCasterPass m_AdditionalLightsShadowCasterPass;
         GBufferPass m_GBufferPass;
@@ -238,10 +239,12 @@ namespace UnityEngine.Rendering.Universal
             }
 
             Shader copyDephPS = null;
+            Shader motionVectorEdgeRepairPS = null;
             if (GraphicsSettings.TryGetRenderPipelineSettings<UniversalRendererResources>(
                     out var universalRendererShaders))
             {
                 copyDephPS = universalRendererShaders.copyDepthPS;
+                motionVectorEdgeRepairPS = universalRendererShaders.motionVectorEdgeRepair;
                 m_StencilDeferredMaterial = CoreUtils.CreateEngineMaterial(universalRendererShaders.stencilDeferredPS);
                 m_ClusterDeferredMaterial = CoreUtils.CreateEngineMaterial(universalRendererShaders.clusterDeferred);
                 m_CameraMotionVecMaterial = CoreUtils.CreateEngineMaterial(universalRendererShaders.cameraMotionVector);
@@ -390,6 +393,7 @@ namespace UnityEngine.Rendering.Universal
 
             // Motion vectors depend on the (copy) depth texture. Depth is reprojected to calculate motion vectors.
             m_MotionVectorPass = new MotionVectorRenderPass(copyDepthEvent + 1, m_CameraMotionVecMaterial, data.opaqueLayerMask);
+            m_MotionVectorEdgeRepairPass = new MotionVectorEdgeRepairPass(motionVectorEdgeRepairPS);
 
             m_DrawSkyboxPass = new DrawSkyboxPass(RenderPassEvent.BeforeRenderingSkybox);
             m_CopyColorPass = new CopyColorPass(RenderPassEvent.AfterRenderingSkybox, m_SamplingMaterial, m_BlitMaterial);
@@ -511,6 +515,7 @@ namespace UnityEngine.Rendering.Universal
 #endif
 
             m_StencilCrossFadeRenderPass?.Dispose();
+            m_MotionVectorEdgeRepairPass?.Dispose();
 
             // RG
             m_PostProcess?.Dispose();

@@ -71,6 +71,19 @@ namespace UnityEngine.Rendering.Universal
         }
 
         [SerializeField]
+        [ResourcePath("Shaders/Utils/MotionVectorEdgeRepair.shader")]
+        private Shader m_MotionVectorEdgeRepair;
+
+        /// <summary>
+        /// Shader used by the optional Basis temporal motion-vector edge repair experiment.
+        /// </summary>
+        public Shader motionVectorEdgeRepair
+        {
+            get => m_MotionVectorEdgeRepair;
+            set => this.SetValueAndNotify(ref m_MotionVectorEdgeRepair, value, nameof(m_MotionVectorEdgeRepair));
+        }
+
+        [SerializeField]
         [ResourcePath("Shaders/Utils/StencilDeferred.shader")]
         private Shader m_StencilDeferredPS;
 
