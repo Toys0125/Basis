@@ -247,6 +247,11 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
         };
 #endif
 
+        // Changing the upscaler changes the meaning of URP's renderScale. Spatial/non-temporal
+        // paths use the normal Render Resolution setting, while FSR2/DLSS use the dedicated
+        // source-resolution percentage.
+        SMModuleRenderResolutionURP.ApplyPipelineRenderScale(asset, BasisSettingsDefaults.RenderResolution.RawValue);
+
         BasisDebug.Log($"Upscaling Changed to {requestedName}", BasisDebug.LogTag.Local);
     }
 

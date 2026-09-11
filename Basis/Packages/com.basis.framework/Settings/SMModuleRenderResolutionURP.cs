@@ -27,9 +27,14 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
     public static event System.Action<float> UserRenderScaleChanged;
 
     public static float UserRenderScale => Mathf.Clamp(BasisSettingsDefaults.RenderResolution.RawValue, 0.1f, 2f);
+    public static float TemporalUpscalingSourceScale => Mathf.Clamp(
+        BasisSettingsDefaults.TemporalUpscalingSourceResolution.RawValue,
+        BasisSettingsDefaults.TemporalUpscalingSourceResolutionMin,
+        BasisSettingsDefaults.TemporalUpscalingSourceResolutionMax);
 
     // --- Canonical setting keys (from defaults) ---
     private static string K_RENDER_RESOLUTION => BasisSettingsDefaults.RenderResolution.BindingKey;     // "render resolution"
+    private static string K_TEMPORAL_UPSCALING_SOURCE_RESOLUTION => BasisSettingsDefaults.TemporalUpscalingSourceResolution.BindingKey;
     private static string K_FOVEATED_RENDERING => BasisSettingsDefaults.FoveatedRendering.BindingKey;   // "foveated rendering"
     private static string K_DYNAMIC_RESOLUTION => BasisSettingsDefaults.DynamicResolutionEnabled.BindingKey;
     private static string K_DYNAMIC_RESOLUTION_MINIMUM => BasisSettingsDefaults.DynamicResolutionMinimumScale.BindingKey;
@@ -80,6 +85,17 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
                 if (SliderReadOption(optionValue, out float renderResolution))
                 {
                     HandleRenderResolution(renderResolution);
+                }
+                else
+                {
+                    BasisDebug.LogError("Can't parse value!", BasisDebug.LogTag.Device);
+                }
+                break;
+
+            case var s when s == K_TEMPORAL_UPSCALING_SOURCE_RESOLUTION:
+                if (SliderReadOption(optionValue, out _))
+                {
+                    HandleRenderResolution(BasisSettingsDefaults.RenderResolution.RawValue);
                 }
                 else
                 {
@@ -141,11 +157,7 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
                     XRSettings.eyeTextureResolutionScale = 1f;
                 }
 
-                if (asset != null && !Mathf.Approximately(asset.renderScale, option))
-                {
-                    asset.renderScale = option;
-                    BasisDebug.Log($"DLSS VR render scale set to {option:F3}", BasisDebug.LogTag.Video);
-                }
+                ApplyPipelineRenderScale(asset, option);
                 return;
             }
 
@@ -170,11 +182,58 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
         {
             XRSettings.eyeTextureResolutionScale = 1f;
         }
-        if (asset != null && !Mathf.Approximately(asset.renderScale, option))
+        ApplyPipelineRenderScale(asset, option);
+    }
+
+    /// <summary>
+    /// Applies the URP render scale that feeds the camera color buffer. Temporal vendor upscalers
+    /// use their dedicated source-resolution setting; other desktop paths keep using the normal
+    /// Render Resolution setting. VR paths that are not handled by Basis DLSS keep URP at 100%
+    /// because their XR output scale is owned separately above.
+    /// </summary>
+    public static void ApplyPipelineRenderScale(UniversalRenderPipelineAsset asset, float regularRenderScale)
+    {
+        if (asset == null)
         {
-            asset.renderScale = option;
-            BasisDebug.Log($"Render scale set to {option:F3}", BasisDebug.LogTag.Video);
+            return;
         }
+
+        bool temporalVendorUpscaler = IsTemporalVendorUpscaler(asset);
+        float targetScale;
+        if (temporalVendorUpscaler)
+        {
+            targetScale = TemporalUpscalingSourceScale;
+        }
+        else if (XRSettings.enabled && BasisDeviceManagement.IsCurrentModeVR())
+        {
+            targetScale = 1f;
+        }
+        else
+        {
+            targetScale = Mathf.Clamp(regularRenderScale, 0.1f, 2f);
+        }
+
+        if (Mathf.Approximately(asset.renderScale, targetScale))
+        {
+            return;
+        }
+
+        asset.renderScale = targetScale;
+        BasisDebug.Log(
+            temporalVendorUpscaler
+                ? $"Temporal upscaler source resolution set to {targetScale:P0}"
+                : $"Render scale set to {targetScale:F3}",
+            BasisDebug.LogTag.Video);
+    }
+
+    private static bool IsTemporalVendorUpscaler(UniversalRenderPipelineAsset asset)
+    {
+#if ENABLE_UPSCALER_FRAMEWORK
+        return asset.upscalerName == BasisFsr2Upscaler.UpscalerName
+            || asset.upscalerName == BasisDlssXrState.UpscalerName;
+#else
+        return false;
+#endif
     }
 
     private void HandleDynamicResolution()

@@ -1691,10 +1691,18 @@ namespace UnityEngine.Rendering.Universal
             bool isScenePreviewOrReflectionCamera = cameraData.cameraType == CameraType.SceneView || cameraData.cameraType == CameraType.Preview || cameraData.cameraType == CameraType.Reflection;
             bool isGameCamera = !isScenePreviewOrReflectionCamera;
 
-            // Discard variations lesser than kRenderScaleThreshold.
-            // Scale is only enabled for gameview.
+            // Discard tiny render-scale variations for the normal path. A user-selected temporal
+            // source percentage must remain exact, though: 97% source resolution should not be
+            // silently snapped back to 100% just because it is close to native resolution.
             const float kRenderScaleThreshold = 0.05f;
-            bool disableRenderScale = (Mathf.Abs(1.0f - settings.renderScale) < kRenderScaleThreshold) || isScenePreviewOrReflectionCamera || !supportedRenderingFeatures.upscaling;
+            bool preserveTemporalSourceScale = false;
+#if ENABLE_UPSCALER_FRAMEWORK
+            preserveTemporalSourceScale = settings.upscalerName == BasisFsr2Upscaler.UpscalerName
+                || settings.upscalerName == BasisDlssXrUpscaler.UpscalerName;
+#endif
+            bool disableRenderScale = (!preserveTemporalSourceScale && Mathf.Abs(1.0f - settings.renderScale) < kRenderScaleThreshold)
+                || isScenePreviewOrReflectionCamera
+                || !supportedRenderingFeatures.upscaling;
             cameraData.renderScale = disableRenderScale? 1.0f : settings.renderScale;
 
 #if ENABLE_UPSCALER_FRAMEWORK

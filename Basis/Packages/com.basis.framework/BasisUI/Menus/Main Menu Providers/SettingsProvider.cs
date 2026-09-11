@@ -1892,17 +1892,38 @@ namespace Basis.BasisUI
             dropdownUpscaling.AssignBinding(BasisSettingsDefaults.Upscaling);
 
             PanelDropdown dropdownUpscalingQuality = PanelDropdown.CreateNewEntry(qualityGroup.ContentParent);
-            dropdownUpscalingQuality.Descriptor.SetTitle("Upscaling Quality");
-            dropdownUpscalingQuality.Descriptor.SetTooltip("Automatic keeps the Render Resolution setting. Quality, Balanced, Performance, and Ultra Performance use the temporal upscaler's vendor-recommended fixed input resolution.");
-            dropdownUpscalingQuality.AssignEntries(new List<string>
-            {
-                "Automatic",
-                "Quality",
-                "Balanced",
-                "Performance",
-                "Ultra Performance"
-            });
+            dropdownUpscalingQuality.Descriptor.SetTitle("Source Resolution Preset");
+            dropdownUpscalingQuality.Descriptor.SetTooltip("Custom uses the Source Resolution slider. Quality, Balanced, Performance, and Ultra Performance use the temporal upscaler's vendor-recommended fixed input resolution.");
+            dropdownUpscalingQuality.AssignEntries(
+                new List<string>
+                {
+                    "Automatic",
+                    "Quality",
+                    "Balanced",
+                    "Performance",
+                    "Ultra Performance"
+                },
+                new List<string>
+                {
+                    "Custom",
+                    "Quality",
+                    "Balanced",
+                    "Performance",
+                    "Ultra Performance"
+                });
             dropdownUpscalingQuality.AssignBinding(BasisSettingsDefaults.UpscalingQuality);
+
+            PanelSlider sliderTemporalUpscalingSourceResolution = PanelSlider.CreateEntryAndBind(
+                qualityGroup.ContentParent,
+                PanelSlider.SliderSettings.Advanced(
+                    "Source Resolution",
+                    BasisSettingsDefaults.TemporalUpscalingSourceResolutionMin,
+                    BasisSettingsDefaults.TemporalUpscalingSourceResolutionMax,
+                    false,
+                    2,
+                    ValueDisplayMode.percentageFromZero),
+                BasisSettingsDefaults.TemporalUpscalingSourceResolution);
+            sliderTemporalUpscalingSourceResolution.Descriptor.SetTooltip("Controls the scene resolution rendered before FSR 2 or DLSS upscales it to the output resolution. This does not reduce the native-resolution menu/UI pass.");
 
             PanelToggle toggleMotionVectorEdgeRepair = PanelToggle.CreateNewEntry(qualityGroup.ContentParent);
             toggleMotionVectorEdgeRepair.Descriptor.SetTitle("Motion Vector Edge Repair (Experimental)");
@@ -1910,16 +1931,19 @@ namespace Basis.BasisUI
             toggleMotionVectorEdgeRepair.AssignBinding(BasisSettingsDefaults.TemporalMotionVectorEdgeRepair);
 
             bool ShowTemporalUpscalerOptions(string value) => value == "FSR 2" || value == "DLSS";
-            bool showTemporalUpscalerOptions = ShowTemporalUpscalerOptions(dropdownUpscaling.Value);
-            dropdownUpscalingQuality.Descriptor.SetActive(showTemporalUpscalerOptions);
-            toggleMotionVectorEdgeRepair.Descriptor.SetActive(showTemporalUpscalerOptions);
-            dropdownUpscaling.OnValueChanged += value =>
+            bool UseCustomTemporalSourceResolution(string value) => string.Equals(value, "Automatic", StringComparison.OrdinalIgnoreCase);
+            void RefreshTemporalUpscalerOptions()
             {
-                bool visible = ShowTemporalUpscalerOptions(value);
+                bool visible = ShowTemporalUpscalerOptions(dropdownUpscaling.Value);
                 dropdownUpscalingQuality.Descriptor.SetActive(visible);
+                sliderTemporalUpscalingSourceResolution.Descriptor.SetActive(visible && UseCustomTemporalSourceResolution(dropdownUpscalingQuality.Value));
                 toggleMotionVectorEdgeRepair.Descriptor.SetActive(visible);
                 qualityGroup.ForceRebuild();
-            };
+            }
+
+            RefreshTemporalUpscalerOptions();
+            dropdownUpscaling.OnValueChanged += _ => RefreshTemporalUpscalerOptions();
+            dropdownUpscalingQuality.OnValueChanged += _ => RefreshTemporalUpscalerOptions();
 
             if (BasisDeviceManagement.IsUserInDesktop())
             {
@@ -3588,6 +3612,7 @@ namespace Basis.BasisUI
             BasisSettingsDefaults.Antialiasing.ResetToDefault();
             BasisSettingsDefaults.Upscaling.ResetToDefault();
             BasisSettingsDefaults.UpscalingQuality.ResetToDefault();
+            BasisSettingsDefaults.TemporalUpscalingSourceResolution.ResetToDefault();
             BasisSettingsDefaults.TemporalMotionVectorEdgeRepair.ResetToDefault();
             BasisSettingsDefaults.VSync.ResetToDefault();
             BasisSettingsDefaults.VSyncCapFps.ResetToDefault();

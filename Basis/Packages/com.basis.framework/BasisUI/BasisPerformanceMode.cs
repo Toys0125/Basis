@@ -757,6 +757,7 @@ namespace Basis.BasisUI
                 Floats(BasisSettingsDefaults.OpenLipSyncMaxSlots, 20f, 12f, 6f),
 
                 Floats(BasisSettingsDefaults.RenderResolution, float.NaN, float.NaN, 0.85f),
+                Floats(BasisSettingsDefaults.TemporalUpscalingSourceResolution, float.NaN, float.NaN, 0.85f),
 
                 Floats(BasisSettingsDefaults.JiggleCollisionCullDistance, 15f, 10f, 6f),
                 Floats(BasisSettingsDefaults.JiggleColliderLodNearDistance, 15f, 10f, 5f),
