@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
+using UnityEngine.Rendering.RenderGraphModule.Util;
 using UnityEngine.Scripting.APIUpdating;
 
 namespace UnityEngine.Rendering.Universal
@@ -16,8 +16,6 @@ namespace UnityEngine.Rendering.Universal
         FilteringSettings m_FilteringSettings;
         RenderObjects.CustomCameraSettings m_CameraSettings;
         bool m_UseNonJitteredProjection;
-        static readonly int s_PostUpscaleOverlayTextureId = Shader.PropertyToID("_BasisPostUpscaleOverlayTexture");
-        const string k_PostUpscaleCompositePassName = "BasisPostUpscaleOverlayComposite";
 
         internal void SetUseNonJitteredProjection(bool value)
         {
@@ -236,14 +234,6 @@ namespace UnityEngine.Rendering.Universal
             internal RendererList rendererList;
         }
 
-        private class CompositePassData
-        {
-            internal TextureHandle source;
-            internal TextureHandle overlay;
-            internal Material material;
-            internal int passIndex;
-        }
-
         private void InitPassData(UniversalCameraData cameraData, ref PassData passData)
         {
             passData.cameraSettings = m_CameraSettings;
@@ -253,7 +243,7 @@ namespace UnityEngine.Rendering.Universal
         }
 
         private void InitRendererLists(UniversalRenderingData renderingData, UniversalLightData lightData,
-            ref PassData passData, RenderGraph renderGraph, bool premultiplyOverlayOutput = false)
+            ref PassData passData, RenderGraph renderGraph)
         {
             SortingCriteria sortingCriteria = (renderQueueType == RenderQueueType.Transparent)
                 ? SortingCriteria.CommonTransparent
@@ -265,31 +255,16 @@ namespace UnityEngine.Rendering.Universal
             drawingSettings.overrideShader = overrideShader;
             drawingSettings.overrideShaderPassIndex = overrideShaderPassIndex;
 
-            RenderStateBlock renderStateBlock = m_RenderStateBlock;
-            if (premultiplyOverlayOutput)
-            {
-                // Render the UI into a transparent intermediate as premultiplied color with straight
-                // coverage alpha. This lets the composite pass blend it over the upscaled scene exactly
-                // once while preserving material-driven stencil state used by uGUI Mask components.
-                RenderTargetBlendState overlayBlend = new RenderTargetBlendState(
-                    sourceColorBlendMode: BlendMode.SrcAlpha,
-                    destinationColorBlendMode: BlendMode.OneMinusSrcAlpha,
-                    sourceAlphaBlendMode: BlendMode.One,
-                    destinationAlphaBlendMode: BlendMode.OneMinusSrcAlpha);
-                renderStateBlock.blendState = new BlendState { blendState0 = overlayBlend };
-                renderStateBlock.mask |= RenderStateMask.Blend;
-            }
-
             var activeDebugHandler = GetActiveDebugHandler(passData.cameraData);
             if (activeDebugHandler != null)
             {
                 passData.debugRendererLists = activeDebugHandler.CreateRendererListsWithDebugRenderState(renderGraph,
-                    ref renderingData.cullResults, ref drawingSettings, ref m_FilteringSettings, ref renderStateBlock);
+                    ref renderingData.cullResults, ref drawingSettings, ref m_FilteringSettings, ref m_RenderStateBlock);
             }
             else
             {
                 RenderingUtils.CreateRendererListWithRenderStateBlock(renderGraph, ref renderingData.cullResults, drawingSettings,
-                    m_FilteringSettings, renderStateBlock, ref passData.rendererListHdl);
+                    m_FilteringSettings, m_RenderStateBlock, ref passData.rendererListHdl);
             }
         }
 
@@ -300,28 +275,30 @@ namespace UnityEngine.Rendering.Universal
             UniversalLightData lightData = frameData.Get<UniversalLightData>();
             UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
 
-            // During post processing URP may already have switched the active target to the system
-            // backbuffer. Built-in backbuffer handles do not expose a RenderGraph descriptor, so use
-            // cameraColor here: the temporal upscaler writes its full-resolution result there and the
-            // remaining post-processing passes also consume cameraColor.
+            // The temporal upscaler writes its display-resolution result to cameraColor. Copy that result
+            // into a fresh target first, then draw OverlayUI normally into the copy. This keeps every uGUI
+            // material's own blend state and ColorMask intact, which is required for stencil mask cleanup.
             TextureHandle sceneColor = resourceData.cameraColor;
             TextureDesc sceneDesc = sceneColor.GetDescriptor(renderGraph);
 
-            TextureDesc overlayColorDesc = sceneDesc;
-            overlayColorDesc.name = "_PostUpscaleOverlayUIColor";
-            overlayColorDesc.clearBuffer = true;
-            overlayColorDesc.clearColor = Color.clear;
-            overlayColorDesc.enableRandomWrite = false;
-            overlayColorDesc.msaaSamples = MSAASamples.None;
-            overlayColorDesc.useMipMap = false;
-            overlayColorDesc.autoGenerateMips = false;
-            overlayColorDesc.discardBuffer = true;
-            overlayColorDesc.filterMode = FilterMode.Bilinear;
-            if (!GraphicsFormatUtility.HasAlphaChannel(overlayColorDesc.format))
-                overlayColorDesc.format = GraphicsFormat.R16G16B16A16_SFloat;
-            TextureHandle overlayColor = renderGraph.CreateTexture(overlayColorDesc);
+            TextureDesc compositedDesc = sceneDesc;
+            compositedDesc.name = "_PostUpscaleOverlayComposite";
+            compositedDesc.clearBuffer = false;
+            compositedDesc.enableRandomWrite = false;
+            compositedDesc.msaaSamples = MSAASamples.None;
+            compositedDesc.useMipMap = false;
+            compositedDesc.autoGenerateMips = false;
+            compositedDesc.discardBuffer = false;
+            TextureHandle compositedColor = renderGraph.CreateTexture(compositedDesc);
 
-            TextureDesc overlayDepthDesc = overlayColorDesc;
+            renderGraph.AddBlitPass(
+                sceneColor,
+                compositedColor,
+                Vector2.one,
+                Vector2.zero,
+                passName: "Copy Upscaled Scene For OverlayUI");
+
+            TextureDesc overlayDepthDesc = compositedDesc;
             overlayDepthDesc.name = "_PostUpscaleOverlayUIDepth";
             UniversalRenderer universalRenderer = cameraData.renderer as UniversalRenderer;
             overlayDepthDesc.format = universalRenderer != null
@@ -336,12 +313,10 @@ namespace UnityEngine.Rendering.Universal
             using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData, profilingSampler))
             {
                 InitPassData(cameraData, ref passData);
-                passData.color = overlayColor;
+                passData.color = compositedColor;
 
-                // Match Unity's own offscreen UI pass: uGUI/TMP materials may consume globals that are
-                // otherwise not visible to RenderGraph dependency tracking.
                 builder.UseAllGlobalTextures(true);
-                builder.SetRenderAttachment(overlayColor, 0, AccessFlags.Write);
+                builder.SetRenderAttachment(compositedColor, 0, AccessFlags.ReadWrite);
                 builder.SetRenderAttachmentDepth(overlayDepth, AccessFlags.ReadWrite);
 
                 TextureHandle mainShadowsTexture = resourceData.mainShadowsTexture;
@@ -363,7 +338,7 @@ namespace UnityEngine.Rendering.Universal
                 if (ssaoTexture.IsValid())
                     builder.UseTexture(ssaoTexture, AccessFlags.Read);
 
-                InitRendererLists(renderingData, lightData, ref passData, renderGraph, premultiplyOverlayOutput: true);
+                InitRendererLists(renderingData, lightData, ref passData, renderGraph);
                 var activeDebugHandler = GetActiveDebugHandler(passData.cameraData);
                 if (activeDebugHandler != null)
                     passData.debugRendererLists.PrepareRendererListForRasterPass(builder);
@@ -382,47 +357,6 @@ namespace UnityEngine.Rendering.Universal
                 {
                     var isYFlipped = RenderingUtils.IsHandleYFlipped(rgContext, in data.color);
                     ExecutePass(data, rgContext.cmd, data.rendererListHdl, isYFlipped);
-                });
-            }
-
-            Material compositeMaterial = Blitter.GetBlitMaterial(sceneDesc.dimension);
-            int compositePassIndex = compositeMaterial != null ? compositeMaterial.FindPass(k_PostUpscaleCompositePassName) : -1;
-            if (compositeMaterial == null || compositePassIndex < 0)
-            {
-                Debug.LogError("Unable to composite post-upscale OverlayUI: CoreBlit composite pass is unavailable.");
-                return;
-            }
-
-            TextureDesc compositedDesc = sceneDesc;
-            compositedDesc.name = "_PostUpscaleOverlayComposite";
-            compositedDesc.clearBuffer = false;
-            compositedDesc.enableRandomWrite = false;
-            compositedDesc.msaaSamples = MSAASamples.None;
-            compositedDesc.useMipMap = false;
-            compositedDesc.autoGenerateMips = false;
-            compositedDesc.discardBuffer = false;
-            TextureHandle compositedColor = renderGraph.CreateTexture(compositedDesc);
-
-            using (var builder = renderGraph.AddRasterRenderPass<CompositePassData>(
-                       "Composite Post-Upscale OverlayUI", out var passData, profilingSampler))
-            {
-                passData.source = sceneColor;
-                passData.overlay = overlayColor;
-                passData.material = compositeMaterial;
-                passData.passIndex = compositePassIndex;
-
-                builder.UseTexture(sceneColor, AccessFlags.Read);
-                builder.UseTexture(overlayColor, AccessFlags.Read);
-                builder.SetRenderAttachment(compositedColor, 0, AccessFlags.Write);
-
-                builder.SetRenderFunc(static (CompositePassData data, RasterGraphContext context) =>
-                {
-                    RTHandle sourceHandle = data.source;
-                    data.material.SetTexture(s_PostUpscaleOverlayTextureId, data.overlay);
-                    Vector2 viewportScale = sourceHandle.useScaling
-                        ? new Vector2(sourceHandle.rtHandleProperties.rtHandleScale.x, sourceHandle.rtHandleProperties.rtHandleScale.y)
-                        : Vector2.one;
-                    Blitter.BlitTexture(context.cmd, sourceHandle, viewportScale, data.material, data.passIndex);
                 });
             }
 
