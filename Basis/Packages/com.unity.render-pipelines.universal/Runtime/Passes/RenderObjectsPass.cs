@@ -323,7 +323,10 @@ namespace UnityEngine.Rendering.Universal
 
             TextureDesc overlayDepthDesc = overlayColorDesc;
             overlayDepthDesc.name = "_PostUpscaleOverlayUIDepth";
-            overlayDepthDesc.format = CoreUtils.GetDefaultDepthStencilFormat();
+            UniversalRenderer universalRenderer = cameraData.renderer as UniversalRenderer;
+            overlayDepthDesc.format = universalRenderer != null
+                ? universalRenderer.cameraDepthAttachmentFormat
+                : CoreUtils.GetDefaultDepthStencilFormat();
             overlayDepthDesc.clearBuffer = true;
             overlayDepthDesc.clearColor = SystemInfo.usesReversedZBuffer ? Color.black : Color.white;
             overlayDepthDesc.enableRandomWrite = false;
@@ -335,6 +338,9 @@ namespace UnityEngine.Rendering.Universal
                 InitPassData(cameraData, ref passData);
                 passData.color = overlayColor;
 
+                // Match Unity's own offscreen UI pass: uGUI/TMP materials may consume globals that are
+                // otherwise not visible to RenderGraph dependency tracking.
+                builder.UseAllGlobalTextures(true);
                 builder.SetRenderAttachment(overlayColor, 0, AccessFlags.Write);
                 builder.SetRenderAttachmentDepth(overlayDepth, AccessFlags.ReadWrite);
 
