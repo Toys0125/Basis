@@ -126,6 +126,7 @@ namespace UnityEngine.Rendering.Universal.Internal
             internal Vector4 hdrOutputLuminanceParams;
             internal bool requireSrgbConversion;
             internal bool enableAlphaOutput;
+            internal bool overlayUITextureValid;
             internal BlitMaterialData blitMaterialData;
             internal UniversalCameraData cameraData;
             internal bool useFullScreenViewport;
@@ -161,6 +162,7 @@ namespace UnityEngine.Rendering.Universal.Internal
                 passData.source = sourceTexture;
                 builder.UseTexture(sourceTexture, AccessFlags.Read);
                 passData.destination = destinationTexture;
+                passData.overlayUITextureValid = overlayUITexture.IsValid();
 
                 // Default flag for non-XR common case
                 AccessFlags targetAccessFlag = AccessFlags.Write;
@@ -182,13 +184,18 @@ namespace UnityEngine.Rendering.Universal.Internal
 #endif
                 builder.SetRenderAttachment(passData.destination, 0, targetAccessFlag);
 
-                if (outputsToHDR && overlayUITexture.IsValid())
+                if (outputsToHDR)
                 {
                     VolumeStack stack = VolumeManager.instance.stack;
                     Tonemapping tonemapping = stack.GetComponent<Tonemapping>();
                     UniversalRenderPipeline.GetHDROutputLuminanceParameters(passData.cameraData.hdrDisplayInformation, passData.cameraData.hdrDisplayColorGamut, tonemapping, out passData.hdrOutputLuminanceParams);
 
-                    builder.UseTexture(overlayUITexture, AccessFlags.Read);
+                    // HDR encoding is required even when there is no screen-space overlay texture.
+                    // XR intentionally hands overlay UI back to the engine, so tying HDR setup to
+                    // overlayUITexture.IsValid() leaves final-blit paths (including temporal
+                    // upscaling followed by Basis's native-resolution UI pass) unencoded.
+                    if (overlayUITexture.IsValid())
+                        builder.UseTexture(overlayUITexture, AccessFlags.Read);
                 }
                 else
                 {
@@ -219,7 +226,8 @@ namespace UnityEngine.Rendering.Universal.Internal
                         if (!data.cameraData.postProcessEnabled)
                             hdrOperation |= HDROutputUtils.Operation.ColorConversion;
 
-                        SetupHDROutput(data.cameraData.hdrDisplayColorGamut, data.blitMaterialData.material, hdrOperation, data.hdrOutputLuminanceParams, data.cameraData.rendersOverlayUI);
+                        SetupHDROutput(data.cameraData.hdrDisplayColorGamut, data.blitMaterialData.material, hdrOperation, data.hdrOutputLuminanceParams,
+                            data.cameraData.rendersOverlayUI && data.overlayUITextureValid);
                     }
 
                     if (resolveToDebugScreen)

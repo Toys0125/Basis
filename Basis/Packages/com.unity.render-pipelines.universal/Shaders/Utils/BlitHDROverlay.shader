@@ -25,30 +25,24 @@ Shader "Hidden/Universal/BlitHDROverlay"
         #define MaxNits    _HDROutputLuminanceParams.y
         #define PaperWhite _HDROutputLuminanceParams.z
 
-        float4 SceneComposition(float4 color, float4 uiSample)
+        float4 FragBlitHDR(Varyings input, SamplerState s)
         {
+            float4 color = FragBlit(input, s);
+
 #if defined(HDR_COLORSPACE_CONVERSION)
             color.rgb = RotateRec709ToOutputSpace(color.rgb) * PaperWhite;
 #endif
 
 #if defined(HDR_ENCODING)
-            color.rgb = SceneUIComposition(uiSample, color.rgb, PaperWhite, MaxNits);
+            if (_HDR_OVERLAY)
+            {
+                float2 uiCoord = input.texcoord * _OffscreenUIViewportParams.zw + _OffscreenUIViewportParams.xy;
+                float4 uiSample = SAMPLE_TEXTURE2D_X(_OverlayUITexture, sampler_PointClamp, uiCoord);
+                color.rgb = SceneUIComposition(uiSample, color.rgb, PaperWhite, MaxNits);
+            }
             color.rgb = OETF(color.rgb, MaxNits);
 #endif
             return color;
-        }
-
-        float4 FragBlitHDR(Varyings input, SamplerState s)
-        {
-            float4 color = FragBlit(input, s);
-            if(!_HDR_OVERLAY)
-            {
-                return color;
-            }
-
-            float2 uiCoord = input.texcoord * _OffscreenUIViewportParams.zw + _OffscreenUIViewportParams.xy;
-            float4 uiSample = SAMPLE_TEXTURE2D_X(_OverlayUITexture, sampler_PointClamp, uiCoord);
-            return SceneComposition(color, uiSample);
         }
 
         // Specialized blit with URP debug draw support and UI overlay support for HDR output
