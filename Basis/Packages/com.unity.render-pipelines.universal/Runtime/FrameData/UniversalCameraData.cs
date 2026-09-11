@@ -15,6 +15,11 @@ namespace UnityEngine.Rendering.Universal
         Matrix4x4 m_ProjectionMatrix;
         Matrix4x4 m_JitterMatrix;
 
+        // Pixel-space jitter actually applied to this frame's projection. Temporal upscalers
+        // consume the same value through UpscalingIO so their history reprojection matches the
+        // image that was rasterized.
+        internal Vector2 subpixelJitter;
+
         internal void SetViewAndProjectionMatrix(Matrix4x4 viewMatrix, Matrix4x4 projectionMatrix)
         {
             m_ViewMatrix = viewMatrix;
@@ -619,6 +624,7 @@ namespace UnityEngine.Rendering.Universal
             m_ViewMatrix = default;
             m_ProjectionMatrix = default;
             m_JitterMatrix = default;
+            subpixelJitter = Vector2.zero;
 #if ENABLE_VR && ENABLE_XR_MODULE
             m_CachedRenderIntoTextureXR = false;
             m_InitBuiltinXRConstants = false;

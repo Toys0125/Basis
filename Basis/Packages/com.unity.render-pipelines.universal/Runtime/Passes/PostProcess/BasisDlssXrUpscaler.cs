@@ -70,7 +70,6 @@ namespace UnityEngine.Rendering.Universal
         private UnityEngine.NVIDIA.GraphicsDevice _device;
         private Vector2Int _inputResolution = Vector2Int.one;
         private Vector2Int _outputResolution = Vector2Int.one;
-        private Vector2 _jitter;
         private bool _ready;
         private bool _warnedUnsupportedStereoLayout;
         private static string _qualityMode = "automatic";
@@ -136,7 +135,6 @@ namespace UnityEngine.Rendering.Universal
                 HaltonSequence.Get(haltonIndex, 2) - 0.5f,
                 HaltonSequence.Get(haltonIndex, 3) - 0.5f);
             allowScaling = false;
-            _jitter = jitter;
         }
 
         public override void NegotiatePreUpscaleResolution(ref Vector2Int preUpscaleResolution, Vector2Int postUpscaleResolution)
@@ -237,8 +235,8 @@ namespace UnityEngine.Rendering.Universal
                 passData.ExecutionData.subrectOffsetY = 0;
                 passData.ExecutionData.subrectWidth = (uint)io.preUpscaleResolution.x;
                 passData.ExecutionData.subrectHeight = (uint)io.preUpscaleResolution.y;
-                passData.ExecutionData.jitterOffsetX = _jitter.x;
-                passData.ExecutionData.jitterOffsetY = _jitter.y;
+                passData.ExecutionData.jitterOffsetX = io.subpixelJitter.x;
+                passData.ExecutionData.jitterOffsetY = io.subpixelJitter.y;
                 passData.ExecutionData.preExposure = Mathf.Clamp(io.preExposureValue, 0.20f, 2.0f);
                 passData.ExecutionData.invertYAxis = io.flippedY ? 1u : 0u;
                 passData.ExecutionData.invertXAxis = io.flippedX ? 1u : 0u;

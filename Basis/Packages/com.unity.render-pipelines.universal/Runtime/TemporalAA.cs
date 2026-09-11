@@ -200,6 +200,7 @@ namespace UnityEngine.Rendering.Universal
         internal static Matrix4x4 CalculateJitterMatrix(UniversalCameraData cameraData, JitterFunc jitterFunc)
         {
             Matrix4x4 jitterMat = Matrix4x4.identity;
+            cameraData.subpixelJitter = Vector2.zero;
 
             bool isJitter = cameraData.IsTemporalAAEnabled();
             if (isJitter)
@@ -216,6 +217,10 @@ namespace UnityEngine.Rendering.Universal
 
                 if (allowScaling)
                     jitter *= jitterScale;
+
+                // Keep the exact pixel-space offset used to jitter the projection. FSR2/DLSS
+                // need this value to undo the current sample offset when reprojecting history.
+                cameraData.subpixelJitter = jitter;
 
                 float offsetX = jitter.x * (2.0f / actualWidth);
                 float offsetY = jitter.y * (2.0f / actualHeight);
