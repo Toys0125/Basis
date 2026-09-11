@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Scripting.APIUpdating;
 
@@ -281,10 +282,49 @@ namespace UnityEngine.Rendering.Universal
                 InitPassData(cameraData, ref passData);
 
                 passData.color = resourceData.activeColorTexture;
-                builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
+                bool isPostUpscaleUiPass = renderAfterTemporalUpscaling;
+                builder.SetRenderAttachment(
+                    resourceData.activeColorTexture,
+                    0,
+                    isPostUpscaleUiPass ? AccessFlags.ReadWrite : AccessFlags.Write);
+
+                if (isPostUpscaleUiPass)
+                {
+                    // The temporal upscaler produces display-resolution color, but the scene depth/stencil
+                    // texture is still at render resolution and cannot be attached to it. World-space uGUI
+                    // uses stencil for Mask components, so rendering OverlayUI with no depth/stencil target
+                    // makes the menu disappear. Give only this redraw a fresh matching depth/stencil surface.
+                    TextureDesc colorDesc = resourceData.activeColorTexture.GetDescriptor(renderGraph);
+                    RenderTextureDescriptor depthDescriptor = cameraData.cameraTargetDescriptor;
+                    depthDescriptor.width = colorDesc.width;
+                    depthDescriptor.height = colorDesc.height;
+                    depthDescriptor.volumeDepth = colorDesc.slices;
+                    depthDescriptor.dimension = colorDesc.dimension;
+                    depthDescriptor.vrUsage = colorDesc.vrUsage;
+                    depthDescriptor.graphicsFormat = GraphicsFormat.None;
+                    depthDescriptor.depthStencilFormat = CoreUtils.GetDefaultDepthStencilFormat();
+                    depthDescriptor.msaaSamples = 1;
+                    depthDescriptor.bindMS = false;
+                    depthDescriptor.enableRandomWrite = false;
+                    depthDescriptor.useDynamicScale = false;
+                    depthDescriptor.useDynamicScaleExplicit = false;
+
+                    Color clearDepth = SystemInfo.usesReversedZBuffer ? Color.black : Color.white;
+                    TextureHandle overlayDepth = UniversalRenderer.CreateRenderGraphTexture(
+                        renderGraph,
+                        depthDescriptor,
+                        "_PostUpscaleOverlayUIDepth",
+                        true,
+                        clearDepth,
+                        FilterMode.Point,
+                        TextureWrapMode.Clamp);
+                    builder.SetRenderAttachmentDepth(overlayDepth, AccessFlags.ReadWrite);
+                }
                 // TODO: Take into account user-specific settings to decide depth flag
-                if (cameraData.imageScalingMode != ImageScalingMode.Upscaling || passData.renderPassEvent != RenderPassEvent.AfterRenderingPostProcessing)
+                else if (cameraData.imageScalingMode != ImageScalingMode.Upscaling || passData.renderPassEvent != RenderPassEvent.AfterRenderingPostProcessing)
+                {
                     builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.ReadWrite);
+                }
 
                 TextureHandle mainShadowsTexture = resourceData.mainShadowsTexture;
                 TextureHandle additionalShadowsTexture = resourceData.additionalShadowsTexture;
