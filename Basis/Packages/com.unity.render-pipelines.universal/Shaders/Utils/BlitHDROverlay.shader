@@ -29,11 +29,11 @@ Shader "Hidden/Universal/BlitHDROverlay"
         {
             float4 color = FragBlit(input, s);
 
-#if defined(HDR_COLORSPACE_CONVERSION)
+#if defined(HDR_COLORSPACE_CONVERSION) || defined(HDR_COLORSPACE_CONVERSION_AND_ENCODING)
             color.rgb = RotateRec709ToOutputSpace(color.rgb) * PaperWhite;
 #endif
 
-#if defined(HDR_ENCODING)
+#if defined(HDR_ENCODING) || defined(HDR_COLORSPACE_CONVERSION_AND_ENCODING)
             if (_HDR_OVERLAY)
             {
                 float2 uiCoord = input.texcoord * _OffscreenUIViewportParams.zw + _OffscreenUIViewportParams.xy;
