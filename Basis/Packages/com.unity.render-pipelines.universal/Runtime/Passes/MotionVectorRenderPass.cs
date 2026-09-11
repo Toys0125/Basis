@@ -165,7 +165,9 @@ namespace UnityEngine.Rendering.Universal
             if (UseConservativeObjectRasterization())
             {
                 renderStateBlock.mask = RenderStateMask.Raster;
-                renderStateBlock.rasterState = new RasterState(conservative: true);
+                RasterState rasterState = RasterState.defaultValue;
+                rasterState.conservative = true;
+                renderStateBlock.rasterState = rasterState;
             }
             RenderingUtils.CreateRendererListWithRenderStateBlock(renderGraph, ref cullResults, drawingSettings, m_FilteringSettings, renderStateBlock, ref passData.rendererListHdl);
         }
