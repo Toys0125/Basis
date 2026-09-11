@@ -165,12 +165,12 @@ namespace UnityEngine.Rendering.Universal
         /// </summary>
         internal static ScriptableRenderer current = null;
 
-        internal static void SetCameraMatrices(RasterCommandBuffer cmd, UniversalCameraData cameraData, bool setInverseMatrices, bool isTargetFlipped)
+        internal static void SetCameraMatrices(RasterCommandBuffer cmd, UniversalCameraData cameraData, bool setInverseMatrices, bool isTargetFlipped, bool useJitter = true, bool forceXRUpdate = false)
         {
 #if ENABLE_VR && ENABLE_XR_MODULE
             if (cameraData.xr.enabled)
             {
-                cameraData.PushBuiltinShaderConstantsXR(cmd, isTargetFlipped);
+                cameraData.PushBuiltinShaderConstantsXR(cmd, isTargetFlipped, useJitter, forceXRUpdate);
                 XRSystemUniversal.MarkShaderProperties(cmd, cameraData.xrUniversal, isTargetFlipped);
                 return;
             }
@@ -178,7 +178,7 @@ namespace UnityEngine.Rendering.Universal
 
             // NOTE: the URP default main view/projection matrices are the CameraData view/projection matrices.
             Matrix4x4 viewMatrix = cameraData.GetViewMatrix();
-            Matrix4x4 projectionMatrix = cameraData.GetProjectionMatrix(); // Jittered, non-gpu
+            Matrix4x4 projectionMatrix = useJitter ? cameraData.GetProjectionMatrix() : cameraData.GetProjectionMatrixNoJitter(); // non-gpu
 
             // TODO: Investigate why SetViewAndProjectionMatrices is causing y-flip / winding order issue
             // for now using cmd.SetViewProjecionMatrices
@@ -189,7 +189,7 @@ namespace UnityEngine.Rendering.Universal
 
             if (setInverseMatrices)
             {
-                Matrix4x4 gpuProjectionMatrix = cameraData.GetGPUProjectionMatrix(isTargetFlipped); // TODO: invProjection might NOT match the actual projection (invP*P==I) as the target flip logic has diverging paths.
+                Matrix4x4 gpuProjectionMatrix = GL.GetGPUProjectionMatrix(projectionMatrix, isTargetFlipped); // TODO: invProjection might NOT match the actual projection (invP*P==I) as the target flip logic has diverging paths.
                 Matrix4x4 inverseViewMatrix = Matrix4x4.Inverse(viewMatrix);
                 Matrix4x4 inverseProjectionMatrix = Matrix4x4.Inverse(gpuProjectionMatrix);
                 Matrix4x4 inverseViewProjection = inverseViewMatrix * inverseProjectionMatrix;

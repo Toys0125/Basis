@@ -39,20 +39,22 @@ namespace UnityEngine.Rendering.Universal
         private bool m_InitBuiltinXRConstants;
 #endif
         // Helper function to populate builtin stereo matricies as well as URP stereo matricies
-        internal void PushBuiltinShaderConstantsXR(RasterCommandBuffer cmd, bool renderIntoTexture)
+        internal void PushBuiltinShaderConstantsXR(RasterCommandBuffer cmd, bool renderIntoTexture, bool useJitter = true, bool forceUpdate = false)
         {
 #if ENABLE_VR && ENABLE_XR_MODULE
-            // Multipass always needs update to prevent wrong view projection matrix set by other passes
-            bool needsUpdate = !m_InitBuiltinXRConstants || m_CachedRenderIntoTextureXR != renderIntoTexture || !xr.singlePassEnabled;
+            // Multipass always needs update to prevent wrong view projection matrix set by other passes.
+            // Native-resolution UI rendered after a temporal upscaler also forces an update so it can
+            // temporarily use the raw XR projection without disturbing the scene's temporal jitter.
+            bool needsUpdate = forceUpdate || !m_InitBuiltinXRConstants || m_CachedRenderIntoTextureXR != renderIntoTexture || !xr.singlePassEnabled;
             if (needsUpdate && xr.enabled )
             {
-                var projection0 = GetProjectionMatrix();
+                var projection0 = useJitter ? GetProjectionMatrix() : GetProjectionMatrixNoJitter();
                 var view0 = GetViewMatrix();
                 cmd.SetViewProjectionMatrices(view0, projection0);
 
                 if (xr.singlePassEnabled)
                 {
-                    var projection1 = GetProjectionMatrix(1);
+                    var projection1 = useJitter ? GetProjectionMatrix(1) : GetProjectionMatrixNoJitter(1);
                     var view1 = GetViewMatrix(1);
                     XRBuiltinShaderConstants.UpdateBuiltinShaderConstants(view0, projection0, renderIntoTexture, 0);
                     XRBuiltinShaderConstants.UpdateBuiltinShaderConstants(view1, projection1, renderIntoTexture, 1);
@@ -67,7 +69,7 @@ namespace UnityEngine.Rendering.Universal
                     //Multipass uses the same value as a normal render, and doesn't use the value set for stereo,
                     //which is why you need to set a value like unity_MatrixInvV.
                     //The values below should be the same as set in the SetCameraMatrices function in ScriptableRenderer.cs.
-                    Matrix4x4 gpuProjectionMatrix = GetGPUProjectionMatrix(renderIntoTexture); // TODO: invProjection might NOT match the actual projection (invP*P==I) as the target flip logic has diverging paths.
+                    Matrix4x4 gpuProjectionMatrix = GL.GetGPUProjectionMatrix(projection0, renderIntoTexture); // TODO: invProjection might NOT match the actual projection (invP*P==I) as the target flip logic has diverging paths.
                     Matrix4x4 inverseViewMatrix = Matrix4x4.Inverse(view0);
                     Matrix4x4 inverseProjectionMatrix = Matrix4x4.Inverse(gpuProjectionMatrix);
                     Matrix4x4 inverseViewProjection = inverseViewMatrix * inverseProjectionMatrix;

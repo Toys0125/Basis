@@ -172,13 +172,23 @@ namespace UnityEngine.Rendering.Universal
                     matricesOverridden = true;
                 }
             }
-            else if (passData.useNonJitteredProjection && !passData.cameraData.xr.enabled)
+            else if (passData.useNonJitteredProjection)
             {
                 // A layer redrawn after a temporal upscaler is already at display resolution. Drawing it
                 // with the frame's TAA/FSR2/DLSS projection jitter makes head-locked UI visibly hop even
                 // though the scene behind it has already been stabilized by the upscaler.
-                Matrix4x4 projectionMatrix = GL.GetGPUProjectionMatrix(passData.cameraData.GetProjectionMatrixNoJitter(0), isYFlipped);
-                RenderingUtils.SetViewAndProjectionMatrices(cmd, passData.cameraData.GetViewMatrix(), projectionMatrix, false);
+                if (passData.cameraData.xr.enabled)
+                {
+                    // Go through URP's normal XR camera setup so stereo shader constants and late-latch
+                    // properties stay valid. The earlier experiment wrote the XR matrices directly,
+                    // which could make the world-space menu disappear entirely.
+                    ScriptableRenderer.SetCameraMatrices(cmd, passData.cameraData, false, isYFlipped, useJitter: false, forceXRUpdate: true);
+                }
+                else
+                {
+                    Matrix4x4 projectionMatrix = GL.GetGPUProjectionMatrix(passData.cameraData.GetProjectionMatrixNoJitter(0), isYFlipped);
+                    RenderingUtils.SetViewAndProjectionMatrices(cmd, passData.cameraData.GetViewMatrix(), projectionMatrix, false);
+                }
                 matricesOverridden = true;
             }
 
@@ -194,9 +204,16 @@ namespace UnityEngine.Rendering.Universal
 
             bool restoreCameraMatrices = passData.useNonJitteredProjection
                 || (passData.cameraSettings.overrideCamera && passData.cameraSettings.restoreCamera);
-            if (matricesOverridden && restoreCameraMatrices && !passData.cameraData.xr.enabled)
+            if (matricesOverridden && restoreCameraMatrices)
             {
-                RenderingUtils.SetViewAndProjectionMatrices(cmd, passData.cameraData.GetViewMatrix(), GL.GetGPUProjectionMatrix(passData.cameraData.GetProjectionMatrix(0), isYFlipped), false);
+                if (passData.cameraData.xr.enabled)
+                {
+                    ScriptableRenderer.SetCameraMatrices(cmd, passData.cameraData, false, isYFlipped, useJitter: true, forceXRUpdate: true);
+                }
+                else
+                {
+                    RenderingUtils.SetViewAndProjectionMatrices(cmd, passData.cameraData.GetViewMatrix(), GL.GetGPUProjectionMatrix(passData.cameraData.GetProjectionMatrix(0), isYFlipped), false);
+                }
             }
         }
 
@@ -304,7 +321,12 @@ namespace UnityEngine.Rendering.Universal
                 builder.AllowGlobalStateModification(true);
                 if (cameraData.xr.enabled)
                 {
-                    builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering && cameraData.xrUniversal.canFoveateIntermediatePasses);
+                    // The native-resolution UI redraw should not inherit the scene's foveated rasterization.
+                    // Otherwise the menu can still lose detail even though it bypasses the upscaler input.
+                    bool allowFoveatedRasterization = !passData.useNonJitteredProjection
+                        && cameraData.xr.supportsFoveatedRendering
+                        && cameraData.xrUniversal.canFoveateIntermediatePasses;
+                    builder.EnableFoveatedRasterization(allowFoveatedRasterization);
                     // Apply MultiviewRenderRegionsCompatible flag only to the peripheral view in Quad Views
                     if (cameraData.xr.multipassId == 0)
                     {
