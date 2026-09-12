@@ -95,7 +95,8 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
             case var s when s == K_TEMPORAL_UPSCALING_SOURCE_RESOLUTION:
                 if (SliderReadOption(optionValue, out _))
                 {
-                    HandleRenderResolution(BasisSettingsDefaults.RenderResolution.RawValue);
+                    UniversalRenderPipelineAsset pipelineAsset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
+                    ApplyPipelineRenderScale(pipelineAsset, BasisSettingsDefaults.RenderResolution.RawValue);
                 }
                 else
                 {
