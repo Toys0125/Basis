@@ -20,7 +20,6 @@ namespace Basis.Scripts.UI
         public BasisPointRaycaster BasisPointRaycaster;
         static LayerMask OverlayUI;
         static LayerMask HandHeldCameraUI;
-        static LayerMask UILayer;
         public static LayerMask UILayers;
         public Material lineMaterial;
         public float lineWidth = 0.01f;
@@ -101,7 +100,6 @@ namespace Basis.Scripts.UI
 
             OverlayUI = LayerMask.NameToLayer("OverlayUI");
             HandHeldCameraUI = BasisLayerMapper.HandHeldCameraUILayer;
-            UILayer = LayerMask.NameToLayer("UI");
             UILayers = LayerMask.GetMask("UI", "OverlayUI") | BasisLayerMapper.HandHeldCameraUIMask;
             CurrentEventData = new BasisPointerEventData(EventSystem.current);
             BasisInput = basisInput;
@@ -132,7 +130,10 @@ namespace Basis.Scripts.UI
                 LineRenderer.enabled = HasLineRenderer;
                 LineRenderer.numCapVertices = 32;
                 LineRenderer.numCornerVertices = 32;
-                LineRenderer.gameObject.layer = UILayer;
+                // The Main Menu/OverlayUI is redrawn after temporal upscaling. Keep the laser in
+                // that same native-resolution pass so the menu cannot composite over it regardless
+                // of the LineRenderer's sortingOrder.
+                LineRenderer.gameObject.layer = OverlayUI;
 
                 LineRenderer.useWorldSpace = true;
                 LineRenderer.textureMode = LineTextureMode.Tile;

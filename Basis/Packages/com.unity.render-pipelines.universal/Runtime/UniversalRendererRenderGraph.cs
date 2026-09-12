@@ -1335,15 +1335,20 @@ namespace UnityEngine.Rendering.Universal
             //    The FinalPost pass is guaranteed to execute after user authored passes so FXAA is always run inside of it.
             // 2. UberPost can only handle upscaling with linear filtering. All other filtering methods require the FinalPost pass.
             // 3. TAA sharpening using standalone RCAS pass is required. (When upscaling is not enabled).
+#if ENABLE_UPSCALER_FRAMEWORK
+            bool temporalUpscalerActive = postProcessingData.activeUpscaler != null && postProcessingData.activeUpscaler.isTemporal;
+#else
+            bool temporalUpscalerActive = false;
+#endif
             bool applyFinalPostProcessing = anyPostProcessing && cameraData.resolveFinalTarget &&
                                             ((cameraData.antialiasing == AntialiasingMode.FastApproximateAntialiasing) ||
                                              ((cameraData.imageScalingMode == ImageScalingMode.Upscaling) && fsr1Enabled) ||
-                                             (cameraData.IsTemporalAAEnabled() && cameraData.taaSettings.contrastAdaptiveSharpening > 0.0f));
+                                             (!temporalUpscalerActive && cameraData.IsTemporalAAEnabled() && cameraData.taaSettings.contrastAdaptiveSharpening > 0.0f));
             bool hasCaptureActions = cameraData.captureActions != null && cameraData.resolveFinalTarget;
 
             //We'll skip RecordCustomRenderGraphPasses(RenderPassEvent.AfterRenderingPostProcessing) if this is false so be careful when changing the check.
-            bool hasPassesAfterPostProcessing = activeRenderPassQueue.Find(x => !x.renderAfterTemporalUpscaling
-                && x.renderPassEvent >= RenderPassEvent.AfterRenderingPostProcessing
+            bool hasPassesAfterPostProcessing = activeRenderPassQueue.Find(x =>
+                x.renderPassEvent >= RenderPassEvent.AfterRenderingPostProcessing
                 && x.renderPassEvent < RenderPassEvent.AfterRendering) != null;
 
             bool xrDepthTargetResolved = resourceData.activeDepthID == UniversalResourceData.ActiveID.BackBuffer;

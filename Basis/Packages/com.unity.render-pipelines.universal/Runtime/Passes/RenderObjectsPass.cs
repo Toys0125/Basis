@@ -16,10 +16,16 @@ namespace UnityEngine.Rendering.Universal
         FilteringSettings m_FilteringSettings;
         RenderObjects.CustomCameraSettings m_CameraSettings;
         bool m_UseNonJitteredProjection;
+        bool m_RenderNativeOverlayAfterPostProcessing;
 
         internal void SetUseNonJitteredProjection(bool value)
         {
             m_UseNonJitteredProjection = value;
+        }
+
+        internal void SetRenderNativeOverlayAfterPostProcessing(bool value)
+        {
+            m_RenderNativeOverlayAfterPostProcessing = value;
         }
 
         /// <summary>
@@ -370,7 +376,7 @@ namespace UnityEngine.Rendering.Universal
             UniversalRenderingData renderingData = frameData.Get<UniversalRenderingData>();
             UniversalLightData lightData = frameData.Get<UniversalLightData>();
 
-            if (renderAfterTemporalUpscaling)
+            if (m_RenderNativeOverlayAfterPostProcessing)
             {
                 RecordPostUpscaleOverlay(renderGraph, frameData);
                 return;

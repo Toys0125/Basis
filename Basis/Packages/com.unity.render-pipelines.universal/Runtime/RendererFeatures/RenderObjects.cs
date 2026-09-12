@@ -229,7 +229,7 @@ namespace UnityEngine.Rendering.Universal
             if (renderObjectsAfterUpscalingPass != null)
             {
                 renderObjectsAfterUpscalingPass.SetUseNonJitteredProjection(true);
-                renderObjectsAfterUpscalingPass.renderAfterTemporalUpscaling = true;
+                renderObjectsAfterUpscalingPass.SetRenderNativeOverlayAfterPostProcessing(true);
             }
         }
 

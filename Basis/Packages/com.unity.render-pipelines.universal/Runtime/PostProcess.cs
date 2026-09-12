@@ -161,10 +161,7 @@ namespace UnityEngine.Rendering.Universal
             UniversalPostProcessingData postProcessingData = frameData.Get<UniversalPostProcessingData>();
             bool temporalUpscalerActive = postProcessingData.activeUpscaler != null && postProcessingData.activeUpscaler.isTemporal;
             if (temporalUpscalerActive)
-            {
                 m_UpscalerPostProcessPass.RecordRenderGraph(renderGraph, frameData);
-                cameraData.renderer.RecordCustomRenderGraphPassesAfterTemporalUpscaling(renderGraph);
-            }
 #else
             m_StpPostProcessPass.RecordRenderGraph(renderGraph, frameData);
 #endif
@@ -273,12 +270,17 @@ namespace UnityEngine.Rendering.Universal
             // This avoids the cost of EASU and is available for other upscaling options.
             // If FSR is enabled then FSR settings override the TAA settings and we perform RCAS only once.
             // If STP is enabled, then TAA sharpening has already been performed inside STP.
+#if ENABLE_UPSCALER_FRAMEWORK
+            bool temporalUpscalerActive = postProcessingData.activeUpscaler != null && postProcessingData.activeUpscaler.isTemporal;
+#endif
             bool isTaaSharpeningEnabled = (cameraData.IsTemporalAAEnabled() && cameraData.taaSettings.contrastAdaptiveSharpening > 0.0f)
 #if ENABLE_UPSCALER_FRAMEWORK
-                // TODO-Volkan: update the comment above w.r.t Upscaling framework support (upscalers with sharpening / avoiding double sharpen).
+                // Temporal upscalers own their temporal reconstruction. Running URP's TAA RCAS
+                // after a native-resolution overlay would blur/process that overlay again.
+                && !temporalUpscalerActive
                 && !upscalerSupportsSharpening;
 #else
-                && !isFsr1Enabled 
+                && !isFsr1Enabled
                 && !cameraData.IsSTPEnabled();
 #endif
 

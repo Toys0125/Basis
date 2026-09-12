@@ -977,9 +977,6 @@ namespace UnityEngine.Rendering.Universal
             {
                 foreach (ScriptableRenderPass pass in m_ActiveRenderPassQueue)
                 {
-                    if (pass.renderAfterTemporalUpscaling)
-                        continue;
-
                     if (pass.renderPassEvent >= eventStart && pass.renderPassEvent < eventEnd)
                         pass.RecordRenderGraph(renderGraph, m_frameData);
                 }
@@ -1008,15 +1005,6 @@ namespace UnityEngine.Rendering.Universal
             RecordCustomRenderGraphPasses(renderGraph, injectionPoint, injectionPoint);
         }
 
-        internal void RecordCustomRenderGraphPassesAfterTemporalUpscaling(RenderGraph renderGraph)
-        {
-            foreach (ScriptableRenderPass pass in m_ActiveRenderPassQueue)
-            {
-                if (pass.renderAfterTemporalUpscaling)
-                    pass.RecordRenderGraph(renderGraph, m_frameData);
-            }
-        }
-        
         /// <summary>
         /// Enqueues a render pass for execution.
         /// </summary>
