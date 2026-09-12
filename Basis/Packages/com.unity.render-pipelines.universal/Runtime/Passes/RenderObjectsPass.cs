@@ -288,10 +288,16 @@ namespace UnityEngine.Rendering.Universal
             TextureDesc sceneDesc = sceneColor.GetDescriptor(renderGraph);
 
             TextureDesc compositedDesc = sceneDesc;
+            // Never inherit the temporal source resolution here. The native overlay target is
+            // explicitly display-sized even if a vendor preset or an unexpected intermediate
+            // texture leaves cameraColor smaller than the final XR/desktop viewport.
+            compositedDesc.width = cameraData.pixelWidth;
+            compositedDesc.height = cameraData.pixelHeight;
             compositedDesc.name = "_PostUpscaleOverlayComposite";
             compositedDesc.clearBuffer = false;
             compositedDesc.enableRandomWrite = false;
             compositedDesc.msaaSamples = MSAASamples.None;
+            compositedDesc.useDynamicScale = false;
             compositedDesc.useMipMap = false;
             compositedDesc.autoGenerateMips = false;
             compositedDesc.discardBuffer = false;
