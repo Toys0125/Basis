@@ -31,6 +31,7 @@ namespace Cilbox
 		private bool proxyWasSetup = false;
 		private bool proxyLoadInProgress = false;
 #if UNITY_EDITOR
+		private static readonly ProfilerMarker LivePlaytestStartMarker = new ProfilerMarker("CilboxProxy.Start.LivePlaytest");
 		private static readonly ProfilerMarker LivePlaytestUpdateMarker = new ProfilerMarker("CilboxProxy.Update.LivePlaytest");
 #endif
 
@@ -521,6 +522,9 @@ namespace Cilbox
 
 
 		void Start() {
+#if UNITY_EDITOR
+			using var marker = LivePlaytestStartMarker.Auto();
+#endif
 			RuntimeProxyLoad();
 
 			if( proxyWasSetup ) {
