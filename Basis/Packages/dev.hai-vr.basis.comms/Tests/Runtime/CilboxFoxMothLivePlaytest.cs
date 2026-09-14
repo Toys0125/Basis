@@ -209,7 +209,7 @@ public class CilboxFoxMothLivePlaytest
             long startNs = cilboxStartRecorder.Valid ? cilboxStartRecorder.LastValue : 0;
             long initNs = cilboxInitRecorder.Valid ? cilboxInitRecorder.LastValue : 0;
             long updateNs = startupUpdateRecorder.Valid ? startupUpdateRecorder.LastValue : 0;
-            long gcBytes = startupGcRecorder.Valid ? startupGcRecorder.LastValue : 0;
+            long burstGcInFrame = startupGcRecorder.Valid ? startupGcRecorder.LastValue : 0;
             long playerLoopNs = playerLoopRecorder.Valid ? playerLoopRecorder.LastValue : 0;
             long frameDeltaNs = (long)(Time.unscaledDeltaTime * 1000000000.0f);
             int activeBurstProxies = CountActiveProxies(burstProxies);
@@ -217,14 +217,14 @@ public class CilboxFoxMothLivePlaytest
             burstStartNs.Add(startNs);
             burstInitNs.Add(initNs);
             burstUpdateNs.Add(updateNs);
-            burstGcBytes.Add(gcBytes);
+            burstGcBytes.Add(burstGcInFrame);
             burstPlayerLoopNs.Add(playerLoopNs);
             burstFrameDeltaNs.Add(frameDeltaNs);
 
             Debug.Log(
                 $"CILBOX_LIVE_PLAYTEST|BURST_FRAME|offset={frameOffset}|unityFrame={Time.frameCount}|active={activeBurstProxies}/{burstProxies.Count}" +
                 $"|frameDeltaMs={frameDeltaNs / 1000000.0:F3}|cilboxStartUs={startNs / 1000.0:F3}|cilboxInitUs={initNs / 1000.0:F3}" +
-                $"|cilboxUpdateUs={updateNs / 1000.0:F3}|playerLoopUs={playerLoopNs / 1000.0:F3}|gcBytes={gcBytes}");
+                $"|cilboxUpdateUs={updateNs / 1000.0:F3}|playerLoopUs={playerLoopNs / 1000.0:F3}|gcBytes={burstGcInFrame}");
 
             if (activeBurstProxies == burstProxies.Count && framesToReady < 0)
             {
