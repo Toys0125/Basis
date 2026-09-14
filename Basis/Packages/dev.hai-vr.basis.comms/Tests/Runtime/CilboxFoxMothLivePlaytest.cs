@@ -135,8 +135,16 @@ public class CilboxFoxMothLivePlaytest
         Assert.IsTrue(sourceProxies[0].ValidationProxyIsSetup, "Source Fox Moth Cilbox proxy is not initialized.");
         Assert.IsFalse(string.IsNullOrEmpty(sourceProxies[0].ValidationSerializedObjectData), "Source Fox Moth Cilbox proxy did not retain validation bootstrap data.");
 
+        var startupSetupTicks = new List<long>(InstanceCount - 1);
+        var startupSetupAllocBytes = new List<long>(InstanceCount - 1);
+        var startupReloadTicks = new List<long>(InstanceCount - 1);
+        var startupReloadAllocBytes = new List<long>(InstanceCount - 1);
+
         for (int i = 1; i < InstanceCount; i++)
         {
+            long setupAllocBefore = GC.GetAllocatedBytesForCurrentThread();
+            long setupTickBefore = System.Diagnostics.Stopwatch.GetTimestamp();
+
             GameObject clone = UnityEngine.Object.Instantiate(sourceAvatar);
             clone.name = $"Fox Moth Stress Clone {i:D2}";
             clone.transform.position = sourceAvatar.transform.position + new Vector3((i % 5) * 2.0f, 0f, (i / 5) * 2.0f);
@@ -150,10 +158,32 @@ public class CilboxFoxMothLivePlaytest
             Assert.AreEqual(sourceProxies.Length, cloneProxies.Length, $"Clone {i} did not preserve the Fox Moth Cilbox proxy layout.");
             for (int proxyIndex = 0; proxyIndex < cloneProxies.Length; proxyIndex++)
             {
+                long reloadAllocBefore = GC.GetAllocatedBytesForCurrentThread();
+                long reloadTickBefore = System.Diagnostics.Stopwatch.GetTimestamp();
                 cloneProxies[proxyIndex].ValidationReloadFromInitializedProxy(sourceProxies[proxyIndex]);
+                long reloadTicks = System.Diagnostics.Stopwatch.GetTimestamp() - reloadTickBefore;
+                long reloadAllocBytes = GC.GetAllocatedBytesForCurrentThread() - reloadAllocBefore;
+                startupReloadTicks.Add(reloadTicks);
+                startupReloadAllocBytes.Add(reloadAllocBytes);
             }
             spawnedClones.Add(clone);
+
+            long setupTicks = System.Diagnostics.Stopwatch.GetTimestamp() - setupTickBefore;
+            long setupAllocBytes = GC.GetAllocatedBytesForCurrentThread() - setupAllocBefore;
+            startupSetupTicks.Add(setupTicks);
+            startupSetupAllocBytes.Add(setupAllocBytes);
         }
+
+        startupSetupTicks.Sort();
+        startupSetupAllocBytes.Sort();
+        startupReloadTicks.Sort();
+        startupReloadAllocBytes.Sort();
+        Debug.Log(
+            $"CILBOX_LIVE_PLAYTEST|STARTUP_SUMMARY|clones={InstanceCount - 1}" +
+            $"|setupAvgUs={Average(startupSetupTicks) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|setupP50Us={Percentile(startupSetupTicks, 0.50) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|setupP95Us={Percentile(startupSetupTicks, 0.95) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|setupMaxUs={startupSetupTicks[startupSetupTicks.Count - 1] * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}" +
+            $"|setupAllocAvgBytes={Average(startupSetupAllocBytes):F1}|setupAllocP50Bytes={Percentile(startupSetupAllocBytes, 0.50)}|setupAllocP95Bytes={Percentile(startupSetupAllocBytes, 0.95)}|setupAllocMaxBytes={startupSetupAllocBytes[startupSetupAllocBytes.Count - 1]}" +
+            $"|reloadAvgUs={Average(startupReloadTicks) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|reloadP50Us={Percentile(startupReloadTicks, 0.50) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|reloadP95Us={Percentile(startupReloadTicks, 0.95) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|reloadMaxUs={startupReloadTicks[startupReloadTicks.Count - 1] * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}" +
+            $"|reloadAllocAvgBytes={Average(startupReloadAllocBytes):F1}|reloadAllocP50Bytes={Percentile(startupReloadAllocBytes, 0.50)}|reloadAllocP95Bytes={Percentile(startupReloadAllocBytes, 0.95)}|reloadAllocMaxBytes={startupReloadAllocBytes[startupReloadAllocBytes.Count - 1]}");
 
         for (int i = 0; i < WarmupFrames; i++) yield return null;
 
