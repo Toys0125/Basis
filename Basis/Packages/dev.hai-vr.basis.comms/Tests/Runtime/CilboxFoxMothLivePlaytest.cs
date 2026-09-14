@@ -36,7 +36,10 @@ public class CilboxFoxMothLivePlaytest
     private const int InstanceCount = 20;
     private const int WarmupFrames = 120;
     private const int SampleFrames = 300;
+    private static readonly FieldInfo ProxyWasSetupField = typeof(CilboxProxy).GetField("proxyWasSetup", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo ProxyLoadInProgressField = typeof(CilboxProxy).GetField("proxyLoadInProgress", BindingFlags.Instance | BindingFlags.NonPublic);
     private readonly List<GameObject> spawnedClones = new List<GameObject>();
+    private GameObject burstStagingRoot;
 
     [TearDown]
     public void ResetValidationHooks()
@@ -47,6 +50,11 @@ public class CilboxFoxMothLivePlaytest
             if (spawnedClones[i] != null) UnityEngine.Object.DestroyImmediate(spawnedClones[i]);
         }
         spawnedClones.Clear();
+        if (burstStagingRoot != null)
+        {
+            UnityEngine.Object.DestroyImmediate(burstStagingRoot);
+            burstStagingRoot = null;
+        }
         BasisSceneFactory.SkipSceneCameraSetupForValidation = false;
         LogAssert.ignoreFailingMessages = false;
     }
@@ -135,55 +143,121 @@ public class CilboxFoxMothLivePlaytest
         Assert.IsTrue(sourceProxies[0].ValidationProxyIsSetup, "Source Fox Moth Cilbox proxy is not initialized.");
         Assert.IsFalse(string.IsNullOrEmpty(sourceProxies[0].ValidationSerializedObjectData), "Source Fox Moth Cilbox proxy did not retain validation bootstrap data.");
 
-        var startupSetupTicks = new List<long>(InstanceCount - 1);
-        var startupSetupAllocBytes = new List<long>(InstanceCount - 1);
-        var startupReloadTicks = new List<long>(InstanceCount - 1);
-        var startupReloadAllocBytes = new List<long>(InstanceCount - 1);
+        // Model the bad-case arrival pattern directly: twenty complete avatar objects are
+        // constructed without yielding, then all twenty are activated together. Unity still
+        // executes their managed lifecycle serially on the main thread, but from the game's
+        // perspective every instance arrives in the same frame.
+        const int BurstInstanceCount = 20;
+        burstStagingRoot = new GameObject("Fox Moth Burst Staging Root");
+        burstStagingRoot.SetActive(false);
+        var burstProxies = new List<CilboxProxy>(BurstInstanceCount * sourceProxies.Length);
 
-        for (int i = 1; i < InstanceCount; i++)
+        long constructAllocBefore = GC.GetAllocatedBytesForCurrentThread();
+        long constructTickBefore = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int i = 0; i < BurstInstanceCount; i++)
         {
-            long setupAllocBefore = GC.GetAllocatedBytesForCurrentThread();
-            long setupTickBefore = System.Diagnostics.Stopwatch.GetTimestamp();
-
-            GameObject clone = UnityEngine.Object.Instantiate(sourceAvatar);
-            clone.name = $"Fox Moth Stress Clone {i:D2}";
+            GameObject clone = UnityEngine.Object.Instantiate(sourceAvatar, burstStagingRoot.transform, true);
+            clone.name = $"Fox Moth Burst Clone {i:D2}";
             clone.transform.position = sourceAvatar.transform.position + new Vector3((i % 5) * 2.0f, 0f, (i / 5) * 2.0f);
+
             BasisAvatar cloneAvatar = clone.GetComponent<BasisAvatar>();
-            Assert.IsNotNull(cloneAvatar, $"Clone {i} is missing its BasisAvatar root.");
-            // The stress clones are local synthetic avatar instances, not network peers. Mark
-            // them local so Vixxy never attempts an avatar->network-player lookup each tick.
+            Assert.IsNotNull(cloneAvatar, $"Burst clone {i} is missing its BasisAvatar root.");
             cloneAvatar.IsOwnedLocally = true;
 
             CilboxProxy[] cloneProxies = clone.GetComponentsInChildren<CilboxProxy>(true);
-            Assert.AreEqual(sourceProxies.Length, cloneProxies.Length, $"Clone {i} did not preserve the Fox Moth Cilbox proxy layout.");
+            Assert.AreEqual(sourceProxies.Length, cloneProxies.Length, $"Burst clone {i} did not preserve the Fox Moth Cilbox proxy layout.");
             for (int proxyIndex = 0; proxyIndex < cloneProxies.Length; proxyIndex++)
             {
-                long reloadAllocBefore = GC.GetAllocatedBytesForCurrentThread();
-                long reloadTickBefore = System.Diagnostics.Stopwatch.GetTimestamp();
-                cloneProxies[proxyIndex].ValidationReloadFromInitializedProxy(sourceProxies[proxyIndex]);
-                long reloadTicks = System.Diagnostics.Stopwatch.GetTimestamp() - reloadTickBefore;
-                long reloadAllocBytes = GC.GetAllocatedBytesForCurrentThread() - reloadAllocBefore;
-                startupReloadTicks.Add(reloadTicks);
-                startupReloadAllocBytes.Add(reloadAllocBytes);
+                PrepareProxyForDeferredValidationLoad(cloneProxies[proxyIndex], sourceProxies[proxyIndex]);
+                burstProxies.Add(cloneProxies[proxyIndex]);
             }
             spawnedClones.Add(clone);
+        }
+        long constructTicks = System.Diagnostics.Stopwatch.GetTimestamp() - constructTickBefore;
+        long constructAllocBytes = GC.GetAllocatedBytesForCurrentThread() - constructAllocBefore;
 
-            long setupTicks = System.Diagnostics.Stopwatch.GetTimestamp() - setupTickBefore;
-            long setupAllocBytes = GC.GetAllocatedBytesForCurrentThread() - setupAllocBefore;
-            startupSetupTicks.Add(setupTicks);
-            startupSetupAllocBytes.Add(setupAllocBytes);
+        var startupOptions = ProfilerRecorderOptions.WrapAroundWhenCapacityReached |
+                             ProfilerRecorderOptions.StartImmediately |
+                             ProfilerRecorderOptions.SumAllSamplesInFrame;
+        using var cilboxStartRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "CilboxProxy.Start.LivePlaytest", 1, startupOptions);
+        using var cilboxInitRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, $"Initialize {sourceProxies[0].className}", 1, startupOptions);
+        using var startupUpdateRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "CilboxProxy.Update.LivePlaytest", 1, startupOptions);
+        using var startupGcRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame", 1, startupOptions);
+        using var playerLoopRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "PlayerLoop", 1, startupOptions);
+
+        long activationAllocBefore = GC.GetAllocatedBytesForCurrentThread();
+        long activationTickBefore = System.Diagnostics.Stopwatch.GetTimestamp();
+        int activationFrame = Time.frameCount;
+        burstStagingRoot.SetActive(true);
+        long activationCallTicks = System.Diagnostics.Stopwatch.GetTimestamp() - activationTickBefore;
+        long activationAllocBytes = GC.GetAllocatedBytesForCurrentThread() - activationAllocBefore;
+
+        var burstStartNs = new List<long>();
+        var burstInitNs = new List<long>();
+        var burstUpdateNs = new List<long>();
+        var burstGcBytes = new List<long>();
+        var burstPlayerLoopNs = new List<long>();
+        var burstFrameDeltaNs = new List<long>();
+        int framesToReady = -1;
+        long readyWallTicks = 0;
+        const int MaxBurstFrames = 30;
+
+        for (int frameOffset = 1; frameOffset <= MaxBurstFrames; frameOffset++)
+        {
+            yield return null;
+
+            long startNs = cilboxStartRecorder.Valid ? cilboxStartRecorder.LastValue : 0;
+            long initNs = cilboxInitRecorder.Valid ? cilboxInitRecorder.LastValue : 0;
+            long updateNs = startupUpdateRecorder.Valid ? startupUpdateRecorder.LastValue : 0;
+            long gcBytes = startupGcRecorder.Valid ? startupGcRecorder.LastValue : 0;
+            long playerLoopNs = playerLoopRecorder.Valid ? playerLoopRecorder.LastValue : 0;
+            long frameDeltaNs = (long)(Time.unscaledDeltaTime * 1000000000.0f);
+            int activeBurstProxies = CountActiveProxies(burstProxies);
+
+            burstStartNs.Add(startNs);
+            burstInitNs.Add(initNs);
+            burstUpdateNs.Add(updateNs);
+            burstGcBytes.Add(gcBytes);
+            burstPlayerLoopNs.Add(playerLoopNs);
+            burstFrameDeltaNs.Add(frameDeltaNs);
+
+            Debug.Log(
+                $"CILBOX_LIVE_PLAYTEST|BURST_FRAME|offset={frameOffset}|unityFrame={Time.frameCount}|active={activeBurstProxies}/{burstProxies.Count}" +
+                $"|frameDeltaMs={frameDeltaNs / 1000000.0:F3}|cilboxStartUs={startNs / 1000.0:F3}|cilboxInitUs={initNs / 1000.0:F3}" +
+                $"|cilboxUpdateUs={updateNs / 1000.0:F3}|playerLoopUs={playerLoopNs / 1000.0:F3}|gcBytes={gcBytes}");
+
+            if (activeBurstProxies == burstProxies.Count && framesToReady < 0)
+            {
+                framesToReady = frameOffset;
+                readyWallTicks = System.Diagnostics.Stopwatch.GetTimestamp() - activationTickBefore;
+            }
+
+            if (framesToReady > 0 && frameOffset >= framesToReady + 3)
+            {
+                break;
+            }
         }
 
-        startupSetupTicks.Sort();
-        startupSetupAllocBytes.Sort();
-        startupReloadTicks.Sort();
-        startupReloadAllocBytes.Sort();
+        Assert.AreEqual(BurstInstanceCount * sourceProxies.Length, burstProxies.Count, "Burst harness did not create exactly 20 Fox Moth Cilbox proxy instances.");
+        Assert.AreEqual(burstProxies.Count, CountActiveProxies(burstProxies), "Not every burst-loaded Fox Moth Cilbox proxy initialized.");
+        Assert.Greater(framesToReady, 0, "Twenty Fox Moth Cilbox proxies did not finish initialization within the burst observation window.");
+
         Debug.Log(
-            $"CILBOX_LIVE_PLAYTEST|STARTUP_SUMMARY|clones={InstanceCount - 1}" +
-            $"|setupAvgUs={Average(startupSetupTicks) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|setupP50Us={Percentile(startupSetupTicks, 0.50) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|setupP95Us={Percentile(startupSetupTicks, 0.95) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|setupMaxUs={startupSetupTicks[startupSetupTicks.Count - 1] * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}" +
-            $"|setupAllocAvgBytes={Average(startupSetupAllocBytes):F1}|setupAllocP50Bytes={Percentile(startupSetupAllocBytes, 0.50)}|setupAllocP95Bytes={Percentile(startupSetupAllocBytes, 0.95)}|setupAllocMaxBytes={startupSetupAllocBytes[startupSetupAllocBytes.Count - 1]}" +
-            $"|reloadAvgUs={Average(startupReloadTicks) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|reloadP50Us={Percentile(startupReloadTicks, 0.50) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|reloadP95Us={Percentile(startupReloadTicks, 0.95) * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|reloadMaxUs={startupReloadTicks[startupReloadTicks.Count - 1] * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}" +
-            $"|reloadAllocAvgBytes={Average(startupReloadAllocBytes):F1}|reloadAllocP50Bytes={Percentile(startupReloadAllocBytes, 0.50)}|reloadAllocP95Bytes={Percentile(startupReloadAllocBytes, 0.95)}|reloadAllocMaxBytes={startupReloadAllocBytes[startupReloadAllocBytes.Count - 1]}");
+            $"CILBOX_LIVE_PLAYTEST|BURST_SUMMARY|instances={BurstInstanceCount}|sourceAlreadyActive=1|activationFrame={activationFrame}" +
+            $"|constructUs={constructTicks * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|constructAllocBytes={constructAllocBytes}" +
+            $"|activationCallUs={activationCallTicks * 1000000.0 / System.Diagnostics.Stopwatch.Frequency:F3}|activationAllocBytes={activationAllocBytes}" +
+            $"|framesToReady={framesToReady}|wallToReadyMs={readyWallTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency:F3}" +
+            $"|cilboxStartTotalUs={Sum(burstStartNs) / 1000.0:F3}|cilboxStartPeakFrameUs={Max(burstStartNs) / 1000.0:F3}" +
+            $"|cilboxInitTotalUs={Sum(burstInitNs) / 1000.0:F3}|cilboxInitPeakFrameUs={Max(burstInitNs) / 1000.0:F3}" +
+            $"|cilboxUpdatePeakFrameUs={Max(burstUpdateNs) / 1000.0:F3}|playerLoopPeakUs={Max(burstPlayerLoopNs) / 1000.0:F3}" +
+            $"|frameDeltaPeakMs={Max(burstFrameDeltaNs) / 1000000.0:F3}|gcTotalBytes={Sum(burstGcBytes)}|gcPeakFrameBytes={Max(burstGcBytes)}");
+
+        // The existing steady-state comparison is intentionally still 20 total avatars:
+        // source + 19 clones. Remove one of the 20 burst arrivals only after its startup has
+        // been measured so the historical Update/GC numbers remain directly comparable.
+        GameObject extraBurstClone = spawnedClones[spawnedClones.Count - 1];
+        spawnedClones.RemoveAt(spawnedClones.Count - 1);
+        UnityEngine.Object.DestroyImmediate(extraBurstClone);
 
         for (int i = 0; i < WarmupFrames; i++) yield return null;
 
@@ -244,6 +318,42 @@ public class CilboxFoxMothLivePlaytest
             $"|cilboxPerProxyAvgUs={Average(cilboxNs) / 1000.0 / proxyCount:F3}|cilboxPerProxyP50Us={Percentile(cilboxNs, 0.50) / 1000.0 / proxyCount:F3}|cilboxPerProxyP95Us={Percentile(cilboxNs, 0.95) / 1000.0 / proxyCount:F3}" +
             $"|vixxyAvgUs={Average(vixxyNs) / 1000.0:F3}|vixxyP95Us={Percentile(vixxyNs, 0.95) / 1000.0:F3}" +
             $"|gcAvgBytes={Average(gcBytes):F1}|gcP95Bytes={Percentile(gcBytes, 0.95)}|gcMaxBytes={gcBytes[gcBytes.Count - 1]}|gcZeroFrames={CountZero(gcBytes)}");
+    }
+
+    private static void PrepareProxyForDeferredValidationLoad(CilboxProxy target, CilboxProxy source)
+    {
+        if (source == null || string.IsNullOrEmpty(source.ValidationSerializedObjectData))
+            throw new InvalidOperationException("Source Cilbox proxy has no retained validation bootstrap data.");
+
+        target.serializedObjectData = source.ValidationSerializedObjectData;
+        Assert.IsNotNull(ProxyWasSetupField, "CilboxProxy.proxyWasSetup validation field was not found.");
+        Assert.IsNotNull(ProxyLoadInProgressField, "CilboxProxy.proxyLoadInProgress validation field was not found.");
+        ProxyWasSetupField.SetValue(target, false);
+        ProxyLoadInProgressField.SetValue(target, false);
+    }
+
+    private static int CountActiveProxies(List<CilboxProxy> proxies)
+    {
+        int count = 0;
+        for (int i = 0; i < proxies.Count; i++)
+        {
+            if (proxies[i] != null && proxies[i].ValidationProxyIsSetup) count++;
+        }
+        return count;
+    }
+
+    private static long Sum(List<long> values)
+    {
+        long sum = 0;
+        for (int i = 0; i < values.Count; i++) sum += values[i];
+        return sum;
+    }
+
+    private static long Max(List<long> values)
+    {
+        long max = 0;
+        for (int i = 0; i < values.Count; i++) if (values[i] > max) max = values[i];
+        return max;
     }
 
     private static double Average(List<long> values)
