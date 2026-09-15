@@ -46,6 +46,11 @@ namespace Cilbox
 
 	public class CilboxUsage
 	{
+		private static readonly String executionBudgetSignature = typeof(CilboxPublicUtils)
+			.GetMethod(nameof(CilboxPublicUtils.GetExecutionBudgetUs), BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null).ToString();
+		private static readonly String remainingExecutionBudgetSignature = typeof(CilboxPublicUtils)
+			.GetMethod(nameof(CilboxPublicUtils.GetRemainingExecutionBudgetUs), BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null).ToString();
+
 		private Cilbox box;
 		public CilboxUsage( Cilbox b ) { box = b; }
 
@@ -242,6 +247,25 @@ namespace Cilbox
 			return ret;
 		}
 
+		public static StackElement OverrideGetExecutionBudgetUs( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		{
+			Cilbox box = (Cilbox)ths.opaque;
+			StackElement ret = new StackElement();
+			ret.LoadLong( box.timeoutLengthUs );
+			return ret;
+		}
+
+		public static StackElement OverrideGetRemainingExecutionBudgetUs( CilMetadataTokenInfo ths, ArraySegment<StackElement> stackBufferIn, ArraySegment<StackElement> parametersIn )
+		{
+			Cilbox box = (Cilbox)ths.opaque;
+			long remainingTicks = box.interpreterAccountingDropDead - System.Diagnostics.Stopwatch.GetTimestamp();
+			long remainingUs = remainingTicks > 0 ? remainingTicks / box.interpreterTicksInUs : 0;
+
+			StackElement ret = new StackElement();
+			ret.LoadLong( remainingUs );
+			return ret;
+		}
+
 
 		////////////////////////////////////////////////////////////////////////////////////
 		// REWRITERS ///////////////////////////////////////////////////////////////////////
@@ -266,6 +290,36 @@ namespace Cilbox
 		public bool OptionallyOverride( String name, SerializedTypeDescriptor declaringType, String fullSignature, bool isStatic, SerializedTypeDescriptor [] genericArguments, ref CilMetadataTokenInfo t )
 		{
 			String typeName = declaringType.typeName;
+
+			if( typeName == typeof(CilboxPublicUtils).FullName && isStatic && genericArguments.Length == 0 )
+			{
+				CilMetadataTokenInfo.DelegateOverride shim = null;
+				if( name == nameof(CilboxPublicUtils.GetExecutionBudgetUs) && fullSignature == executionBudgetSignature )
+					shim = OverrideGetExecutionBudgetUs;
+				else if( name == nameof(CilboxPublicUtils.GetRemainingExecutionBudgetUs) && fullSignature == remainingExecutionBudgetSignature )
+					shim = OverrideGetRemainingExecutionBudgetUs;
+
+				if( shim != null )
+				{
+					if( !box.CheckTypeAllowed(typeName) ) return false;
+
+					MethodInfo policyOverride;
+					if( !box.CheckMethodAllowed(out policyOverride, typeof(CilboxPublicUtils), name,
+						Array.Empty<SerializedTypeDescriptor>(), genericArguments, fullSignature) || policyOverride != null )
+						return false;
+
+					t.isValid = true;
+					t.isNative = false;
+					t.Name = name;
+					t.declaringTypeName = typeName;
+					t.opaque = box;
+					t.shim = shim;
+					t.shimIsVoid = false;
+					t.shimIsStatic = true;
+					t.shimParameterCount = 0;
+					return true;
+				}
+			}
 
 			// We want to allow GetComponent and TryGetComponent.
 
@@ -625,6 +679,22 @@ namespace Cilbox
 		{
 			CilboxProxy p = (CilboxProxy)m;
 			return p.buildTimeGuid;
+		}
+
+		/// <summary>
+		/// Returns the execution-time budget, in microseconds, for the Cilbox currently running this script.
+		/// </summary>
+		public static long GetExecutionBudgetUs()
+		{
+			throw new InvalidOperationException( "GetExecutionBudgetUs is a Cilbox interpreter intrinsic." );
+		}
+
+		/// <summary>
+		/// Returns the execution-time budget still available in the current Cilbox accounting window, in microseconds.
+		/// </summary>
+		public static long GetRemainingExecutionBudgetUs()
+		{
+			throw new InvalidOperationException( "GetRemainingExecutionBudgetUs is a Cilbox interpreter intrinsic." );
 		}
 	}
 
