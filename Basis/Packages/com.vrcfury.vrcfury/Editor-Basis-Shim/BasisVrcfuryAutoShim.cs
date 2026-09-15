@@ -230,7 +230,11 @@ namespace VF.Integration.Basis.Shim {
                 try {
                     definitionFiles = automatic.ResolveFilesOrNull(allRenderers, out _);
                     if (definitionFiles == null || definitionFiles.Length == 0) continue;
-                    trackedRenderers = automatic.FindSkinnedMeshes(definitionFiles, allRenderers);
+                    trackedRenderers = FindFaceTrackingRenderersToleratingImportedWhitespace(
+                        automatic,
+                        definitionFiles,
+                        allRenderers
+                    );
                 } catch (Exception ex) {
                     // Face tracking correctness is more important than stripping a few extra shapes.
                     // If its definition resolver cannot run in the editor build context, preserve all
@@ -241,29 +245,82 @@ namespace VF.Integration.Basis.Shim {
                 }
 
                 if (trackedRenderers == null || trackedRenderers.Count == 0) continue;
-                var targetMap = BlendshapeActuation.ResolveSmrToBlendshapeIndices(trackedRenderers.ToArray());
-
                 foreach (var file in definitionFiles) {
                     if (file?.definitions == null) continue;
                     foreach (var definition in file.definitions) {
                         if (definition.blendshapes == null || definition.blendshapes.Length == 0) continue;
-                        foreach (var target in BlendshapeActuation.ComputeTargets(
-                                     targetMap,
-                                     definition.blendshapes,
-                                     definition.onlyFirstMatch)) {
-                            var renderer = target?.Renderer;
+                        foreach (var renderer in trackedRenderers ?? new List<SkinnedMeshRenderer>()) {
                             var mesh = renderer != null ? renderer.sharedMesh : null;
-                            if (mesh == null || target.BlendshapeIndices == null) continue;
+                            if (mesh == null) continue;
+
                             var set = GetOrCreateRequirement(requirements, renderer);
-                            foreach (var index in target.BlendshapeIndices) {
-                                if (index >= 0 && index < mesh.blendShapeCount) {
-                                    set.Add(mesh.GetBlendShapeName(index));
-                                }
+                            foreach (var requestedName in definition.blendshapes) {
+                                var index = FindBlendshapeIndexToleratingImportedWhitespace(mesh, requestedName);
+                                if (index < 0) continue;
+                                set.Add(mesh.GetBlendShapeName(index));
+                                if (definition.onlyFirstMatch) break;
                             }
                         }
                     }
                 }
             }
+        }
+
+        private static List<SkinnedMeshRenderer> FindFaceTrackingRenderersToleratingImportedWhitespace(
+            AutomaticFaceTracking automatic,
+            BlendshapeActuationDefinitionFile[] definitionFiles,
+            SkinnedMeshRenderer[] allRenderers
+        ) {
+            // AutomaticFaceTracking's renderer discovery intentionally uses exact
+            // blendshape names. Unity can preserve an edge tab/space from an FBX
+            // channel, so augment that result with the same edge-tolerant lookup
+            // used below when collecting the actual names to keep.
+            var tracked = automatic.FindSkinnedMeshes(definitionFiles, allRenderers)
+                ?? new List<SkinnedMeshRenderer>();
+            var trackedSet = new HashSet<SkinnedMeshRenderer>(tracked);
+            foreach (var renderer in allRenderers) {
+                if (renderer == null || renderer.sharedMesh == null || trackedSet.Contains(renderer)) continue;
+                if (!MeshMatchesFaceTrackingDefinition(renderer.sharedMesh, definitionFiles)) continue;
+                tracked.Add(renderer);
+                trackedSet.Add(renderer);
+            }
+            return tracked;
+        }
+
+        private static bool MeshMatchesFaceTrackingDefinition(
+            Mesh mesh,
+            BlendshapeActuationDefinitionFile[] definitionFiles
+        ) {
+            if (mesh == null || definitionFiles == null) return false;
+            foreach (var file in definitionFiles) {
+                if (file?.definitions == null) continue;
+                foreach (var definition in file.definitions) {
+                    if (definition.blendshapes == null) continue;
+                    foreach (var requestedName in definition.blendshapes) {
+                        if (FindBlendshapeIndexToleratingImportedWhitespace(mesh, requestedName) >= 0) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static int FindBlendshapeIndexToleratingImportedWhitespace(Mesh mesh, string requestedName) {
+            if (mesh == null || string.IsNullOrEmpty(requestedName)) return -1;
+
+            var exact = mesh.GetBlendShapeIndex(requestedName);
+            if (exact >= 0) return exact;
+
+            // Some FBX exporters append a tab to a channel name. Unity preserves that
+            // character in Mesh.GetBlendShapeName(), while the Basis face-tracking
+            // definitions contain the canonical name. Match only at the edges and keep
+            // the raw imported name in the requirement set so the mesh stripper can copy it.
+            var canonical = requestedName.Trim();
+            if (canonical.Length == 0) return -1;
+            for (var index = 0; index < mesh.blendShapeCount; index++) {
+                var importedName = mesh.GetBlendShapeName(index);
+                if (importedName != null && string.Equals(importedName.Trim(), canonical, StringComparison.Ordinal)) return index;
+            }
+            return -1;
         }
 
         private static void CollectMmdBlendshapeRequirements(
@@ -341,13 +398,20 @@ namespace VF.Integration.Basis.Shim {
             if (root == null || model?.action?.actions == null) return;
 
             var materialCopies = new Dictionary<(Renderer renderer, int slot), Material>();
+            // Resting-state material curves affect the final material installed in a slot,
+            // including when the property action was authored before the material swap.
+            foreach (var action in model.action.actions.OfType<MaterialAction>()) {
+                if (IsActiveForCurrentBuild(action)) ApplyAction(root, componentObject, action, materialCopies);
+            }
             foreach (var action in model.action.actions) {
-                if (action == null || !IsActiveForCurrentBuild(action)) continue;
+                if (action == null || action is MaterialAction || !IsActiveForCurrentBuild(action)) continue;
                 ApplyAction(root, componentObject, action, materialCopies);
             }
         }
 
         private static bool IsActiveForCurrentBuild(StateAction action) {
+            // A static Basis upload cannot represent per-client runtime conditions.
+            if (action.localOnly || action.remoteOnly) return false;
             if (!action.desktopActive && !action.androidActive) return true;
             var isAndroid = EditorUserBuildSettings.activeBuildTarget == BuildTarget.Android;
             return isAndroid ? action.androidActive : action.desktopActive;
@@ -509,9 +573,9 @@ namespace VF.Integration.Basis.Shim {
             int slot,
             Dictionary<(Renderer renderer, int slot), Material> materialCopies
         ) {
-            if (materialCopies.TryGetValue((renderer, slot), out var existing)) return existing;
             var materials = renderer.sharedMaterials;
             if (slot < 0 || slot >= materials.Length || materials[slot] == null) return null;
+            if (materialCopies.TryGetValue((renderer, slot), out var existing) && materials[slot] == existing) return existing;
             var copy = new Material(materials[slot]) {
                 name = materials[slot].name + " (VRCFury Apply During Upload)"
             };
@@ -702,6 +766,12 @@ namespace VF.Integration.Basis.Shim {
         ) {
             TemporaryStorageHandler.EnsureDirectoryExists(settings.TemporaryStorage);
             foreach (var skin in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) {
+                var oldRootBone = skin.rootBone;
+                if (oldRootBone != null && !protectedTransforms.Contains(oldRootBone)
+                    && mapping.TryGetValue(oldRootBone, out var newRootBone) && newRootBone != null) {
+                    skin.rootBone = newRootBone;
+                    EditorUtility.SetDirty(skin);
+                }
                 var oldMesh = skin.sharedMesh;
                 if (oldMesh == null || skin.bones == null || skin.bones.Length == 0) continue;
 

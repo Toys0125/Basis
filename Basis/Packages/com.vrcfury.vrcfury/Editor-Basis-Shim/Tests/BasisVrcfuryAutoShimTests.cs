@@ -676,6 +676,50 @@ namespace VF.Integration.Basis.Shim.Tests {
         }
 
         [Test]
+        public void BlendshapeOptimizer_PreservesImportedWhitespaceFaceTrackingTarget() {
+            var root = new GameObject("Avatar");
+            var definitionFile = ScriptableObject.CreateInstance<BlendshapeActuationDefinitionFile>();
+            var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
+            try {
+                root.AddComponent<BasisAvatar>();
+                var renderObject = new GameObject("Face");
+                renderObject.transform.SetParent(root.transform, false);
+                var renderer = renderObject.AddComponent<SkinnedMeshRenderer>();
+                const string importedName = "LipFunnelUpperRight\t";
+                renderer.sharedMesh = MakeBlendshapeMesh(importedName, "BakeMe");
+
+                definitionFile.definitions = new[] {
+                    new BlendshapeActuationDefinition {
+                        address = "FT/TestImportedWhitespace",
+                        inStart = 0,
+                        inEnd = 1,
+                        outStart = 0,
+                        outEnd = 100,
+                        blendshapes = new[] { "LipFunnelUpperRight" },
+                        onlyFirstMatch = false
+                    }
+                };
+
+                var automatic = root.AddComponent<AutomaticFaceTracking>();
+                SetField(automatic, "useOverrideDefinitionFiles", true);
+                SetField(automatic, "overrideDefinitionFiles", new[] { definitionFile });
+                var fury = root.AddComponent<VRCFury>();
+                fury.content = new BlendshapeOptimizer();
+                settings.TemporaryStorage = TempFolder;
+
+                BasisVrcfuryAutoShim.ProcessBuildClone(root, settings);
+
+                Assert.That(renderer.sharedMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh.blendShapeCount, Is.EqualTo(1));
+                Assert.That(renderer.sharedMesh.GetBlendShapeName(0), Is.EqualTo(importedName));
+            } finally {
+                UnityEngine.Object.DestroyImmediate(settings);
+                UnityEngine.Object.DestroyImmediate(definitionFile);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void BlendshapeOptimizer_PreservesDefaultUnifiedExpressionsFaceTrackingTargets() {
             var root = new GameObject("Avatar");
             var settings = ScriptableObject.CreateInstance<BasisAssetBundleObject>();
