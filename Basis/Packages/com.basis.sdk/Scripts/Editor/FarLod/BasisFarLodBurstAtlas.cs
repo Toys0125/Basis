@@ -47,7 +47,7 @@ internal static class BasisFarLodBurstAtlas
         public float Score;
     }
 
-    [BurstCompile]
+    [BurstCompile(CompileSynchronously = true)]
     private struct ProjectBandJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<float3> Positions;
@@ -408,7 +408,7 @@ internal static class BasisFarLodBurstAtlas
         }
     }
 
-    [BurstCompile]
+    [BurstCompile(CompileSynchronously = true)]
     private struct DilateRowsJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<byte> Current;
