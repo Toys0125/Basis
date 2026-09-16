@@ -17,16 +17,28 @@ public static class BasisFarLodMeshSimplifier
 
     public static void Simplify(List<Vector3> positions, List<byte> boneA, List<byte> boneB, List<byte> weightA, List<byte> hiddenFlag, List<int> indices, int targetTriangles)
     {
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
         Weld(positions, boneA, boneB, weightA, indices);
+        double weldMs = stopwatch.Elapsed.TotalMilliseconds;
+
+        double collapseStartMs = stopwatch.Elapsed.TotalMilliseconds;
         if (indices.Count / 3 > targetTriangles)
         {
             Collapse(positions, boneA, boneB, weightA, hiddenFlag, indices, targetTriangles);
         }
+        double collapseMs = stopwatch.Elapsed.TotalMilliseconds - collapseStartMs;
+
+        double clusterStartMs = stopwatch.Elapsed.TotalMilliseconds;
         if (indices.Count / 3 > targetTriangles)
         {
             ClusterFallback(positions, boneA, boneB, weightA, indices, targetTriangles);
         }
+        double clusterMs = stopwatch.Elapsed.TotalMilliseconds - clusterStartMs;
+
+        double compactStartMs = stopwatch.Elapsed.TotalMilliseconds;
         Compact(positions, boneA, boneB, weightA, hiddenFlag, indices);
+        double compactMs = stopwatch.Elapsed.TotalMilliseconds - compactStartMs;
+        Debug.Log($"[FarAvatarPerf] Simplify weld {weldMs:0.00}ms, collapse {collapseMs:0.00}ms, cluster {clusterMs:0.00}ms, compact {compactMs:0.00}ms, total {stopwatch.Elapsed.TotalMilliseconds:0.00}ms.");
     }
 
     private static void Weld(List<Vector3> positions, List<byte> boneA, List<byte> boneB, List<byte> weightA, List<int> indices)
@@ -222,12 +234,17 @@ public static class BasisFarLodMeshSimplifier
         {
             int a = (int)(pair.Key >> 32);
             int b = (int)(pair.Key & 0xFFFFFFFF);
-            HeapPush(heap, MakeEntry(a, b, pos, quadrics, versions));
+            heap.Add(MakeEntry(a, b, pos, quadrics, versions));
         }
+        Heapify(heap);
         edgeUse = null;
 
         int aliveTriangles = triangleCount;
-        HashSet<int> neighborScratch = new HashSet<int>();
+        List<int> neighborScratch = new List<int>(32);
+        int[] neighborMarks = new int[vertexCount];
+        int neighborGeneration = 0;
+        int[] triangleMarks = new int[triangleCount];
+        int triangleGeneration = 0;
         List<int> mergedTris = new List<int>(16);
 
         while (aliveTriangles > targetTriangles && heap.Count > 0)
@@ -303,8 +320,11 @@ public static class BasisFarLodMeshSimplifier
             }
             vertexTris[vb] = null;
 
-            // Rebuild va's alive triangle list and prune newly degenerate faces.
-            List<int> rebuilt = new List<int>(mergedTris.Count);
+            // Reuse va's existing adjacency list instead of allocating a new List for every
+            // successful collapse. Generation-stamped arrays preserve the old duplicate guards
+            // without the per-collapse HashSet/List.Contains overhead.
+            trisA.Clear();
+            triangleGeneration++;
             for (int i = 0; i < mergedTris.Count; i++)
             {
                 int t = mergedTris[i];
@@ -319,28 +339,32 @@ public static class BasisFarLodMeshSimplifier
                     aliveTriangles--;
                     continue;
                 }
-                if (!rebuilt.Contains(t))
+                if (triangleMarks[t] != triangleGeneration)
                 {
-                    rebuilt.Add(t);
+                    triangleMarks[t] = triangleGeneration;
+                    trisA.Add(t);
                 }
             }
-            vertexTris[va] = rebuilt;
+            vertexTris[va] = trisA;
 
             neighborScratch.Clear();
-            for (int i = 0; i < rebuilt.Count; i++)
+            neighborGeneration++;
+            for (int i = 0; i < trisA.Count; i++)
             {
-                int t = rebuilt[i];
+                int t = trisA[i];
                 for (int k = 0; k < 3; k++)
                 {
                     int v = tris[t * 3 + k];
-                    if (v != va)
+                    if (v != va && neighborMarks[v] != neighborGeneration)
                     {
+                        neighborMarks[v] = neighborGeneration;
                         neighborScratch.Add(v);
                     }
                 }
             }
-            foreach (int neighbor in neighborScratch)
+            for (int i = 0; i < neighborScratch.Count; i++)
             {
+                int neighbor = neighborScratch[i];
                 HeapPush(heap, MakeEntry(va, neighbor, pos, quadrics, versions));
             }
         }
@@ -383,12 +407,12 @@ public static class BasisFarLodMeshSimplifier
             else if (i1 == movingVertex) p1 = target;
             else if (i2 == movingVertex) p2 = target;
             Vector3 after = Vector3.Cross(p1 - p0, p2 - p0);
-            float beforeLength = before.magnitude;
-            if (beforeLength < 1e-12f)
+            float beforeLengthSquared = before.sqrMagnitude;
+            if (beforeLengthSquared < 1e-24f)
             {
                 continue;
             }
-            if (Vector3.Dot(before / beforeLength, after) < FlipRejectDot * beforeLength)
+            if (Vector3.Dot(before, after) < FlipRejectDot * beforeLengthSquared)
             {
                 return true;
             }
@@ -448,30 +472,45 @@ public static class BasisFarLodMeshSimplifier
         }
     }
 
+    private static void Heapify(List<HeapEntry> heap)
+    {
+        for (int parent = (heap.Count >> 1) - 1; parent >= 0; parent--)
+        {
+            SiftDown(heap, parent);
+        }
+    }
+
     private static HeapEntry HeapPop(List<HeapEntry> heap)
     {
         HeapEntry top = heap[0];
         int last = heap.Count - 1;
         heap[0] = heap[last];
         heap.RemoveAt(last);
-        int parent = 0;
+        if (heap.Count > 0)
+        {
+            SiftDown(heap, 0);
+        }
+        return top;
+    }
+
+    private static void SiftDown(List<HeapEntry> heap, int parent)
+    {
         while (true)
         {
             int left = parent * 2 + 1;
             if (left >= heap.Count)
             {
-                break;
+                return;
             }
             int right = left + 1;
             int smallest = right < heap.Count && heap[right].Cost < heap[left].Cost ? right : left;
             if (heap[parent].Cost <= heap[smallest].Cost)
             {
-                break;
+                return;
             }
             (heap[parent], heap[smallest]) = (heap[smallest], heap[parent]);
             parent = smallest;
         }
-        return top;
     }
 
     private static void ClusterFallback(List<Vector3> positions, List<byte> boneA, List<byte> boneB, List<byte> weightA, List<int> indices, int targetTriangles)

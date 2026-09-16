@@ -5,6 +5,8 @@
         "Unity.ResourceManager",
         "BasisSDK",
         "BasisSerializer.OdinSerializer",
+        "Unity.Burst",
+        "Unity.Collections",
         "Unity.Mathematics",
         "BasisDebug",
         "Unity.RenderPipelines.Core.Runtime",

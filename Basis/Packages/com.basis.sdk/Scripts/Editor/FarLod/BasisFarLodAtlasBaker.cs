@@ -100,6 +100,7 @@ public static class BasisFarLodAtlasBaker
         Vector3[] positions, Vector3[] normals, Vector2[] uv, int[] indices, int atlasSize, int captureSize,
         RegionOfInterest[] regions = null, BakeMask mask = default)
     {
+        double bakeStart = EditorApplication.timeSinceStartup;
         Bounds rootBounds = new Bounds(positions[0], Vector3.zero);
         for (int i = 1; i < positions.Length; i++)
         {
@@ -223,6 +224,7 @@ public static class BasisFarLodAtlasBaker
                 }
             }
 
+            double captureStart = EditorApplication.timeSinceStartup;
             List<CaptureView> views = new List<CaptureView>(64);
 
             // Whole-body ring: equator, upper ring, lower ring (palms face down in T-pose —
@@ -312,6 +314,8 @@ public static class BasisFarLodAtlasBaker
                 return null;
             }
 
+            double captureSeconds = EditorApplication.timeSinceStartup - captureStart;
+
             colliderObject = new GameObject("FarLodBakeCollider") { hideFlags = HideFlags.HideAndDontSave, layer = OcclusionLayer };
             colliderObject.transform.SetPositionAndRotation(root.position, root.rotation);
             colliderObject.transform.localScale = root.lossyScale;
@@ -319,7 +323,9 @@ public static class BasisFarLodAtlasBaker
             collider.sharedMesh = decimatedMesh;
             Physics.SyncTransforms();
 
+            double aoStart = EditorApplication.timeSinceStartup;
             float[] vertexAo = ComputeVertexAo(positions, normals, indices, rootToWorld, rootRotation, radius);
+            double aoSeconds = EditorApplication.timeSinceStartup - aoStart;
 
             sFlipSampleY = DetectSampleFlip(views, rootToWorld, rootRotation, positions, normals);
             if (sFlipSampleY)
@@ -327,12 +333,19 @@ public static class BasisFarLodAtlasBaker
                 Debug.LogWarning("[FarAvatar] Capture rows came back top-down on this pipeline — sampling with mirrored Y.");
             }
 
+            double projectStart = EditorApplication.timeSinceStartup;
             Color32[] atlas = ProjectAtlas(views, rootToWorld, rootRotation, positions, normals, uv, indices, atlasSize, radius, mask.TexelVertexGroup, mask.TexelHidden, vertexAo);
+            double projectSeconds = EditorApplication.timeSinceStartup - projectStart;
             if (atlas == null)
             {
                 return null;
             }
-            return CompressAtlas(atlas, atlasSize);
+            double compressionStart = EditorApplication.timeSinceStartup;
+            BasisFarLodPayload.FarLodTexture[] textures = CompressAtlas(atlas, atlasSize);
+            double compressionSeconds = EditorApplication.timeSinceStartup - compressionStart;
+            double totalSeconds = EditorApplication.timeSinceStartup - bakeStart;
+            Debug.Log($"[FarAvatarPerf] Bake atlas capture {captureSeconds:0.000}s, AO {aoSeconds:0.000}s, project+dilate {projectSeconds:0.000}s, compress {compressionSeconds:0.000}s, total {totalSeconds:0.000}s.");
+            return textures;
         }
         finally
         {
@@ -1041,6 +1054,15 @@ public static class BasisFarLodAtlasBaker
         int layerMask = 1 << OcclusionLayer;
         int viewCount = views.Count;
         CaptureView[] viewArray = views.ToArray();
+        bool anyViewLacksDepth = false;
+        for (int v = 0; v < viewCount; v++)
+        {
+            if (viewArray[v].Depth16 == null)
+            {
+                anyViewLacksDepth = true;
+                break;
+            }
+        }
 
         // The projection is pure array math EXCEPT the collider raycast fallback taken when a
         // view carries no depth mask — Physics queries are main-thread only, so that path runs
@@ -1253,22 +1275,14 @@ public static class BasisFarLodAtlasBaker
         }
         }
 
-        bool anyViewLacksDepth = false;
-        for (int v = 0; v < viewCount; v++)
+        void RunScalarProjection()
         {
-            if (viewArray[v].Depth16 == null)
+            if (anyViewLacksDepth)
             {
-                anyViewLacksDepth = true;
-                break;
+                ProjectRows(0, atlasSize - 1);
+                return;
             }
-        }
 
-        if (anyViewLacksDepth)
-        {
-            ProjectRows(0, atlasSize - 1);
-        }
-        else
-        {
             int bandHeight = Mathf.Max(16, atlasSize / (Mathf.Clamp(SystemInfo.processorCount, 1, 16) * 4));
             int bandCount = (atlasSize + bandHeight - 1) / bandHeight;
             System.Threading.Tasks.Parallel.For(0, bandCount, band =>
@@ -1278,6 +1292,49 @@ public static class BasisFarLodAtlasBaker
             });
         }
 
+        bool usedBurstProjection = false;
+        double projectionStart = EditorApplication.timeSinceStartup;
+        if (!anyViewLacksDepth && BasisFarLodBurstAtlas.IsAvailable)
+        {
+            BasisFarLodBurstAtlas.ViewData[] burstViews = new BasisFarLodBurstAtlas.ViewData[viewCount];
+            for (int v = 0; v < viewCount; v++)
+            {
+                CaptureView view = viewArray[v];
+                burstViews[v] = new BasisFarLodBurstAtlas.ViewData
+                {
+                    DirectionWorld = view.DirectionWorld,
+                    WorldToPixel = view.WorldToPixel,
+                    Pixels = view.Pixels,
+                    GroupIds = view.GroupIds,
+                    Depth16 = view.Depth16,
+                    CameraPositionWorld = view.CameraPositionWorld,
+                    DepthNear = view.DepthNear,
+                    DepthFar = view.DepthFar,
+                    DepthToleranceMeters = view.DepthToleranceMeters,
+                    Size = view.Size,
+                    IsRegion = view.IsRegion,
+                    ValidBoundsRoot = view.ValidBoundsRoot,
+                };
+            }
+            if (BasisFarLodBurstAtlas.TryProject(burstViews, rootToWorld, rootRotation,
+                positions, normals, uv, indices, atlasSize, texelGroups, texelHidden, vertexAo,
+                sFlipSampleY, AoBakeStrength, MinViewFacing, RegionMinFacing, RegionScoreBias,
+                MinCoverage, FallbackCoverage, out Color32[] burstAtlas, out byte[] burstQuality, out string burstFailure))
+            {
+                atlas = burstAtlas;
+                texelQuality = burstQuality;
+                usedBurstProjection = true;
+            }
+            else
+            {
+                Debug.LogWarning($"[FarAvatar] Burst atlas projection unavailable ({burstFailure}); using scalar projection.");
+            }
+        }
+
+        if (!usedBurstProjection)
+        {
+            RunScalarProjection();
+        }
         // If projection wrote (almost) nothing the flood fill below would paint the whole
         // atlas a flat color — captures and the part mask disagreeing with the geometry (a
         // dead mask render rejects every sample). Shipping that is worse than shipping no
@@ -1290,6 +1347,22 @@ public static class BasisFarLodAtlasBaker
                 writtenTexels++;
             }
         }
+        if (writtenTexels < texelCount / 100 && usedBurstProjection)
+        {
+            Debug.LogWarning($"[FarAvatar] Burst atlas projection produced only {writtenTexels} of {texelCount} texels; retrying the original scalar path.");
+            atlas = new Color32[texelCount];
+            texelQuality = new byte[texelCount];
+            RunScalarProjection();
+            writtenTexels = 0;
+            for (int index = 0; index < texelQuality.Length; index++)
+            {
+                if (texelQuality[index] > 0)
+                {
+                    writtenTexels++;
+                }
+            }
+            usedBurstProjection = false;
+        }
         if (writtenTexels < texelCount / 100)
         {
             BasisFarLodGenerator.LastFailureReason = $"atlas projection wrote almost nothing: {writtenTexels} of {texelCount} texels";
@@ -1297,7 +1370,11 @@ public static class BasisFarLodAtlasBaker
             return null;
         }
 
+        double projectionSeconds = EditorApplication.timeSinceStartup - projectionStart;
+        double dilationStart = EditorApplication.timeSinceStartup;
         Dilate(atlas, texelQuality, atlasSize);
+        double dilationSeconds = EditorApplication.timeSinceStartup - dilationStart;
+        Debug.Log($"[FarAvatarPerf] Atlas projection {projectionSeconds:0.000}s ({(usedBurstProjection ? "Burst" : "scalar")}), dilation/flood {dilationSeconds:0.000}s.");
         return atlas;
     }
 
@@ -1449,58 +1526,66 @@ public static class BasisFarLodAtlasBaker
 
     private static void Dilate(Color32[] atlas, byte[] texelQuality, int atlasSize)
     {
-        byte[] current = texelQuality;
-        for (int pass = 0; pass < DilatePasses; pass++)
+        byte[] current;
+        if (!BasisFarLodBurstAtlas.TryDilate(atlas, texelQuality, atlasSize, DilatePasses, out current, out string burstFailure))
         {
-            byte[] next = (byte[])current.Clone();
-            bool any = false;
-            for (int y = 0; y < atlasSize; y++)
+            if (BasisFarLodBurstAtlas.IsAvailable)
             {
-                for (int x = 0; x < atlasSize; x++)
+                Debug.LogWarning($"[FarAvatar] Burst atlas dilation unavailable ({burstFailure}); using scalar dilation.");
+            }
+            current = texelQuality;
+            for (int pass = 0; pass < DilatePasses; pass++)
+            {
+                byte[] next = (byte[])current.Clone();
+                bool any = false;
+                for (int y = 0; y < atlasSize; y++)
                 {
-                    int index = y * atlasSize + x;
-                    if (current[index] > 0)
+                    for (int x = 0; x < atlasSize; x++)
                     {
-                        continue;
-                    }
-                    int r = 0, g = 0, b = 0, count = 0;
-                    for (int dy = -1; dy <= 1; dy++)
-                    {
-                        int ny = y + dy;
-                        if (ny < 0 || ny >= atlasSize)
+                        int index = y * atlasSize + x;
+                        if (current[index] > 0)
                         {
                             continue;
                         }
-                        for (int dx = -1; dx <= 1; dx++)
+                        int r = 0, g = 0, b = 0, count = 0;
+                        for (int dy = -1; dy <= 1; dy++)
                         {
-                            int nx = x + dx;
-                            if (nx < 0 || nx >= atlasSize)
+                            int ny = y + dy;
+                            if (ny < 0 || ny >= atlasSize)
                             {
                                 continue;
                             }
-                            int neighbor = ny * atlasSize + nx;
-                            if (current[neighbor] == 0)
+                            for (int dx = -1; dx <= 1; dx++)
                             {
-                                continue;
+                                int nx = x + dx;
+                                if (nx < 0 || nx >= atlasSize)
+                                {
+                                    continue;
+                                }
+                                int neighbor = ny * atlasSize + nx;
+                                if (current[neighbor] == 0)
+                                {
+                                    continue;
+                                }
+                                r += atlas[neighbor].r;
+                                g += atlas[neighbor].g;
+                                b += atlas[neighbor].b;
+                                count++;
                             }
-                            r += atlas[neighbor].r;
-                            g += atlas[neighbor].g;
-                            b += atlas[neighbor].b;
-                            count++;
+                        }
+                        if (count > 0)
+                        {
+                            atlas[index] = new Color32((byte)(r / count), (byte)(g / count), (byte)(b / count), 255);
+                            next[index] = 1;
+                            any = true;
                         }
                     }
-                    if (count > 0)
-                    {
-                        atlas[index] = new Color32((byte)(r / count), (byte)(g / count), (byte)(b / count), 255);
-                        next[index] = 1;
-                        any = true;
-                    }
                 }
-            }
-            current = next;
-            if (!any)
-            {
-                break;
+                current = next;
+                if (!any)
+                {
+                    break;
+                }
             }
         }
 
