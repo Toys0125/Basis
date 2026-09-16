@@ -4,6 +4,7 @@
     "references": [
         "Basis Framework",
         "BasisSDK",
+        "BasisSDKEditor",
         "UnityEngine.TestRunner"
     ],
     "includePlatforms": [
