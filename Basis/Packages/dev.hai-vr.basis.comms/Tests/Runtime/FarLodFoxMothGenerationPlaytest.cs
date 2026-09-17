@@ -38,7 +38,6 @@ public class FarLodFoxMothGenerationPlaytest
             }
             BasisNetworkPlayers.JoiningPlayers.TryRemove(playerId, out _);
         }
-        BasisBundleLoadAsset.DisableFrameSplitForValidation = false;
         BasisSceneFactory.SkipSceneCameraSetupForValidation = false;
         LogAssert.ignoreFailingMessages = false;
     }
@@ -48,7 +47,6 @@ public class FarLodFoxMothGenerationPlaytest
     public IEnumerator FoxMoth_GenerateFarLod_ScalarAndBurst()
     {
         LogAssert.ignoreFailingMessages = true;
-        BasisBundleLoadAsset.DisableFrameSplitForValidation = false;
         BasisSceneFactory.SkipSceneCameraSetupForValidation = true;
 
         float bootDeadline = Time.realtimeSinceStartup + 120f;

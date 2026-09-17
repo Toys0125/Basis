@@ -15,6 +15,7 @@ using Object = UnityEngine.Object;
 
 public static class BasisSceneFactory
 {
+    public static bool SkipSceneCameraSetupForValidation;
     public const string BasisLoadingSceneKey = "BasisLoadingScene";
 
     public static BasisScene BasisScene;
@@ -129,32 +130,35 @@ public static class BasisSceneFactory
         AttachMixerToAllSceneAudioSources();
         RespawnCheckTimer = BasisScene.RespawnCheckTimer;
         RespawnHeight = BasisScene.RespawnHeight;
-        if (scene.MainCamera != null)
+        if (!SkipSceneCameraSetupForValidation)
         {
-            LoadCameraProperties(scene.MainCamera);
-            GameObject.DestroyImmediate(scene.MainCamera.gameObject);
-            BasisDebug.Log("Destroying Main Camera Attached To Scene");
-        }
-        else
-        {
-            BasisDebug.Log("No attached camera to scene script Found");
-        }
-        List<GameObject> MainCameras = new List<GameObject>();
-        GameObject.FindGameObjectsWithTag("MainCamera", MainCameras);
-        int Count = MainCameras.Count;
-        for (int Index = 0; Index < Count; Index++)
-        {
-            GameObject PC = MainCameras[Index];
-            if (PC.TryGetComponent(out Camera camera))
+            if (scene.MainCamera != null)
             {
-                if (camera != BasisLocalCameraDriver.Instance.Camera)
+                LoadCameraProperties(scene.MainCamera);
+                GameObject.DestroyImmediate(scene.MainCamera.gameObject);
+                BasisDebug.Log("Destroying Main Camera Attached To Scene");
+            }
+            else
+            {
+                BasisDebug.Log("No attached camera to scene script Found");
+            }
+            List<GameObject> MainCameras = new List<GameObject>();
+            GameObject.FindGameObjectsWithTag("MainCamera", MainCameras);
+            int Count = MainCameras.Count;
+            for (int Index = 0; Index < Count; Index++)
+            {
+                GameObject PC = MainCameras[Index];
+                if (PC.TryGetComponent(out Camera camera))
                 {
-                //    LoadCameraPropertys(camera);
-                    GameObject.DestroyImmediate(camera.gameObject);
-                }
-                else
-                {
-                  //  BasisDebug.Log("No New main Camera Found");
+                    if (camera != BasisLocalCameraDriver.Instance.Camera)
+                    {
+                    //    LoadCameraPropertys(camera);
+                        GameObject.DestroyImmediate(camera.gameObject);
+                    }
+                    else
+                    {
+                      //  BasisDebug.Log("No New main Camera Found");
+                    }
                 }
             }
         }
