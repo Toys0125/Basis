@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "projectPath": "Basis",
+  "profiles": {
+    "farlod-foxmoth-playtest": {
+      "compile": true,
+      "playModeTests": true
+    }
+  }
+}
