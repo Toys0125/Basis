@@ -23,6 +23,8 @@ public class BasisFarLodTesterWindow : EditorWindow
     private const string PayloadSessionKey = "BasisFarLodTester.Payload";
     private const string RawBytesSessionKey = "BasisFarLodTester.RawBytes";
     private const string Base64BytesSessionKey = "BasisFarLodTester.Base64Bytes";
+    private const string GeneratedRawColorSessionKey = "BasisFarLodTester.GeneratedRawColor";
+    private const string GeneratedOriginalSurfaceSessionKey = "BasisFarLodTester.GeneratedOriginalSurface";
     private const string ScenePreviewPrefix = "Far avatar Preview (";
 
     [MenuItem("Basis/Avatar/Far Avatar Tester", false, 141)]
@@ -41,6 +43,10 @@ public class BasisFarLodTesterWindow : EditorWindow
     [SerializeField] private float _orbitZoom = 1f;
     [SerializeField] private bool _showStages = true;
     [SerializeField] private bool _showBones;
+    [SerializeField] private bool _rawColorMode;
+    [SerializeField] private bool _useOriginalSurfaceProjection;
+    [SerializeField] private bool _generatedRawColorMode;
+    [SerializeField] private bool _generatedOriginalSurfaceProjection;
 
     private BasisFarLodPayload _payload;
     private BasisFarLodGenerator.GenerationReport _report;
@@ -76,6 +82,8 @@ public class BasisFarLodTesterWindow : EditorWindow
                 _payload = BasisFarLodPayload.TryParseBase64(stored);
                 _payloadBytes = SessionState.GetInt(RawBytesSessionKey, 0);
                 _base64Bytes = SessionState.GetInt(Base64BytesSessionKey, 0);
+                _generatedRawColorMode = SessionState.GetInt(GeneratedRawColorSessionKey, 0) != 0;
+                _generatedOriginalSurfaceProjection = SessionState.GetInt(GeneratedOriginalSurfaceSessionKey, 0) != 0;
                 if (_payload != null)
                 {
                     try
@@ -106,6 +114,8 @@ public class BasisFarLodTesterWindow : EditorWindow
         SessionState.EraseString(PayloadSessionKey);
         SessionState.EraseInt(RawBytesSessionKey);
         SessionState.EraseInt(Base64BytesSessionKey);
+        SessionState.EraseInt(GeneratedRawColorSessionKey);
+        SessionState.EraseInt(GeneratedOriginalSurfaceSessionKey);
     }
 
     private void OnGUI()
@@ -156,13 +166,23 @@ public class BasisFarLodTesterWindow : EditorWindow
             BasisEditorUI.Help($"{BasisFarLodGenerator.AtlasSize}px atlas: expect a noticeably slower bake, higher transient memory, and a payload of several MB riding every connector download.", MessageType.Info);
         }
 
+        BasisEditorUI.SectionTitle("A/B Diagnostics");
+        _rawColorMode = EditorGUILayout.ToggleLeft("Raw color: AO off + RGBA32 + unlit preview", _rawColorMode);
+        _useOriginalSurfaceProjection = EditorGUILayout.ToggleLeft("Project from corresponding original surface point", _useOriginalSurfaceProjection);
+        BasisEditorUI.Note("Generate once with a toggle off and once on to compare the same avatar/settings. These options only affect this tester.");
+        bool rawAtlasTooLarge = _rawColorMode && BasisFarLodGenerator.AtlasSize > 1024;
+        if (rawAtlasTooLarge)
+        {
+            BasisEditorUI.Help("Raw RGBA32 testing is limited to 1024px or smaller by the far-avatar payload texture-size limit.", MessageType.Warning);
+        }
+
         bool persistent = _avatar != null && EditorUtility.IsPersistent(_avatar);
         if (persistent)
         {
             BasisEditorUI.Help("Drop a scene instance of the avatar (drag the prefab into a scene first) — generation renders it with its real materials.", MessageType.Info);
         }
 
-        using (new EditorGUI.DisabledScope(_avatar == null || persistent))
+        using (new EditorGUI.DisabledScope(_avatar == null || persistent || rawAtlasTooLarge))
         {
             if (BasisEditorUI.PrimaryButton("Generate", 30f))
             {
@@ -210,9 +230,15 @@ public class BasisFarLodTesterWindow : EditorWindow
         BasisFarLodPayload generated = null;
         BasisFarLodGenerator.VerboseLogging = true;
         BasisFarLodGenerator.ActiveReport = _report;
+        BasisFarLodGenerator.GenerationOptions options = new BasisFarLodGenerator.GenerationOptions
+        {
+            DisableAo = _rawColorMode,
+            UseUncompressedAtlas = _rawColorMode,
+            UseOriginalSurfaceProjection = _useOriginalSurfaceProjection,
+        };
         try
         {
-            generated = BasisFarLodGenerator.Generate(_avatar);
+            generated = BasisFarLodGenerator.Generate(_avatar, options);
         }
         catch (System.Exception e)
         {
@@ -246,9 +272,13 @@ public class BasisFarLodTesterWindow : EditorWindow
                 return;
             }
 
+            _generatedRawColorMode = _rawColorMode;
+            _generatedOriginalSurfaceProjection = _useOriginalSurfaceProjection;
             SessionState.SetString(PayloadSessionKey, base64);
             SessionState.SetInt(RawBytesSessionKey, _payloadBytes);
             SessionState.SetInt(Base64BytesSessionKey, _base64Bytes);
+            SessionState.SetInt(GeneratedRawColorSessionKey, _generatedRawColorMode ? 1 : 0);
+            SessionState.SetInt(GeneratedOriginalSurfaceSessionKey, _generatedOriginalSurfaceProjection ? 1 : 0);
 
             DestroyPreview();
             BuildWindowAssets();
@@ -366,6 +396,8 @@ public class BasisFarLodTesterWindow : EditorWindow
         EditorGUILayout.LabelField("In connector (base64)", $"{_base64Bytes / 1024f:0.0} KB");
         EditorGUILayout.LabelField("Authored scale", _payload.AuthoredRootScale.ToString("0.###"));
         EditorGUILayout.LabelField("Lighting response", $"min {_payload.MinBrightness:0.###}, max {(_payload.MaxBrightness >= 4f ? "uncapped" : _payload.MaxBrightness.ToString("0.##"))}");
+        EditorGUILayout.LabelField("Raw color diagnostic", _generatedRawColorMode ? "On" : "Off");
+        EditorGUILayout.LabelField("Original surface projection", _generatedOriginalSurfaceProjection ? "On" : "Off");
         EditorGUILayout.LabelField("Eye height / fwd", _payload.AvatarEyePosition.ToString("0.###"));
         EditorGUILayout.LabelField("Mouth height / fwd", _payload.AvatarMouthPosition.ToString("0.###"));
         Vector3 size = _payload.PositionBoundsMax - _payload.PositionBoundsMin;
@@ -401,16 +433,33 @@ public class BasisFarLodTesterWindow : EditorWindow
             return;
         }
 
-        Shader shader = Shader.Find("Basis/AvatarFarLod");
+        Shader shader = _generatedRawColorMode
+            ? Shader.Find("Universal Render Pipeline/Unlit")
+            : Shader.Find("Basis/AvatarFarLod");
         if (shader == null)
         {
-            shader = Shader.Find("Universal Render Pipeline/Unlit");
-            Debug.LogWarning("Basis/AvatarFarLod shader not found — previewing with URP Unlit.");
+            shader = _generatedRawColorMode
+                ? Shader.Find("Basis/AvatarFarLod")
+                : Shader.Find("Universal Render Pipeline/Unlit");
+            Debug.LogWarning($"Preferred far-avatar preview shader was not found — using {(shader != null ? shader.name : "no shader")}.");
         }
         _previewMaterial = new Material(shader) { enableInstancing = true };
-        _previewMaterial.SetTexture("_BaseMap", _previewTexture);
-        _previewMaterial.SetFloat("_MinBrightness", _payload.MinBrightness);
-        _previewMaterial.SetFloat("_MaxBrightness", _payload.MaxBrightness);
+        if (_previewMaterial.HasProperty("_BaseMap"))
+        {
+            _previewMaterial.SetTexture("_BaseMap", _previewTexture);
+        }
+        else if (_previewMaterial.HasProperty("_MainTex"))
+        {
+            _previewMaterial.SetTexture("_MainTex", _previewTexture);
+        }
+        if (_previewMaterial.HasProperty("_MinBrightness"))
+        {
+            _previewMaterial.SetFloat("_MinBrightness", _payload.MinBrightness);
+        }
+        if (_previewMaterial.HasProperty("_MaxBrightness"))
+        {
+            _previewMaterial.SetFloat("_MaxBrightness", _payload.MaxBrightness);
+        }
 
         // Without HideAndDontSave the editor destroys loose created assets on scene/play
         // transitions — this is the "texture disappears after a while" failure mode.

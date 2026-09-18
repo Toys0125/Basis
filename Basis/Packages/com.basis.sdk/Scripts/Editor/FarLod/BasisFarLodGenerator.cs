@@ -23,6 +23,13 @@ public static class BasisFarLodGenerator
     public static int AtlasSize = 1024;
     public static int CaptureSize = 1024;
 
+    public struct GenerationOptions
+    {
+        public bool DisableAo;
+        public bool UseUncompressedAtlas;
+        public bool UseOriginalSurfaceProjection;
+    }
+
     /// <summary>Per-stage timing/count logs, enabled by the far avatar tester.</summary>
     public static bool VerboseLogging;
 
@@ -210,6 +217,11 @@ public static class BasisFarLodGenerator
 
     public static BasisFarLodPayload Generate(BasisAvatar avatar)
     {
+        return Generate(avatar, default);
+    }
+
+    public static BasisFarLodPayload Generate(BasisAvatar avatar, GenerationOptions options)
+    {
         LastFailureReason = null;
         if (avatar == null || avatar.Animator == null || avatar.Animator.avatar == null || !avatar.Animator.avatar.isHuman)
         {
@@ -314,7 +326,13 @@ public static class BasisFarLodGenerator
                 // Captures must keep pace with the atlas or a big atlas just magnifies blur.
                 int effectiveCaptureSize = Mathf.Max(CaptureSize, AtlasSize);
                 BasisFarLodPayload.FarLodTexture[] textures = BasisFarLodAtlasBaker.Bake(
-                    root, unwrapped, positions, normals, uv, indices, AtlasSize, effectiveCaptureSize, regions, bakeMask);
+                    root, unwrapped, positions, normals, uv, indices, AtlasSize, effectiveCaptureSize, regions, bakeMask,
+                    new BasisFarLodAtlasBaker.BakeOptions
+                    {
+                        DisableAo = options.DisableAo,
+                        UseUncompressedAtlas = options.UseUncompressedAtlas,
+                        UseOriginalSurfaceProjection = options.UseOriginalSurfaceProjection,
+                    });
                 if (textures == null || textures.Length == 0)
                 {
                     if (string.IsNullOrEmpty(LastFailureReason))
@@ -324,7 +342,9 @@ public static class BasisFarLodGenerator
                     Debug.LogWarning("Far avatar generation skipped: atlas bake failed.");
                     return null;
                 }
-                StageDetail($"{AtlasSize}px atlas, {textures.Length} compressed payload(s)");
+                StageDetail(options.UseUncompressedAtlas
+                    ? $"{AtlasSize}px atlas, RGBA32 diagnostic payload"
+                    : $"{AtlasSize}px atlas, {textures.Length} compressed payload(s)");
 
                 Stage("Serialize", 0.95f);
                 BasisFarLodPayload payload = AssemblePayload(avatar, root, skeleton, positions, normals, uv, indices, boneA, boneB, weightA, textures);

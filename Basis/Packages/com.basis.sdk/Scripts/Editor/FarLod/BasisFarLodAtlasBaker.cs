@@ -70,6 +70,13 @@ public static class BasisFarLodAtlasBaker
                                Positions.Length > 0 && Colors.Length == Positions.Length && Indices.Length >= 3;
     }
 
+    public struct BakeOptions
+    {
+        public bool DisableAo;
+        public bool UseUncompressedAtlas;
+        public bool UseOriginalSurfaceProjection;
+    }
+
     public static byte EncodeGroup(byte group)
     {
         return (byte)(40 + group * 40);
@@ -98,7 +105,7 @@ public static class BasisFarLodAtlasBaker
 
     public static BasisFarLodPayload.FarLodTexture[] Bake(Transform root, Mesh decimatedMesh,
         Vector3[] positions, Vector3[] normals, Vector2[] uv, int[] indices, int atlasSize, int captureSize,
-        RegionOfInterest[] regions = null, BakeMask mask = default)
+        RegionOfInterest[] regions = null, BakeMask mask = default, BakeOptions options = default)
     {
         Bounds rootBounds = new Bounds(positions[0], Vector3.zero);
         for (int i = 1; i < positions.Length; i++)
@@ -319,7 +326,12 @@ public static class BasisFarLodAtlasBaker
             collider.sharedMesh = decimatedMesh;
             Physics.SyncTransforms();
 
-            float[] vertexAo = ComputeVertexAo(positions, normals, indices, rootToWorld, rootRotation, radius);
+            float[] vertexAo = options.DisableAo
+                ? null
+                : ComputeVertexAo(positions, normals, indices, rootToWorld, rootRotation, radius);
+            OriginalSurfaceLookup originalSurface = options.UseOriginalSurfaceProjection && mask.IsValid
+                ? new OriginalSurfaceLookup(mask)
+                : null;
 
             sFlipSampleY = DetectSampleFlip(views, rootToWorld, rootRotation, positions, normals);
             if (sFlipSampleY)
@@ -327,12 +339,13 @@ public static class BasisFarLodAtlasBaker
                 Debug.LogWarning("[FarAvatar] Capture rows came back top-down on this pipeline — sampling with mirrored Y.");
             }
 
-            Color32[] atlas = ProjectAtlas(views, rootToWorld, rootRotation, positions, normals, uv, indices, atlasSize, radius, mask.TexelVertexGroup, mask.TexelHidden, vertexAo);
+            Color32[] atlas = ProjectAtlas(views, rootToWorld, rootRotation, positions, normals, uv, indices, atlasSize, radius,
+                mask.TexelVertexGroup, mask.TexelHidden, vertexAo, originalSurface);
             if (atlas == null)
             {
                 return null;
             }
-            return CompressAtlas(atlas, atlasSize);
+            return CompressAtlas(atlas, atlasSize, options.UseUncompressedAtlas);
         }
         finally
         {
@@ -1029,8 +1042,325 @@ public static class BasisFarLodAtlasBaker
             255);
     }
 
+    private sealed class OriginalSurfaceLookup
+    {
+        private const int LeafTriangleCount = 8;
+
+        private struct SurfaceTriangle
+        {
+            public int I0;
+            public int I1;
+            public int I2;
+            public Vector3 Centroid;
+            public Vector3 Min;
+            public Vector3 Max;
+            public Vector3 Normal;
+            public byte Group0;
+            public byte Group1;
+            public byte Group2;
+        }
+
+        private struct SurfaceNode
+        {
+            public Vector3 Min;
+            public Vector3 Max;
+            public int Left;
+            public int Right;
+            public int Start;
+            public int Count;
+        }
+
+        private sealed class TriangleCentroidComparer : IComparer<int>
+        {
+            private readonly SurfaceTriangle[] _triangles;
+            public int Axis;
+
+            public TriangleCentroidComparer(SurfaceTriangle[] triangles)
+            {
+                _triangles = triangles;
+            }
+
+            public int Compare(int a, int b)
+            {
+                return AxisValue(_triangles[a].Centroid, Axis).CompareTo(AxisValue(_triangles[b].Centroid, Axis));
+            }
+        }
+
+        private readonly Vector3[] _positions;
+        private readonly SurfaceTriangle[] _triangles;
+        private readonly int[] _triangleOrder;
+        private readonly SurfaceNode[] _nodes;
+        private readonly TriangleCentroidComparer _centroidComparer;
+
+        public OriginalSurfaceLookup(BakeMask mask)
+        {
+            _positions = mask.Positions;
+            int triangleCount = mask.Indices.Length / 3;
+            _triangles = new SurfaceTriangle[triangleCount];
+            _triangleOrder = new int[triangleCount];
+            for (int t = 0; t < triangleCount; t++)
+            {
+                int i0 = mask.Indices[t * 3];
+                int i1 = mask.Indices[t * 3 + 1];
+                int i2 = mask.Indices[t * 3 + 2];
+                Vector3 p0 = _positions[i0];
+                Vector3 p1 = _positions[i1];
+                Vector3 p2 = _positions[i2];
+                Vector3 normal = Vector3.Cross(p1 - p0, p2 - p0);
+                if (normal.sqrMagnitude > 1e-12f)
+                {
+                    normal.Normalize();
+                }
+                _triangles[t] = new SurfaceTriangle
+                {
+                    I0 = i0,
+                    I1 = i1,
+                    I2 = i2,
+                    Centroid = (p0 + p1 + p2) / 3f,
+                    Min = Vector3.Min(p0, Vector3.Min(p1, p2)),
+                    Max = Vector3.Max(p0, Vector3.Max(p1, p2)),
+                    Normal = normal,
+                    Group0 = DecodeGroup(mask.Colors[i0].r),
+                    Group1 = DecodeGroup(mask.Colors[i1].r),
+                    Group2 = DecodeGroup(mask.Colors[i2].r),
+                };
+                _triangleOrder[t] = t;
+            }
+
+            _centroidComparer = new TriangleCentroidComparer(_triangles);
+            List<SurfaceNode> nodes = new List<SurfaceNode>(Mathf.Max(1, triangleCount * 2));
+            if (triangleCount > 0)
+            {
+                BuildNode(nodes, 0, triangleCount);
+            }
+            _nodes = nodes.ToArray();
+        }
+
+        public bool TryFindClosest(Vector3 point, byte allowed0, byte allowed1, byte allowed2, out Vector3 closestPoint, out Vector3 normal)
+        {
+            closestPoint = point;
+            normal = Vector3.zero;
+            if (_nodes.Length == 0)
+            {
+                return false;
+            }
+
+            float bestDistanceSq = float.PositiveInfinity;
+            int bestTriangle = -1;
+            SearchNode(0, point, allowed0, allowed1, allowed2, ref bestDistanceSq, ref bestTriangle, ref closestPoint);
+            if (bestTriangle < 0)
+            {
+                return false;
+            }
+            normal = _triangles[bestTriangle].Normal;
+            return true;
+        }
+
+        private int BuildNode(List<SurfaceNode> nodes, int start, int count)
+        {
+            int nodeIndex = nodes.Count;
+            nodes.Add(default);
+
+            Vector3 min = Vector3.positiveInfinity;
+            Vector3 max = Vector3.negativeInfinity;
+            Vector3 centroidMin = Vector3.positiveInfinity;
+            Vector3 centroidMax = Vector3.negativeInfinity;
+            for (int i = start; i < start + count; i++)
+            {
+                SurfaceTriangle triangle = _triangles[_triangleOrder[i]];
+                min = Vector3.Min(min, triangle.Min);
+                max = Vector3.Max(max, triangle.Max);
+                centroidMin = Vector3.Min(centroidMin, triangle.Centroid);
+                centroidMax = Vector3.Max(centroidMax, triangle.Centroid);
+            }
+
+            if (count <= LeafTriangleCount)
+            {
+                nodes[nodeIndex] = new SurfaceNode
+                {
+                    Min = min,
+                    Max = max,
+                    Left = -1,
+                    Right = -1,
+                    Start = start,
+                    Count = count,
+                };
+                return nodeIndex;
+            }
+
+            Vector3 extent = centroidMax - centroidMin;
+            int axis = extent.x >= extent.y && extent.x >= extent.z ? 0 : extent.y >= extent.z ? 1 : 2;
+            _centroidComparer.Axis = axis;
+            Array.Sort(_triangleOrder, start, count, _centroidComparer);
+            int leftCount = count / 2;
+            int left = BuildNode(nodes, start, leftCount);
+            int right = BuildNode(nodes, start + leftCount, count - leftCount);
+            nodes[nodeIndex] = new SurfaceNode
+            {
+                Min = min,
+                Max = max,
+                Left = left,
+                Right = right,
+                Start = 0,
+                Count = 0,
+            };
+            return nodeIndex;
+        }
+
+        private void SearchNode(int nodeIndex, Vector3 point, byte allowed0, byte allowed1, byte allowed2,
+            ref float bestDistanceSq, ref int bestTriangle, ref Vector3 bestPoint)
+        {
+            SurfaceNode node = _nodes[nodeIndex];
+            if (DistanceSqToBounds(point, node.Min, node.Max) >= bestDistanceSq)
+            {
+                return;
+            }
+
+            if (node.Count > 0)
+            {
+                for (int i = node.Start; i < node.Start + node.Count; i++)
+                {
+                    int triangleIndex = _triangleOrder[i];
+                    SurfaceTriangle triangle = _triangles[triangleIndex];
+                    if (!MatchesAllowedGroup(in triangle, allowed0, allowed1, allowed2))
+                    {
+                        continue;
+                    }
+                    Vector3 candidate = ClosestPointOnTriangle(point,
+                        _positions[triangle.I0], _positions[triangle.I1], _positions[triangle.I2]);
+                    float distanceSq = (candidate - point).sqrMagnitude;
+                    if (distanceSq < bestDistanceSq)
+                    {
+                        bestDistanceSq = distanceSq;
+                        bestTriangle = triangleIndex;
+                        bestPoint = candidate;
+                    }
+                }
+                return;
+            }
+
+            float leftDistance = DistanceSqToBounds(point, _nodes[node.Left].Min, _nodes[node.Left].Max);
+            float rightDistance = DistanceSqToBounds(point, _nodes[node.Right].Min, _nodes[node.Right].Max);
+            if (leftDistance <= rightDistance)
+            {
+                SearchNode(node.Left, point, allowed0, allowed1, allowed2, ref bestDistanceSq, ref bestTriangle, ref bestPoint);
+                if (rightDistance < bestDistanceSq)
+                {
+                    SearchNode(node.Right, point, allowed0, allowed1, allowed2, ref bestDistanceSq, ref bestTriangle, ref bestPoint);
+                }
+            }
+            else
+            {
+                SearchNode(node.Right, point, allowed0, allowed1, allowed2, ref bestDistanceSq, ref bestTriangle, ref bestPoint);
+                if (leftDistance < bestDistanceSq)
+                {
+                    SearchNode(node.Left, point, allowed0, allowed1, allowed2, ref bestDistanceSq, ref bestTriangle, ref bestPoint);
+                }
+            }
+        }
+
+        private static bool MatchesAllowedGroup(in SurfaceTriangle triangle, byte allowed0, byte allowed1, byte allowed2)
+        {
+            if (allowed0 == 255)
+            {
+                return true;
+            }
+            return GroupMatches(triangle.Group0, allowed0, allowed1, allowed2) ||
+                   GroupMatches(triangle.Group1, allowed0, allowed1, allowed2) ||
+                   GroupMatches(triangle.Group2, allowed0, allowed1, allowed2);
+        }
+
+        private static bool GroupMatches(byte group, byte allowed0, byte allowed1, byte allowed2)
+        {
+            return group == allowed0 || group == allowed1 || group == allowed2;
+        }
+
+        private static float AxisValue(Vector3 value, int axis)
+        {
+            return axis == 0 ? value.x : axis == 1 ? value.y : value.z;
+        }
+
+        private static float DistanceSqToBounds(Vector3 point, Vector3 min, Vector3 max)
+        {
+            float dx = point.x < min.x ? min.x - point.x : point.x > max.x ? point.x - max.x : 0f;
+            float dy = point.y < min.y ? min.y - point.y : point.y > max.y ? point.y - max.y : 0f;
+            float dz = point.z < min.z ? min.z - point.z : point.z > max.z ? point.z - max.z : 0f;
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        private static Vector3 ClosestPointOnTriangle(Vector3 point, Vector3 a, Vector3 b, Vector3 c)
+        {
+            Vector3 ab = b - a;
+            Vector3 ac = c - a;
+            if (Vector3.Cross(ab, ac).sqrMagnitude < 1e-12f)
+            {
+                Vector3 abPoint = ClosestPointOnSegment(point, a, b);
+                Vector3 bcPoint = ClosestPointOnSegment(point, b, c);
+                Vector3 caPoint = ClosestPointOnSegment(point, c, a);
+                float abDistance = (abPoint - point).sqrMagnitude;
+                float bcDistance = (bcPoint - point).sqrMagnitude;
+                float caDistance = (caPoint - point).sqrMagnitude;
+                return abDistance <= bcDistance && abDistance <= caDistance ? abPoint : bcDistance <= caDistance ? bcPoint : caPoint;
+            }
+
+            Vector3 ap = point - a;
+            float d1 = Vector3.Dot(ab, ap);
+            float d2 = Vector3.Dot(ac, ap);
+            if (d1 <= 0f && d2 <= 0f) return a;
+
+            Vector3 bp = point - b;
+            float d3 = Vector3.Dot(ab, bp);
+            float d4 = Vector3.Dot(ac, bp);
+            if (d3 >= 0f && d4 <= d3) return b;
+
+            float vc = d1 * d4 - d3 * d2;
+            if (vc <= 0f && d1 >= 0f && d3 <= 0f)
+            {
+                float v = d1 / (d1 - d3);
+                return a + ab * v;
+            }
+
+            Vector3 cp = point - c;
+            float d5 = Vector3.Dot(ab, cp);
+            float d6 = Vector3.Dot(ac, cp);
+            if (d6 >= 0f && d5 <= d6) return c;
+
+            float vb = d5 * d2 - d1 * d6;
+            if (vb <= 0f && d2 >= 0f && d6 <= 0f)
+            {
+                float w = d2 / (d2 - d6);
+                return a + ac * w;
+            }
+
+            float va = d3 * d6 - d5 * d4;
+            if (va <= 0f && d4 - d3 >= 0f && d5 - d6 >= 0f)
+            {
+                float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                return b + (c - b) * w;
+            }
+
+            float denominator = 1f / (va + vb + vc);
+            float baryV = vb * denominator;
+            float baryW = vc * denominator;
+            return a + ab * baryV + ac * baryW;
+        }
+
+        private static Vector3 ClosestPointOnSegment(Vector3 point, Vector3 a, Vector3 b)
+        {
+            Vector3 edge = b - a;
+            float lengthSq = edge.sqrMagnitude;
+            if (lengthSq < 1e-12f)
+            {
+                return a;
+            }
+            float t = Mathf.Clamp01(Vector3.Dot(point - a, edge) / lengthSq);
+            return a + edge * t;
+        }
+    }
+
     private static Color32[] ProjectAtlas(List<CaptureView> views, Matrix4x4 rootToWorld, Quaternion rootRotation,
-        Vector3[] positions, Vector3[] normals, Vector2[] uv, int[] indices, int atlasSize, float radius, byte[] texelGroups, byte[] texelHidden, float[] vertexAo)
+        Vector3[] positions, Vector3[] normals, Vector2[] uv, int[] indices, int atlasSize, float radius, byte[] texelGroups, byte[] texelHidden,
+        float[] vertexAo, OriginalSurfaceLookup originalSurface)
     {
         int texelCount = atlasSize * atlasSize;
         Color32[] atlas = new Color32[texelCount];
@@ -1121,9 +1451,18 @@ public static class BasisFarLodAtlasBaker
                     }
 
                     Vector3 positionRoot = positions[i0] * baryA + positions[i1] * baryB + positions[i2] * baryC;
-                    Vector3 normalRoot = normals[i0] * baryA + normals[i1] * baryB + normals[i2] * baryC;
-                    Vector3 positionWorld = rootToWorld.MultiplyPoint3x4(positionRoot);
+                    Vector3 normalRoot = (normals[i0] * baryA + normals[i1] * baryB + normals[i2] * baryC).normalized;
+                    Vector3 samplePositionRoot = positionRoot;
+                    if (originalSurface != null &&
+                        originalSurface.TryFindClosest(positionRoot, allowedGroup0, allowedGroup1, allowedGroup2,
+                            out Vector3 originalPositionRoot, out _))
+                    {
+                        samplePositionRoot = originalPositionRoot;
+                    }
+                    Vector3 positionWorld = rootToWorld.MultiplyPoint3x4(samplePositionRoot);
                     Vector3 normalWorld = (rootRotation * normalRoot).normalized;
+                    Vector3 decimatedPositionWorld = rootToWorld.MultiplyPoint3x4(positionRoot);
+                    Vector3 decimatedNormalWorld = normalWorld;
                     float aoFactor = 1f;
                     if (vertexAo != null)
                     {
@@ -1139,7 +1478,7 @@ public static class BasisFarLodAtlasBaker
                     for (int v = 0; v < viewCount; v++)
                     {
                         ref CaptureView view = ref viewArray[v];
-                        if (view.IsRegion && !view.ValidBoundsRoot.Contains(positionRoot))
+                        if (view.IsRegion && !view.ValidBoundsRoot.Contains(samplePositionRoot))
                         {
                             continue;
                         }
@@ -1157,7 +1496,7 @@ public static class BasisFarLodAtlasBaker
                         for (int v = 0; v < viewCount; v++)
                         {
                             ref CaptureView view = ref viewArray[v];
-                            if (view.IsRegion && !view.ValidBoundsRoot.Contains(positionRoot))
+                            if (view.IsRegion && !view.ValidBoundsRoot.Contains(samplePositionRoot))
                             {
                                 continue;
                             }
@@ -1213,7 +1552,7 @@ public static class BasisFarLodAtlasBaker
                         if (view.Depth16 == null)
                         {
                             Vector3 towardCamera = -view.DirectionWorld;
-                            Vector3 origin = positionWorld + normalWorld * rayBias + towardCamera * rayBias;
+                            Vector3 origin = decimatedPositionWorld + decimatedNormalWorld * rayBias + towardCamera * rayBias;
                             if (Physics.Raycast(origin, towardCamera, radius * 3f, layerMask))
                             {
                                 continue;
@@ -1557,7 +1896,7 @@ public static class BasisFarLodAtlasBaker
         }
     }
 
-    private static BasisFarLodPayload.FarLodTexture[] CompressAtlas(Color32[] atlas, int atlasSize)
+    private static BasisFarLodPayload.FarLodTexture[] CompressAtlas(Color32[] atlas, int atlasSize, bool uncompressed)
     {
         Texture2D source = new Texture2D(atlasSize, atlasSize, TextureFormat.RGBA32, true, false)
         {
@@ -1567,6 +1906,28 @@ public static class BasisFarLodAtlasBaker
         {
             source.SetPixels32(atlas);
             source.Apply(true, false);
+
+            if (uncompressed)
+            {
+                byte[] data = source.GetRawTextureData<byte>().ToArray();
+                if (data.Length > BasisFarLodPayload.MaxTexturePayloadBytes)
+                {
+                    BasisFarLodGenerator.LastFailureReason = $"uncompressed atlas is too large ({data.Length} bytes; limit {BasisFarLodPayload.MaxTexturePayloadBytes})";
+                    Debug.LogError($"[FarAvatar] {BasisFarLodGenerator.LastFailureReason}. Use a 1024px or smaller atlas for raw-color diagnostics.");
+                    return Array.Empty<BasisFarLodPayload.FarLodTexture>();
+                }
+                return new[]
+                {
+                    new BasisFarLodPayload.FarLodTexture
+                    {
+                        Format = BasisFarLodPayload.FarLodTextureFormat.RGBA32,
+                        Width = (ushort)source.width,
+                        Height = (ushort)source.height,
+                        MipCount = (byte)source.mipmapCount,
+                        Data = data,
+                    },
+                };
+            }
 
             List<BasisFarLodPayload.FarLodTexture> textures = new List<BasisFarLodPayload.FarLodTexture>(2);
             AppendCompressed(textures, source, TextureFormat.DXT1, BasisFarLodPayload.FarLodTextureFormat.BC1);
