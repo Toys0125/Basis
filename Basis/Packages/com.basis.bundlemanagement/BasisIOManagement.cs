@@ -405,6 +405,99 @@ public static class BasisIOManagement
 
         return BeeResult<BeeDownloadResult>.Ok(new BeeDownloadResult(connector, localPath, platformSectionData, observedVersionTag));
     }
+
+    /// <summary>
+    /// Downloads only the optional avatar GraphicsStateCollection sidecar from a remote BEE.
+    /// The PSO section uses a non-platform tag so older clients ignore it and continue selecting
+    /// the normal AssetBundle section.
+    /// </summary>
+    public static async Task<BeeResult<BasisBundleSection>> DownloadGraphicsStateSectionEx(string url, BasisBundleConnector connector, BasisBundleGenerated contentSection, CancellationToken cancellationToken = default, long MaxDownloadSizeInMB = 4L * 1024 * 1024 * 1024)
+    {
+        if (!BasisBundleConnector.TryGetGraphicsStateCollection(connector, contentSection, out BasisBundleGenerated psoSection))
+            return BeeResult<BasisBundleSection>.Fail("No GraphicsStateCollection sidecar is declared for this content section.");
+        if (!ValidateUrl(url, out url, out var urlErr))
+            return BeeResult<BasisBundleSection>.Fail($"DownloadGraphicsStateSectionEx: {urlErr}");
+
+        var headerRes = await DownloadRangeInternal(url, 0, BasisBeeConstants.RemoteHeaderSize - 1, null, null, cancellationToken, MaxDownloadSizeInMB);
+        if (!headerRes.IsSuccess || headerRes.Value?.Data == null || headerRes.Value.Data.Length != BasisBeeConstants.RemoteHeaderSize)
+            return BeeResult<BasisBundleSection>.Fail($"DownloadGraphicsStateSectionEx: failed to read BEE header. {headerRes.Error}", headerRes.ResponseCode);
+
+        long connectorLength = ReadInt64LittleEndian(headerRes.Value.Data);
+        if (connectorLength <= 0 || connectorLength > BasisBeeConstants.MaxConnectorBytes)
+            return BeeResult<BasisBundleSection>.Fail($"DownloadGraphicsStateSectionEx: invalid connector length {connectorLength}.");
+
+        if (!TryGetSectionRange(connector, psoSection, BasisBeeConstants.RemoteHeaderSize + connectorLength, out long start, out long length, out string rangeError))
+            return BeeResult<BasisBundleSection>.Fail($"DownloadGraphicsStateSectionEx: {rangeError}");
+
+        var sectionRes = await DownloadRangeInternal(url, start, start + length - 1, null, null, cancellationToken, MaxDownloadSizeInMB);
+        if (!sectionRes.IsSuccess || sectionRes.Value?.Data == null)
+            return BeeResult<BasisBundleSection>.Fail($"DownloadGraphicsStateSectionEx: failed to download sidecar. {sectionRes.Error}", sectionRes.ResponseCode);
+        if (sectionRes.Value.Data.LongLength != length)
+            return BeeResult<BasisBundleSection>.Fail($"DownloadGraphicsStateSectionEx: expected {length} bytes, got {sectionRes.Value.Data.LongLength}.");
+
+        return BeeResult<BasisBundleSection>.Ok(BasisBundleSection.FromBytes(sectionRes.Value.Data));
+    }
+
+    /// <summary>Returns the optional PSO section as a file range from a full local BEE.</summary>
+    public static async Task<BeeResult<BasisBundleSection>> ReadGraphicsStateSectionFromFileEx(string filePath, BasisBundleConnector connector, BasisBundleGenerated contentSection, CancellationToken cancellationToken = default)
+    {
+        if (!BasisBundleConnector.TryGetGraphicsStateCollection(connector, contentSection, out BasisBundleGenerated psoSection))
+            return BeeResult<BasisBundleSection>.Fail("No GraphicsStateCollection sidecar is declared for this content section.");
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return BeeResult<BasisBundleSection>.Fail("GraphicsStateCollection source BEE does not exist.");
+
+        using FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        byte[] headerBytes = await ReadExactAsync(fs, BasisBeeConstants.RemoteHeaderSize, cancellationToken).ConfigureAwait(false);
+        if (headerBytes.Length != BasisBeeConstants.RemoteHeaderSize)
+            return BeeResult<BasisBundleSection>.Fail("GraphicsStateCollection source BEE has a truncated header.");
+
+        long connectorLength = ReadInt64LittleEndian(headerBytes);
+        if (connectorLength <= 0 || connectorLength > BasisBeeConstants.MaxConnectorBytes)
+            return BeeResult<BasisBundleSection>.Fail($"GraphicsStateCollection source BEE has invalid connector length {connectorLength}.");
+
+        long sectionsStart = BasisBeeConstants.RemoteHeaderSize + connectorLength;
+        if (!TryGetSectionRange(connector, psoSection, sectionsStart, out long start, out long length, out string rangeError))
+            return BeeResult<BasisBundleSection>.Fail(rangeError);
+        if (start < 0 || length <= 0 || start + length > fs.Length)
+            return BeeResult<BasisBundleSection>.Fail("GraphicsStateCollection section runs past the end of the source BEE.");
+
+        return BeeResult<BasisBundleSection>.Ok(BasisBundleSection.FromFile(filePath, start, length));
+    }
+
+    private static bool TryGetSectionRange(BasisBundleConnector connector, BasisBundleGenerated target, long sectionsStart, out long start, out long length, out string error)
+    {
+        start = -1;
+        length = 0;
+        error = string.Empty;
+        BasisBundleGenerated[] sections = connector?.BasisBundleGenerated;
+        if (sections == null)
+        {
+            error = "Connector contains no sections.";
+            return false;
+        }
+
+        long cursor = sectionsStart;
+        for (int i = 0; i < sections.Length; i++)
+        {
+            BasisBundleGenerated entry = sections[i];
+            if (entry == null || entry.EndByte <= 0 || entry.EndByte > BasisBeeConstants.MaxSectionBytes)
+            {
+                error = $"Invalid section length at index {i}.";
+                return false;
+            }
+            if (ReferenceEquals(entry, target) || (BasisBundleConnector.IsGraphicsStateCollection(entry) && !string.IsNullOrEmpty(target.PsoSectionKey) && string.Equals(entry.PsoSectionKey, target.PsoSectionKey, StringComparison.Ordinal)))
+            {
+                start = cursor;
+                length = entry.EndByte;
+                return true;
+            }
+            cursor = checked(cursor + entry.EndByte);
+        }
+
+        error = "Declared GraphicsStateCollection section was not found in connector ordering.";
+        return false;
+    }
+
     /// <summary>
     /// Downloads only the connector bytes from the remote BEE (8-byte Int64 header) and parses them.
     /// </summary>

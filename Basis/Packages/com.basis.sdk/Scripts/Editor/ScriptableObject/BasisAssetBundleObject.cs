@@ -4,6 +4,12 @@ using UnityEditor;
 using UnityEngine;
 
 [CreateAssetMenu(fileName = "NewBasisAssetBundleObject", menuName = "Basis/ScriptableObjects/BasisAssetBundleObject", order = 1)]
+public enum BasisAvatarPsoCaptureMode
+{
+    Off = 0,
+    CaptureVulkanPSOs = 1,
+}
+
 [System.Serializable]
 public class BasisAssetBundleObject : ScriptableObject
 {
@@ -26,6 +32,7 @@ public class BasisAssetBundleObject : ScriptableObject
     // Avatars only: also embed a platform-agnostic glTF (Generic) section so platforms
     // without a built AssetBundle can still load the avatar.
     public bool GenerateGenericGLTF = true;
+    public BasisAvatarPsoCaptureMode AvatarPsoCaptureMode = BasisAvatarPsoCaptureMode.Off;
     public bool StripLodCrossFadeVariants = true;
     public bool StripBakeOnlyShaderPasses = true;
     public bool StripSpaceWarpPassOffQuest = true;
@@ -80,6 +87,7 @@ public class BasisAssetBundleObjectEditor : Editor
         assetBundleObject.RebakeOcclusionCullingInThese = new List<BuildTarget>(BasisSDKConstants.OcclusionCullingTargets);
         assetBundleObject.RebakeOcclusionCulling = true;
         assetBundleObject.GenerateGenericGLTF = true;
+        assetBundleObject.AvatarPsoCaptureMode = BasisAvatarPsoCaptureMode.Off;
         assetBundleObject.StripLodCrossFadeVariants = true;
         assetBundleObject.StripBakeOnlyShaderPasses = true;
         assetBundleObject.StripSpaceWarpPassOffQuest = true;

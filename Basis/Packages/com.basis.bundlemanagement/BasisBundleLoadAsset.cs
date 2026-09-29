@@ -1,13 +1,21 @@
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Basis.Scripts.BasisSdk;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Unity.Profiling;
 using static BundledContentHolder;
 public static class BasisBundleLoadAsset
 {
-    public static async Task<GameObject> LoadFromWrapper(GameObject DisabledGameobject,BasisTrackedBundleWrapper BasisLoadableBundle, bool UseContentRemoval, Vector3 Position, Quaternion Rotation, bool ModifyScale, Vector3 Scale, Selector Selector, Transform Parent = null, bool DestroyColliders = false,bool ChangeColidersToCorrectLayer = false, List<BasisHeadChop.HeadChopTarget> HarvestedHeadChop = null)
+    private static readonly ProfilerMarker PrefabLoadMarker = new ProfilerMarker("Avatar.PrefabLoad");
+    private static readonly ProfilerMarker InstantiateMarker = new ProfilerMarker("Avatar.Instantiate");
+    private static readonly ProfilerMarker ContentPoliceMarker = new ProfilerMarker("Avatar.ContentPolice");
+    private static readonly ProfilerMarker ActivateMarker = new ProfilerMarker("Avatar.Activate");
+    public static async Task<GameObject> LoadFromWrapper(GameObject DisabledGameobject,BasisTrackedBundleWrapper BasisLoadableBundle, bool UseContentRemoval, Vector3 Position, Quaternion Rotation, bool ModifyScale, Vector3 Scale, Selector Selector, Transform Parent = null, bool DestroyColliders = false,bool ChangeColidersToCorrectLayer = false, List<BasisHeadChop.HeadChopTarget> HarvestedHeadChop = null, CancellationToken cancellationToken = default)
     {
+        Stopwatch totalLoad = Stopwatch.StartNew();
         if (BasisLoadableBundle.AssetBundle != null || BasisLoadableBundle.HasGltfTemplate)
         {
             BasisLoadableBundle output = BasisLoadableBundle.LoadableBundle;
@@ -19,8 +27,12 @@ public static class BasisBundleLoadAsset
                         {
                             string ReplacedName = Generated.AssetToLoadName.Replace(".bundle", ".prefab");
 
-                            AssetBundleRequest Request = BasisLoadableBundle.AssetBundle.LoadAssetAsync<GameObject>(ReplacedName);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            AssetBundleRequest Request;
+                            using (PrefabLoadMarker.Auto())
+                                Request = BasisLoadableBundle.AssetBundle.LoadAssetAsync<GameObject>(ReplacedName);
                             await Request;
+                            cancellationToken.ThrowIfCancellationRequested();
                             GameObject loadedObject = Request.asset as GameObject;
                             if (loadedObject == null)
                             {
@@ -33,7 +45,9 @@ public static class BasisBundleLoadAsset
                                 await BasisLoadableBundle.AssetBundle.UnloadAsync(true);
                                 return null;
                             }
-                            return await InstantiateContentControlled(DisabledGameobject, BasisLoadableBundle, loadedObject, UseContentRemoval, Position, Rotation, ModifyScale, Scale, Selector, Parent, DestroyColliders, ChangeColidersToCorrectLayer, HarvestedHeadChop);
+                            GameObject result = await InstantiateContentControlled(DisabledGameobject, BasisLoadableBundle, Generated, loadedObject, UseContentRemoval, Position, Rotation, ModifyScale, Scale, Selector, Parent, DestroyColliders, ChangeColidersToCorrectLayer, HarvestedHeadChop, cancellationToken);
+                            LogTotalLoad(totalLoad, Generated, result != null);
+                            return result;
                         }
                     case BasisBundleConnector.GltfAssetMode:
                         {
@@ -46,7 +60,9 @@ public static class BasisBundleLoadAsset
                                 BasisLoadableBundle.DidErrorOccur = true;
                                 return null;
                             }
-                            return await InstantiateContentControlled(DisabledGameobject, BasisLoadableBundle, template, UseContentRemoval, Position, Rotation, ModifyScale, Scale, Selector, Parent, DestroyColliders, ChangeColidersToCorrectLayer, HarvestedHeadChop);
+                            GameObject result = await InstantiateContentControlled(DisabledGameobject, BasisLoadableBundle, Generated, template, UseContentRemoval, Position, Rotation, ModifyScale, Scale, Selector, Parent, DestroyColliders, ChangeColidersToCorrectLayer, HarvestedHeadChop, cancellationToken);
+                            LogTotalLoad(totalLoad, Generated, result != null);
+                            return result;
                         }
                     default:
                         BasisDebug.LogError("Requested type " + Generated.AssetMode + " has no handler");
@@ -66,7 +82,7 @@ public static class BasisBundleLoadAsset
         return null;
     }
 
-    private static async Task<GameObject> InstantiateContentControlled(GameObject DisabledGameobject, BasisTrackedBundleWrapper BasisLoadableBundle, GameObject loadedObject, bool UseContentRemoval, Vector3 Position, Quaternion Rotation, bool ModifyScale, Vector3 Scale, Selector Selector, Transform Parent, bool DestroyColliders, bool ChangeColidersToCorrectLayer, List<BasisHeadChop.HeadChopTarget> HarvestedHeadChop)
+    private static async Task<GameObject> InstantiateContentControlled(GameObject DisabledGameobject, BasisTrackedBundleWrapper BasisLoadableBundle, BasisBundleGenerated Generated, GameObject loadedObject, bool UseContentRemoval, Vector3 Position, Quaternion Rotation, bool ModifyScale, Vector3 Scale, Selector Selector, Transform Parent, bool DestroyColliders, bool ChangeColidersToCorrectLayer, List<BasisHeadChop.HeadChopTarget> HarvestedHeadChop, CancellationToken cancellationToken)
     {
         ChecksRequired ChecksRequired = new ChecksRequired();
         if (loadedObject.TryGetComponent<BasisAvatar>(out BasisAvatar BasisAvatar))
@@ -85,38 +101,77 @@ public static class BasisBundleLoadAsset
         // frame. The budget gate still spreads concurrent loads across frames on top of that.
         await BasisLoadFrameBudget.WaitForBudgetAsync();
         double instantiateStart = BasisLoadFrameBudget.BeginStep();
-        ContentPoliceControl.ContentControlState scrubState = ContentPoliceControl.BeginContentControl(DisabledGameobject, loadedObject, ChecksRequired, Position, Rotation, ModifyScale, Scale, Selector, Parent, LayerMask.NameToLayer("IgnoredByInteractable"), HarvestedHeadChop, harvest);
+        ContentPoliceControl.ContentControlState scrubState;
+        using (InstantiateMarker.Auto())
+            scrubState = ContentPoliceControl.BeginContentControl(DisabledGameobject, loadedObject, ChecksRequired, Position, Rotation, ModifyScale, Scale, Selector, Parent, LayerMask.NameToLayer("IgnoredByInteractable"), HarvestedHeadChop, harvest);
         BasisLoadFrameBudget.EndStep(instantiateStart);
-        GameObject CreatedCopy;
-        if (scrubState.RemovalWalkPending)
+
+        bool activated = false;
+        try
         {
-            await Task.Yield();
-            await BasisLoadFrameBudget.WaitForBudgetAsync();
-            double walkStart = BasisLoadFrameBudget.BeginStep();
-            CreatedCopy = ContentPoliceControl.FinishContentControl(scrubState);
-            BasisLoadFrameBudget.EndStep(walkStart);
+            cancellationToken.ThrowIfCancellationRequested();
+            GameObject CreatedCopy;
+            if (scrubState.RemovalWalkPending)
+            {
+                await Task.Yield();
+                cancellationToken.ThrowIfCancellationRequested();
+                await BasisLoadFrameBudget.WaitForBudgetAsync();
+                double walkStart = BasisLoadFrameBudget.BeginStep();
+                using (ContentPoliceMarker.Auto())
+                    CreatedCopy = ContentPoliceControl.SanitizeContentControl(scrubState);
+                BasisLoadFrameBudget.EndStep(walkStart);
+            }
+            else
+            {
+                using (ContentPoliceMarker.Auto())
+                    CreatedCopy = ContentPoliceControl.SanitizeContentControl(scrubState);
+            }
+
+            if (CreatedCopy == null)
+            {
+                BasisDebug.LogError("ContentControl returned null; clone was destroyed during the frame-split load.");
+                return null;
+            }
+
+            // Material correction/blocklist replacement is complete at this point. Vulkan PSO
+            // preparation is therefore a true per-avatar readiness barrier for the final states.
+            await BasisAvatarPsoLoader.WarmAsync(BasisLoadableBundle, Generated, CreatedCopy, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using (ActivateMarker.Auto())
+                CreatedCopy = ContentPoliceControl.ActivateContentControl(scrubState);
+            activated = CreatedCopy != null;
+            if (!activated)
+                return null;
+
+            if (harvest != null && CreatedCopy.TryGetComponent(out Basis.Scripts.BasisSdk.BasisAvatar createdAvatar))
+                createdAvatar.Harvest = harvest;
+
+            string InstanceID = BasisGenerateUniqueID.GenerateUniqueID();
+            CreatedCopy.name = InstanceID;
+
+            // Fire-and-forget by design: this improves the next load and must never delay the
+            // avatar that already passed the readiness barrier.
+            _ = BasisAvatarPsoLoader.TraceRuntimeAsync(BasisLoadableBundle, Generated, CreatedCopy, cancellationToken);
+            return CreatedCopy;
         }
-        else
+        catch
         {
-            CreatedCopy = ContentPoliceControl.FinishContentControl(scrubState);
+            if (!activated && scrubState.Clone != null)
+                GameObject.Destroy(scrubState.Clone);
+            throw;
         }
-        if (CreatedCopy == null)
-        {
-            BasisDebug.LogError("ContentControl returned null; clone was destroyed during the frame-split load.");
-            return null;
-        }
-        if (harvest != null && CreatedCopy != null && CreatedCopy.TryGetComponent(out Basis.Scripts.BasisSdk.BasisAvatar createdAvatar))
-        {
-            createdAvatar.Harvest = harvest;
-        }
-        // The worn-instance reservation is taken by the LOAD entry points (BasisLoadHandler)
-        // BEFORE their first await — incrementing here, after the multi-frame budgeted
-        // instantiate, left a window where the unload grace re-check saw zero holders and
-        // Unload(true) destroyed the assets under this very clone.
-        string InstanceID = BasisGenerateUniqueID.GenerateUniqueID();
-        CreatedCopy.name = InstanceID;
-        return CreatedCopy;
     }
+
+    private static void LogTotalLoad(Stopwatch totalLoad, BasisBundleGenerated generated, bool success)
+    {
+        totalLoad.Stop();
+        if (BasisAvatarPsoLoader.VerboseLogging)
+        {
+            BasisDebug.Log($"Avatar.TotalLoad hash={generated?.AssetBundleHash ?? "unknown"} success={success} ms={totalLoad.Elapsed.TotalMilliseconds:F1}", BasisDebug.LogTag.Event);
+        }
+    }
+
     public static async Task<Scene> LoadSceneFromBundleAsync(BasisTrackedBundleWrapper bundle, bool MakeActiveScene, BasisProgressReport progressCallback)
     {
         string UniqueID = BasisGenerateUniqueID.GenerateUniqueID();

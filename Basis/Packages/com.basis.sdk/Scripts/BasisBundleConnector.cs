@@ -110,6 +110,10 @@ public class BasisBundleConnector
     /// <see cref="BasisMetaData.ContentKind"/> (or, on bundles built before it, the census).
     /// </summary>
     public const string GameObjectAssetMode = "GameObject";
+    /// <summary>Optional GraphicsStateCollection sidecar section for a platform AssetBundle.</summary>
+    public const string GraphicsStateCollectionAssetMode = "GraphicsStateCollection";
+    public const int AvatarPsoFormatVersion = 1;
+    public const int AvatarPsoRenderConfigVersion = 1;
 
     /// <summary><see cref="BasisMetaData.ContentKind"/> of a bundle built from a BasisAvatar.</summary>
     public const string AvatarContentKind = "Avatar";
@@ -130,7 +134,7 @@ public class BasisBundleConnector
 
     public bool GetPlatform(out BasisBundleGenerated platformBundle)
     {
-        platformBundle = BasisBundleGenerated.FirstOrDefault(bundle => PlatformMatch(bundle.Platform));
+        platformBundle = BasisBundleGenerated.FirstOrDefault(bundle => bundle != null && !IsGraphicsStateCollection(bundle) && PlatformMatch(bundle.Platform));
         // Exact platform sections always win; the generic (glTF) section only applies when
         // this platform has no AssetBundle in the bee, which was previously a hard failure.
         if (platformBundle == null)
@@ -141,7 +145,22 @@ public class BasisBundleConnector
     }
     public static bool IsPlatform(BasisBundleGenerated platformBundle)
     {
-        return PlatformMatch(platformBundle.Platform);
+        return platformBundle != null && !IsGraphicsStateCollection(platformBundle) && PlatformMatch(platformBundle.Platform);
+    }
+    public static bool IsGraphicsStateCollection(BasisBundleGenerated bundle)
+    {
+        return bundle != null && string.Equals(bundle.AssetMode, GraphicsStateCollectionAssetMode, StringComparison.OrdinalIgnoreCase);
+    }
+    public static bool TryGetGraphicsStateCollection(BasisBundleConnector connector, BasisBundleGenerated contentSection, out BasisBundleGenerated psoSection)
+    {
+        psoSection = null;
+        if (connector?.BasisBundleGenerated == null || contentSection == null || string.IsNullOrEmpty(contentSection.PsoSectionKey))
+        {
+            return false;
+        }
+        psoSection = connector.BasisBundleGenerated.FirstOrDefault(entry =>
+            IsGraphicsStateCollection(entry) && string.Equals(entry.PsoSectionKey, contentSection.PsoSectionKey, StringComparison.Ordinal));
+        return psoSection != null;
     }
     public static bool IsGenericBundle(BasisBundleGenerated bundle)
     {
@@ -287,6 +306,14 @@ public class BasisBundleGenerated
     // that glTF itself cannot carry. Null/empty on platform AssetBundle sections and on
     // bundles built before this field existed.
     public string GenericAvatarDataJson;
+    // Optional creator-captured GraphicsStateCollection sidecar. The content section and its
+    // sidecar carry the same key. Older bundles deserialize all fields below to null/0.
+    public string PsoSectionKey;
+    public int PsoFormatVersion;
+    public string PsoGraphicsApi;
+    public string PsoUnityVersion;
+    public int PsoRenderConfigVersion;
+    public string PsoForAssetBundleHash;
     public BasisBundleGenerated()
     {
     }

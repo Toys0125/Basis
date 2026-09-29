@@ -70,6 +70,7 @@ public static class BasisAssetBundlePipeline
         GameObject prefab = null;
         BasisSceneBuildName sceneBuildName = null;
         string farLodBase64 = null;
+        BasisAvatarPsoBuildCapture.CaptureResult psoCapture = null;
         BasisBundleContentKind contentKind = ResolveContentKind(isScene, asset);
 
         try
@@ -105,6 +106,12 @@ public static class BasisAssetBundlePipeline
                 DestroyEditorOnlyInAvatar(prefab);
                 OnBeforeBuildPrefab?.Invoke(prefab, settings);
                 PostProcessAvatar(prefab);
+                if (contentKind == BasisBundleContentKind.Avatar &&
+                    settings.AvatarPsoCaptureMode == BasisAvatarPsoCaptureMode.CaptureVulkanPSOs &&
+                    BasisAvatarPsoBuildCapture.IsWindowsTarget(Target))
+                {
+                    psoCapture = BasisAvatarPsoBuildCapture.Capture(prefab, Folder, Target);
+                }
                 meta = BasisBundleBuild.GenerateMetaData(prefab);
                 if (bakeFarLod && contentKind == BasisBundleContentKind.Avatar)
                 {
@@ -138,6 +145,13 @@ public static class BasisAssetBundlePipeline
                     Target,
                     contentKind);
 
+            BasisBundleGenerated psoGenerated = null;
+            string psoEncryptedPath = null;
+            if (psoCapture != null)
+            {
+                (psoGenerated, psoEncryptedPath) = await BasisAvatarPsoBuildCapture.EncryptCaptureAsync(psoCapture, value.Item1, Password);
+            }
+
             TemporaryStorageHandler.ClearTemporaryStorage(settings.TemporaryStorage);
             AssetDatabase.Refresh();
 
@@ -153,7 +167,7 @@ public static class BasisAssetBundlePipeline
                 PlayerSettings.SetScriptingBackend(namedBuildTarget, ScriptingImplementation.Mono2x);
             }
 
-            return new(true, new BasisBundleBuild.BasisBundleBuildResult(value.Item1, value.Item2, meta, farLodBase64));
+            return new(true, new BasisBundleBuild.BasisBundleBuildResult(value.Item1, value.Item2, meta, farLodBase64, psoGenerated, psoEncryptedPath));
         }
         catch (Exception ex)
         {
@@ -184,6 +198,7 @@ public static class BasisAssetBundlePipeline
         }
         finally
         {
+            psoCapture?.Dispose();
             sceneBuildName?.Dispose();
         }
     }

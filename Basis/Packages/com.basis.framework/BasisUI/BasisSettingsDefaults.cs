@@ -799,6 +799,8 @@ namespace Basis.BasisUI
         public static BasisSettingsBinding<bool> EnableStagedAvatarReveal = new("enablestagedavatarreveal_v2", new BasisPlatformDefault<bool>(false));
         // MB, not bytes — matches AvatarDownloadSize's convention for a PanelSlider.ValueDisplayMode.MemorySize binding.
         public static BasisSettingsBinding<float> PsoCacheSizeMb = new("psocachesizemb", new BasisPlatformDefault<float>(10240f));
+        // Dedicated Vulkan avatar PSO compilation gate. Kept separate from bundle/download concurrency.
+        public static BasisSettingsBinding<float> AvatarPsoWarmConcurrency = new("avatarpsowarmconcurrency", new BasisPlatformDefault<float>(2f));
         public static BasisSettingsBinding<bool> ContentPoliceLogging = new("contentpolicelogging", new BasisPlatformDefault<bool>(false));
 
         /// <summary>
@@ -2723,9 +2725,13 @@ namespace Basis.BasisUI
             PsoCacheSizeMb.LoadBindingValue();
             BasisGraphicsStatePrewarm.MaxCacheBytes = (long)(PsoCacheSizeMb.RawValue * 1024f * 1024f);
             PsoCacheSizeMb.OnChanged += value => BasisGraphicsStatePrewarm.MaxCacheBytes = (long)(value * 1024f * 1024f);
+            AvatarPsoWarmConcurrency.LoadBindingValue();
+            BasisAvatarPsoLoader.ConfigureConcurrency(Mathf.RoundToInt(AvatarPsoWarmConcurrency.RawValue));
+            AvatarPsoWarmConcurrency.OnChanged += value => BasisAvatarPsoLoader.ConfigureConcurrency(Mathf.RoundToInt(value));
             ContentPoliceLogging.LoadBindingValue();
             ContentPoliceControl.VerboseLogging = ContentPoliceLogging.RawValue;
-            ContentPoliceLogging.OnChanged += value => ContentPoliceControl.VerboseLogging = value;
+            BasisAvatarPsoLoader.VerboseLogging = ContentPoliceLogging.RawValue;
+            ContentPoliceLogging.OnChanged += value => { ContentPoliceControl.VerboseLogging = value; BasisAvatarPsoLoader.VerboseLogging = value; };
             DebugLogTagFilter.LoadBindingValue();
             ApplyDebugLogTagFilter(DebugLogTagFilter.RawValue);
             DebugLogTagFilter.OnChanged += ApplyDebugLogTagFilter;

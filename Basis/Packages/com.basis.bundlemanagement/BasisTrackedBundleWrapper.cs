@@ -29,6 +29,11 @@ public class BasisTrackedBundleWrapper
     /// </summary>
     [System.NonSerialized]
     public string ObservedVersionTag;
+    /// <summary>Optional creator PSO sidecar preparation started as soon as connector metadata is available.</summary>
+    [System.NonSerialized]
+    public Task<BasisAvatarPsoPreparedData> AvatarPsoPreparationTask;
+    [System.NonSerialized]
+    public BasisBundleGenerated AvatarPsoGenerated;
     public bool HasGltfTemplate => GltfTemplateAvatarRoot != null;
     #if UNITY_BUNDLEUNLOAD
     [SerializeField]

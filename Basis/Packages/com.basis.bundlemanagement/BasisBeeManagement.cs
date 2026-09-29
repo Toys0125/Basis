@@ -223,6 +223,10 @@ public static class BasisBeeManagement
                     {
                         BasisDebug.Log($"Connector prefetch unavailable ({connectorError}) — continuing with the full download.", BasisDebug.LogTag.Event);
                     }
+                    else if (connector.GetPlatform(out BasisBundleGenerated prefetchedGenerated))
+                    {
+                        BasisAvatarPsoLoader.BeginPackagedPreparation(wrapper, prefetchedGenerated, cancellationToken, MaxDownloadSizeInBytes);
+                    }
                 }
                 catch (Exception prefetchException)
                 {
@@ -244,6 +248,10 @@ public static class BasisBeeManagement
             if (cancellationToken.IsCancellationRequested) throw new OperationCanceledException(cancellationToken);
             throw new Exception($"Bundle load failed for {wrapper?.LoadableBundle?.BasisRemoteBundleEncrypted?.RemoteBeeFileLocation ?? "unknown"}: {output.Item3}");
         }
+
+        // Cache-hit and connector-already-known paths arrive here without the prefetch branch above.
+        // Start optional PSO sidecar I/O now, before AssetBundle creation/decryption, so both can overlap.
+        BasisAvatarPsoLoader.BeginPackagedPreparation(wrapper, output.Item1, cancellationToken, MaxDownloadSizeInBytes);
         // Generic (glTF) fallback section: no AssetBundle exists for this platform, the bytes
         // are an encrypted glb. Build the template instead of an AssetBundle, with the same
         // cache-refresh retry the bundle path gets for stale cached bytes.
@@ -354,6 +362,8 @@ public static class BasisBeeManagement
         {
             throw new Exception($"Local bundle load returned no section data for {localBeePath}.");
         }
+
+        BasisAvatarPsoLoader.BeginPackagedPreparation(wrapper, output.Item1, cancellationToken, long.MaxValue);
 
         // Generic (glTF) fallback section from a local bee — same template path as remote.
         if (BasisBundleConnector.IsGltfMode(output.Item1))

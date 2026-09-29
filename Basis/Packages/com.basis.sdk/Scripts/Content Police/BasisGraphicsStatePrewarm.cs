@@ -121,11 +121,14 @@ public static class BasisGraphicsStatePrewarm
             // Warm source: last session's PSOs, never traced so it stays warmable.
             _warm = LoadCollection(onDisk);
             int loaded = _warm != null ? _warm.variantCount : 0;
-            PrunedVariantCount = PruneUnresolved(_warm);
+            // Do not prune unresolved shader references at application startup. Avatar AssetBundle
+            // shaders are intentionally not resident yet, so null shader references here are not
+            // evidence that the persisted PSO is invalid. They may become resolvable after the
+            // matching content bundle is loaded.
+            PrunedVariantCount = 0;
 
             // Trace sink: starts from the same on-disk set and appends this session's real PSOs.
             _trace = LoadCollection(onDisk);
-            PruneUnresolved(_trace);
             _trace.BeginTrace();
             _tracing = _trace.isTracing;
 
@@ -135,7 +138,7 @@ public static class BasisGraphicsStatePrewarm
             _initTime = Time.realtimeSinceStartup;
             _lastFlushTime = _initTime;
             _variantsAtLastFlush = _trace.variantCount;
-            BasisDebug.Log($"BasisGraphicsStatePrewarm: {SystemInfo.graphicsDeviceType} seed {SeedVariantCount} variant(s), user cache {UserVariantCount} of {loaded} replayable ({PrunedVariantCount} unresolvable pruned)", BasisDebug.LogTag.Event);
+            BasisDebug.Log($"BasisGraphicsStatePrewarm: {SystemInfo.graphicsDeviceType} seed {SeedVariantCount} variant(s), user cache {UserVariantCount} of {loaded} replayable (startup pruning disabled for late-loaded content shaders)", BasisDebug.LogTag.Event);
         }
         catch (System.Exception e)
         {

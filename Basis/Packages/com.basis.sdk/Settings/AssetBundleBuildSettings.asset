@@ -28,6 +28,7 @@ MonoBehaviour:
   OpenFolderOnDisc: 1
   RebakeOcclusionCulling: 1
   GenerateGenericGLTF: 1
+  AvatarPsoCaptureMode: 0
   StripLodCrossFadeVariants: 1
   StripBakeOnlyShaderPasses: 1
   StripSpaceWarpPassOffQuest: 1

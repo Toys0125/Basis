@@ -498,6 +498,7 @@ public static class BasisBundleBuild
         string generatedID = null;
         string stagingRoot = null;
         string farLodBase64 = null;
+        List<string> psoTemporaryFiles = new List<string>();
 
         try
         {
@@ -575,6 +576,17 @@ public static class BasisBundleBuild
                 paths.Add(hashPath);
 
                 BasisDebug.Log("Adding " + result.InformationHash.EncyptedPath);
+
+                // Optional avatar Vulkan GraphicsStateCollection sidecar. Its Platform value is a
+                // deliberately non-matching tag, so clients predating PSO support skip this section
+                // instead of ever mistaking it for the platform AssetBundle.
+                if (result.PsoGenerated != null && !string.IsNullOrEmpty(result.PsoEncryptedPath) && File.Exists(result.PsoEncryptedPath))
+                {
+                    bundles.Add(result.PsoGenerated);
+                    paths.Add(result.PsoEncryptedPath);
+                    psoTemporaryFiles.Add(result.PsoEncryptedPath);
+                    BasisDebug.Log("Adding avatar Vulkan PSO section " + result.PsoEncryptedPath);
+                }
             }
 
             // Avatars additionally get a platform-agnostic Generic (glTF) section, appended
@@ -699,6 +711,21 @@ public static class BasisBundleBuild
 
             EditorUtility.ClearProgressBar();
             return (false, $"BuildBundle Exception: {ex.Message}");
+        }
+        finally
+        {
+            for (int i = 0; i < psoTemporaryFiles.Count; i++)
+            {
+                try
+                {
+                    if (File.Exists(psoTemporaryFiles[i]))
+                        File.Delete(psoTemporaryFiles[i]);
+                }
+                catch (Exception cleanupException)
+                {
+                    BasisDebug.LogWarning($"Failed to remove temporary avatar PSO section '{psoTemporaryFiles[i]}': {cleanupException.Message}");
+                }
+            }
         }
     }
     /// <summary>
@@ -961,17 +988,21 @@ public static class BasisBundleBuild
 
     public class BasisBundleBuildResult
     {
-        public BasisBundleBuildResult(BasisBundleGenerated basisBundleGenerated, AssetBundleBuilder.InformationHash informationHash, BasisBundleConnector.BasisMetaData basisMetaData, string farLodBase64 = null)
+        public BasisBundleBuildResult(BasisBundleGenerated basisBundleGenerated, AssetBundleBuilder.InformationHash informationHash, BasisBundleConnector.BasisMetaData basisMetaData, string farLodBase64 = null, BasisBundleGenerated psoGenerated = null, string psoEncryptedPath = null)
         {
             BasisBundleGenerated = basisBundleGenerated;
             InformationHash = informationHash;
             BasisMetaData = basisMetaData;
             FarLodBase64 = farLodBase64;
+            PsoGenerated = psoGenerated;
+            PsoEncryptedPath = psoEncryptedPath;
         }
 
         public BasisBundleGenerated BasisBundleGenerated { get; }
         public AssetBundleBuilder.InformationHash InformationHash { get; }
         public BasisBundleConnector.BasisMetaData BasisMetaData { get; }
         public string FarLodBase64 { get; }
+        public BasisBundleGenerated PsoGenerated { get; }
+        public string PsoEncryptedPath { get; }
     }
 }

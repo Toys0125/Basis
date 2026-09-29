@@ -118,7 +118,8 @@ public static class ContentPoliceControl
     public static GameObject ContentControl(GameObject DisabledGameobject, GameObject SearchAndDestroy, ChecksRequired ChecksRequired, Vector3 Position, Quaternion Rotation, bool ModifyScale, Vector3 Scale, BundledContentHolder.Selector Selector, Transform Parent = null,int colliderlayer = -1, List<BasisHeadChop.HeadChopTarget> HarvestedHeadChop = null, BasisContentHarvest harvest = null)
     {
         ContentControlState state = BeginContentControl(DisabledGameobject, SearchAndDestroy, ChecksRequired, Position, Rotation, ModifyScale, Scale, Selector, Parent, colliderlayer, HarvestedHeadChop, harvest);
-        return FinishContentControl(state);
+        SanitizeContentControl(state);
+        return ActivateContentControl(state);
     }
 
     // Phase one of the content walk: the atomic GameObject.Instantiate (the single largest cost,
@@ -142,6 +143,9 @@ public static class ContentPoliceControl
                 return state;
             }
             SearchAndDestroy = GameObject.Instantiate(SearchAndDestroy, Position, Rotation, DisabledGameobject.transform);
+            // Keep activeSelf false as well as activeInHierarchy false. This makes activation an
+            // explicit barrier even if the clone is reparented away from the disabled host later.
+            SearchAndDestroy.SetActive(false);
             if (ModifyScale)
             {
                 if (VerboseLogging)
@@ -166,13 +170,21 @@ public static class ContentPoliceControl
         }
         else
         {
-            if (Parent == null)
+            // When a disabled content host is available, use it even on the no-removal path so
+            // PSO preparation can still happen before Awake/OnEnable. Callers without a host keep
+            // the legacy instantiate behavior.
+            Transform instantiateParent = DisabledGameobject != null ? DisabledGameobject.transform : Parent;
+            if (instantiateParent == null)
             {
                 SearchAndDestroy = GameObject.Instantiate(SearchAndDestroy, Position, Rotation);
             }
             else
             {
-                SearchAndDestroy = GameObject.Instantiate(SearchAndDestroy, Position, Rotation, Parent);
+                SearchAndDestroy = GameObject.Instantiate(SearchAndDestroy, Position, Rotation, instantiateParent);
+            }
+            if (DisabledGameobject != null)
+            {
+                SearchAndDestroy.SetActive(false);
             }
             // Avatar/prop media streaming must not auto-start from authored data. This path skips
             // the normal component-removal walk, so apply the content-specific rewrite explicitly
@@ -210,9 +222,16 @@ public static class ContentPoliceControl
         return state;
     }
 
-    // Phase two: the component walk, MonoBehaviour/event strip, persistent-listener scrub, and the
-    // final reparent + SetActive. Every security strip still completes before the clone goes active.
+    // Compatibility wrapper for callers that still want the historical one-call phase two.
     public static GameObject FinishContentControl(ContentControlState state)
+    {
+        SanitizeContentControl(state);
+        return ActivateContentControl(state);
+    }
+
+    // Phase two: component walk, MonoBehaviour/event strip, persistent-listener scrub, shader
+    // correction and prewarm. The clone remains hard-inactive after this returns.
+    public static GameObject SanitizeContentControl(ContentControlState state)
     {
         GameObject SearchAndDestroy = state.Clone;
         if (state.RemovalWalkPending)
@@ -426,17 +445,6 @@ public static class ContentPoliceControl
                     ScrubDangerousPersistentListeners(components, PoliceCheck);
                 }
 
-                // Instantiate the cleaned GameObject copy
-                if (Parent == null)
-                {
-                    SearchAndDestroy.transform.parent = null;
-                    SearchAndDestroy.SetActive(true);
-                }
-                else
-                {
-                    SearchAndDestroy.transform.parent = Parent;
-                    SearchAndDestroy.SetActive(true);
-                }
             }
         }
         if (state.Harvest != null && SearchAndDestroy != null && SearchAndDestroy.TryGetComponent(out BasisContentBase contentBase))
@@ -444,6 +452,21 @@ public static class ContentPoliceControl
             contentBase.Harvest = state.Harvest;
         }
         return SearchAndDestroy;
+    }
+
+    // Phase three: publish the already-sanitized clone. This is intentionally the only content
+    // control phase that reparents the parked object and enables it.
+    public static GameObject ActivateContentControl(ContentControlState state)
+    {
+        GameObject clone = state.Clone;
+        if (clone == null)
+        {
+            return null;
+        }
+
+        clone.transform.parent = state.Parent;
+        clone.SetActive(true);
+        return clone;
     }
 
     private static void DestroyUnapprovedComponents()
