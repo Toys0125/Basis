@@ -35,6 +35,12 @@ public static class BasisContentShareManager
     /// Fired when a content sphere is removed.
     /// </summary>
     public static Action<string> OnSphereRemoved;
+
+    private static readonly TimeSpan DepartureGracePeriod = TimeSpan.FromMinutes(1);
+    // A marker per local orb invalidates a queued expiry after manual deletion or Reset.
+    private static readonly Dictionary<string, object> PendingDepartureCleanup = new Dictionary<string, object>();
+    internal static Func<TimeSpan, Task> DepartureCleanupDelay = Task.Delay;
+    internal static Action<Action> DepartureCleanupDispatch = BasisDeviceManagement.EnqueueOnMainThread;
     public static string AvatarOrb = "Packages/com.basis.sdk/Prefabs/AvatarOrb.prefab";
     public static string PropOrb = "Packages/com.basis.sdk/Prefabs/PropOrb.prefab";
     public static string WorldOrb = "Packages/com.basis.sdk/Prefabs/WorldOrb.prefab";
@@ -186,6 +192,14 @@ public static class BasisContentShareManager
             return;
         }
 
+        // The server already deleted a departed owner's share. Local deletion must not
+        // send a request for a sphere ID that no longer exists on the server.
+        if (PendingDepartureCleanup.ContainsKey(sphereNetID))
+        {
+            RemoveSphere(sphereNetID);
+            return;
+        }
+
         ContentShareCleanupMessage msg = new ContentShareCleanupMessage
         {
             SphereNetID = sphereNetID
@@ -229,8 +243,45 @@ public static class BasisContentShareManager
         ServerContentShareCleanupMessage serverMsg = new ServerContentShareCleanupMessage();
         serverMsg.Deserialize(reader);
 
-        RemoveSphere(serverMsg.contentShareCleanupMessage.SphereNetID);
+        string sphereId = serverMsg.contentShareCleanupMessage.SphereNetID;
+        // Only preserve shares that this client had received before the owner left.
+        // A sphere can still be awaiting Addressables instantiation when cleanup arrives.
+        if (serverMsg.OwnerDeparted &&
+            ((ActiveSpheres.TryGetValue(sphereId, out BasisContentSphere sphere) && sphere != null && sphere.ContentType == ContentShareType.Server)
+             || PendingSpheres.Contains(sphereId)))
+        {
+            if (!PendingDepartureCleanup.ContainsKey(sphereId))
+            {
+                object marker = new object();
+                PendingDepartureCleanup.Add(sphereId, marker);
+                _ = ExpireDepartedSphereAsync(sphereId, marker);
+            }
+            return;
+        }
+
+        RemoveSphere(sphereId);
     }
+
+    private static async Task ExpireDepartedSphereAsync(string sphereId, object marker)
+    {
+        try
+        {
+            await DepartureCleanupDelay(DepartureGracePeriod).ConfigureAwait(false);
+            // Delayed work never touches Unity objects off the main thread.
+            DepartureCleanupDispatch(() =>
+            {
+                if (PendingDepartureCleanup.TryGetValue(sphereId, out object current) && ReferenceEquals(current, marker))
+                {
+                    RemoveSphere(sphereId);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            BasisDebug.LogError($"Content sphere grace period failed for {sphereId}: {ex}", BasisDebug.LogTag.Networking);
+        }
+    }
+
     private static readonly HashSet<string> PendingSpheres = new HashSet<string>();
 
     /// <summary>
@@ -352,6 +403,7 @@ public static class BasisContentShareManager
     /// </summary>
     private static void RemoveSphere(string sphereNetID)
     {
+        PendingDepartureCleanup.Remove(sphereNetID);
         PendingSpheres.Remove(sphereNetID);
         if (!ActiveSpheres.TryRemove(sphereNetID, out BasisContentSphere sphere))
         {
@@ -390,6 +442,7 @@ public static class BasisContentShareManager
         }
         ActiveSpheres.Clear();
         PendingSpheres.Clear();
+        PendingDepartureCleanup.Clear();
     }
 
     private static BasisShareableKind ToShareableKind(ContentShareType type)

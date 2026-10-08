@@ -5,7 +5,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using static BasisPermissions.PermissionManager;
 using static SerializableBasis;
 
@@ -22,12 +21,6 @@ public static class BasisNetworkContentShare
     public static ConcurrentDictionary<string, ServerContentShareMessage> ActiveSpheres =
         new ConcurrentDictionary<string, ServerContentShareMessage>();
 
-    // Orbs already visible to connected players remain for one minute after the sharer leaves.
-    // These IDs are excluded from join replay. Each marker also invalidates an old timeout
-    // if a sphere is manually deleted or server state is reset.
-    private static readonly ConcurrentDictionary<string, object> PendingDepartureCleanup = new();
-    internal static Func<TimeSpan, Task> DepartureCleanupDelay = Task.Delay;
-    private static readonly TimeSpan DepartureGracePeriod = TimeSpan.FromMinutes(1);
 
     /// <summary>
     /// Handles a content share drop from a client.
@@ -97,7 +90,7 @@ public static class BasisNetworkContentShare
             return;
         }
 
-        if (ActiveSpheres.Count(kvp => kvp.Value.playerIdMessage.playerID == (ushort)peer.Id && !PendingDepartureCleanup.ContainsKey(kvp.Key)) >= BasisNetworkServer.Security.BasisResourceLimitManager.MaxContentSpheresPerPlayer)
+        if (ActiveSpheres.Count(kvp => kvp.Value.playerIdMessage.playerID == (ushort)peer.Id ) >= BasisNetworkServer.Security.BasisResourceLimitManager.MaxContentSpheresPerPlayer)
         {
             BNL.LogError($"Peer {peer.Id} reached content sphere limit.");
             return;
@@ -169,7 +162,7 @@ public static class BasisNetworkContentShare
         }
         // ContentShareDelete is default-granted, so the sharer check is what stops one player
         // deleting everyone else's orbs.
-        if ((existing.playerIdMessage.playerID != requesterId || PendingDepartureCleanup.ContainsKey(msg.SphereNetID))
+        if (existing.playerIdMessage.playerID != requesterId
             && !PermissionIntegration.HasValidRequirement(peer, PermNodes.protection))
         {
             BNL.LogError($"Peer {peer.Id} tried to remove content sphere {msg.SphereNetID} they did not share.");
@@ -179,32 +172,32 @@ public static class BasisNetworkContentShare
         RemoveSphere(msg.SphereNetID, requesterId);
     }
 
-    // Shared by explicit deletion and the departure timeout so cleanup uses the same path.
-    private static void RemoveSphere(string sphereId, ushort playerId)
+    // The server immediately removes every share; only clients defer rendering cleanup.
+    private static void RemoveSphere(string sphereId, ushort playerId, bool ownerDeparted = false)
     {
-        PendingDepartureCleanup.TryRemove(sphereId, out _);
         if (ActiveSpheres.TryRemove(sphereId, out _))
         {
             BNL.Log($"Content sphere removed: {sphereId}");
-            BroadcastCleanup(sphereId, playerId);
+            BroadcastCleanup(sphereId, playerId, ownerDeparted);
         }
     }
 
-    private static void WriteCleanup(NetDataWriter writer, string sphereId, ushort playerId)
+    private static void WriteCleanup(NetDataWriter writer, string sphereId, ushort playerId, bool ownerDeparted = false)
     {
         ServerContentShareCleanupMessage serverMsg = new ServerContentShareCleanupMessage
         {
             playerIdMessage = new PlayerIdMessage { playerID = playerId },
-            contentShareCleanupMessage = new ContentShareCleanupMessage { SphereNetID = sphereId }
+            contentShareCleanupMessage = new ContentShareCleanupMessage { SphereNetID = sphereId },
+            OwnerDeparted = ownerDeparted
         };
         writer.Put(BasisNetworkCommons.ContentShareSub_Cleanup);
         serverMsg.Serialize(writer);
     }
 
-    private static void BroadcastCleanup(string sphereId, ushort playerId)
+    private static void BroadcastCleanup(string sphereId, ushort playerId, bool ownerDeparted)
     {
         NetDataWriter writer = NetworkServer.RentWriter();
-        WriteCleanup(writer, sphereId, playerId);
+        WriteCleanup(writer, sphereId, playerId, ownerDeparted);
         NetworkServer.BroadcastMessageToClients(
             writer,
             BasisNetworkCommons.ContentShareChannel,
@@ -233,8 +226,6 @@ public static class BasisNetworkContentShare
         NetDataWriter writer = NetworkServer.RentWriter();
         for (int i = 0; i < spheres.Length; i++)
         {
-            // The departing player's orb only remains on clients that already saw it.
-            if (PendingDepartureCleanup.ContainsKey(spheres[i].contentShareMessage.SphereNetID)) continue;
             writer.Reset();
             writer.Put(BasisNetworkCommons.ContentShareSub_Drop);
             spheres[i].Serialize(writer);
@@ -249,48 +240,16 @@ public static class BasisNetworkContentShare
     }
 
     /// <summary>
-    /// Removes a departing player's shares. Server shares stay visible to existing peers
-    /// for one minute, but new peers never receive them in the join snapshot.
-    /// Other content types are cleaned up immediately as before.
+    /// Immediately deletes a departing player's shares from authoritative state.
+    /// Existing clients may retain server-typed shares for a short local grace period.
     /// </summary>
     public static void RemovePlayerSpheres(int peerId)
     {
         ushort playerId = (ushort)peerId;
-        var toRemove = ActiveSpheres.Where(kvp => kvp.Value.playerIdMessage.playerID == playerId)
-                                    .ToArray();
-
+        var toRemove = ActiveSpheres.Where(kvp => kvp.Value.playerIdMessage.playerID == playerId).ToArray();
         foreach (var sphere in toRemove)
         {
-            string sphereId = sphere.Key;
-            if (sphere.Value.contentShareMessage.ContentType != ContentShareType.Server)
-            {
-                RemoveSphere(sphereId, playerId);
-                continue;
-            }
-
-            object marker = new object();
-            if (PendingDepartureCleanup.TryAdd(sphereId, marker))
-            {
-                _ = RemoveDepartedServerShareAsync(sphereId, playerId, marker);
-            }
-        }
-    }
-
-    private static async Task RemoveDepartedServerShareAsync(string sphereId, ushort playerId, object marker)
-    {
-        try
-        {
-            await DepartureCleanupDelay(DepartureGracePeriod);
-            // An earlier manual removal or Reset invalidates this specific timer.
-            if (((ICollection<KeyValuePair<string, object>>)PendingDepartureCleanup)
-                .Remove(new KeyValuePair<string, object>(sphereId, marker)))
-            {
-                RemoveSphere(sphereId, playerId);
-            }
-        }
-        catch (Exception ex)
-        {
-            BNL.LogError($"Delayed cleanup failed for content sphere {sphereId}: {ex}");
+            RemoveSphere(sphere.Key, playerId, sphere.Value.contentShareMessage.ContentType == ContentShareType.Server);
         }
     }
 
@@ -299,8 +258,6 @@ public static class BasisNetworkContentShare
     /// </summary>
     public static void Reset()
     {
-        // Invalidate all outstanding delayed cleanups before dropping server state.
-        PendingDepartureCleanup.Clear();
         string[] keys = ActiveSpheres.Keys.ToArray();
         foreach (string key in keys)
         {

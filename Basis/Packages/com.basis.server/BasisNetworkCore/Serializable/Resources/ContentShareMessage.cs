@@ -151,17 +151,28 @@ public static partial class SerializableBasis
     {
         public PlayerIdMessage playerIdMessage;
         public ContentShareCleanupMessage contentShareCleanupMessage;
+        /// <summary>
+        /// True when the owner disconnected. Only server-originated cleanup packets may set
+        /// this flag; clients retain an already-visible server orb for one minute.
+        /// Omitted for ordinary deletion to preserve the original wire format.
+        /// </summary>
+        public bool OwnerDeparted;
 
         public void Deserialize(NetDataReader reader)
         {
             playerIdMessage.Deserialize(reader);
             contentShareCleanupMessage.Deserialize(reader);
+            OwnerDeparted = reader.AvailableBytes > 0 && reader.GetBool();
         }
 
         public void Serialize(NetDataWriter writer)
         {
             playerIdMessage.Serialize(writer);
             contentShareCleanupMessage.Serialize(writer);
+            if (OwnerDeparted)
+            {
+                writer.Put(true);
+            }
         }
     }
 }
