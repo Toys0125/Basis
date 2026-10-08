@@ -45,14 +45,14 @@ public class ContentShareCleanupRoundTripTests
         return NetPacketReader.Create(bytes, 0, bytes.Length, () => { });
     }
 
-    private static void SendDrop(FakeNetPeer from, string sphereId)
+    private static void SendDrop(FakeNetPeer from, string sphereId, ContentShareType type = ContentShareType.Prop)
     {
         ContentShareMessage msg = new ContentShareMessage
         {
             SphereNetID = sphereId,
-            ContentURL = "https://cdn.example/prop.BEE",
-            UnlockPassword = "pw",
-            ContentType = ContentShareType.Prop,
+            ContentURL = type == ContentShareType.Server ? "localhost:4296" : "https://cdn.example/prop.BEE",
+            UnlockPassword = type == ContentShareType.Server ? "" : "pw",
+            ContentType = type,
             PositionX = 1f, PositionY = 2f, PositionZ = 3f,
         };
         BasisNetworkMessageProcessor.ProcessMessage(from, Packet(w =>
@@ -136,6 +136,167 @@ public class ContentShareCleanupRoundTripTests
         finally
         {
             Remove(a, b);
+        }
+    }
+
+    [Fact]
+    public void DepartingServerShare_StaysForExistingPeers_ButIsNotReplayedToNewcomers()
+    {
+        (FakeNetPeer sharer, string _) = NewAuthenticatedPeer();
+        (FakeNetPeer existing, string _) = NewAuthenticatedPeer();
+        FakeNetPeer newcomer = null!;
+        string sphereId = $"server-share-{Guid.NewGuid():N}";
+        var releaseDelay = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        TimeSpan requestedDelay = TimeSpan.Zero;
+        var originalDelay = BasisNetworkContentShare.DepartureCleanupDelay;
+        try
+        {
+            BasisNetworkContentShare.DepartureCleanupDelay = duration =>
+            {
+                requestedDelay = duration;
+                return releaseDelay.Task;
+            };
+            SendDrop(sharer, sphereId, ContentShareType.Server);
+            Assert.Contains(ShareTraffic(existing), t => t.Sub == BasisNetworkCommons.ContentShareSub_Drop && t.SphereId == sphereId);
+
+            BasisNetworkContentShare.RemovePlayerSpheres(sharer.Id);
+            Assert.Equal(TimeSpan.FromMinutes(1), requestedDelay);
+            Assert.True(BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId));
+            Assert.DoesNotContain(ShareTraffic(existing), t => t.Sub == BasisNetworkCommons.ContentShareSub_Cleanup && t.SphereId == sphereId);
+
+            (newcomer, _) = NewAuthenticatedPeer();
+            BasisNetworkContentShare.SendAllSpheresToPeer(newcomer);
+            Assert.DoesNotContain(ShareTraffic(newcomer), t => t.Sub == BasisNetworkCommons.ContentShareSub_Drop && t.SphereId == sphereId);
+
+            releaseDelay.SetResult(true);
+            Assert.True(SpinWait.SpinUntil(() => !BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId), TimeSpan.FromSeconds(5)));
+            Assert.True(SpinWait.SpinUntil(() => existing.Sent.Count >= 2, TimeSpan.FromSeconds(5)));
+            Assert.Contains(ShareTraffic(existing), t => t.Sub == BasisNetworkCommons.ContentShareSub_Cleanup && t.SphereId == sphereId);
+        }
+        finally
+        {
+            BasisNetworkContentShare.Reset();
+            releaseDelay.TrySetResult(true);
+            BasisNetworkContentShare.DepartureCleanupDelay = originalDelay;
+            if (newcomer != null) Remove(sharer, existing, newcomer);
+            else Remove(sharer, existing);
+        }
+    }
+
+    [Fact]
+    public async Task ManuallyDeletedShare_DoesNotGetCleanedUpAgainAfterGracePeriod()
+    {
+        (FakeNetPeer sharer, string _) = NewAuthenticatedPeer();
+        (FakeNetPeer existing, string moderatorUuid) = NewAuthenticatedPeer();
+        string sphereId = $"server-share-{Guid.NewGuid():N}";
+        var releaseDelay = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var originalDelay = BasisNetworkContentShare.DepartureCleanupDelay;
+        try
+        {
+            BasisNetworkContentShare.DepartureCleanupDelay = _ => releaseDelay.Task;
+            SendDrop(sharer, sphereId, ContentShareType.Server);
+            BasisNetworkContentShare.RemovePlayerSpheres(sharer.Id);
+
+            PermissionIntegration.Manager.AddUserNode(moderatorUuid, PermNodes.protection);
+            SendCleanup(existing, sphereId);
+            Assert.False(BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId));
+            int sentBeforeExpiry = existing.Sent.Count;
+
+            releaseDelay.SetResult(true);
+            await Task.Delay(25);
+            Assert.Equal(sentBeforeExpiry, existing.Sent.Count);
+            Assert.Single(ShareTraffic(existing), t => t.Sub == BasisNetworkCommons.ContentShareSub_Cleanup && t.SphereId == sphereId);
+        }
+        finally
+        {
+            BasisNetworkContentShare.Reset();
+            releaseDelay.TrySetResult(true);
+            BasisNetworkContentShare.DepartureCleanupDelay = originalDelay;
+            PermissionIntegration.Manager.RemoveUserNode(moderatorUuid, PermNodes.protection);
+            Remove(sharer, existing);
+        }
+    }
+
+    [Fact]
+    public async Task Reset_InvalidatesOldDepartureTimer_EvenIfSphereIdIsReused()
+    {
+        (FakeNetPeer sharer, string _) = NewAuthenticatedPeer();
+        string sphereId = $"server-share-{Guid.NewGuid():N}";
+        var releaseDelay = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var originalDelay = BasisNetworkContentShare.DepartureCleanupDelay;
+        try
+        {
+            BasisNetworkContentShare.DepartureCleanupDelay = _ => releaseDelay.Task;
+            SendDrop(sharer, sphereId, ContentShareType.Server);
+            BasisNetworkContentShare.RemovePlayerSpheres(sharer.Id);
+            BasisNetworkContentShare.Reset();
+
+            SendDrop(sharer, sphereId, ContentShareType.Server);
+            Assert.True(BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId));
+            releaseDelay.SetResult(true);
+            await Task.Delay(25);
+            Assert.True(BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId));
+        }
+        finally
+        {
+            BasisNetworkContentShare.Reset();
+            releaseDelay.TrySetResult(true);
+            BasisNetworkContentShare.DepartureCleanupDelay = originalDelay;
+            Remove(sharer);
+        }
+    }
+
+    [Fact]
+    public void ReusedPeerId_CannotRemoveDepartedPlayersServerShare()
+    {
+        (FakeNetPeer sharer, string _) = NewAuthenticatedPeer();
+        (FakeNetPeer existing, string _) = NewAuthenticatedPeer();
+        string sphereId = $"server-share-{Guid.NewGuid():N}";
+        var releaseDelay = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var originalDelay = BasisNetworkContentShare.DepartureCleanupDelay;
+        try
+        {
+            BasisNetworkContentShare.DepartureCleanupDelay = _ => releaseDelay.Task;
+            SendDrop(sharer, sphereId, ContentShareType.Server);
+            BasisNetworkContentShare.RemovePlayerSpheres(sharer.Id);
+            Remove(sharer);
+
+            // The previous player's ID is reused by a different, newly authenticated peer.
+            FakeNetPeer successor = new FakeNetPeer(sharer.Id, "10.9.9.10") { Tag = NetworkServer.AuthenticatedPeerTag };
+            Identity.Register($"share-user-{Guid.NewGuid():N}", successor.Id, successor);
+            NetworkServer.AuthenticatedPeers[successor.Id] = successor;
+            NetworkServer.RebuildPeerSnapshot();
+            SendCleanup(successor, sphereId);
+            Assert.True(BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId));
+            Assert.DoesNotContain(ShareTraffic(existing), t => t.Sub == BasisNetworkCommons.ContentShareSub_Cleanup && t.SphereId == sphereId);
+            Remove(successor);
+        }
+        finally
+        {
+            BasisNetworkContentShare.Reset();
+            releaseDelay.TrySetResult(true);
+            BasisNetworkContentShare.DepartureCleanupDelay = originalDelay;
+            Remove(sharer, existing);
+        }
+    }
+
+    [Fact]
+    public void DepartingPlayer_OtherContentTypesAreRemovedImmediately()
+    {
+        (FakeNetPeer sharer, string _) = NewAuthenticatedPeer();
+        (FakeNetPeer existing, string _) = NewAuthenticatedPeer();
+        string sphereId = $"prop-share-{Guid.NewGuid():N}";
+        try
+        {
+            SendDrop(sharer, sphereId, ContentShareType.Prop);
+            BasisNetworkContentShare.RemovePlayerSpheres(sharer.Id);
+            Assert.False(BasisNetworkContentShare.ActiveSpheres.ContainsKey(sphereId));
+            Assert.Contains(ShareTraffic(existing), t => t.Sub == BasisNetworkCommons.ContentShareSub_Cleanup && t.SphereId == sphereId);
+        }
+        finally
+        {
+            BasisNetworkContentShare.Reset();
+            Remove(sharer, existing);
         }
     }
 
