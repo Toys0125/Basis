@@ -205,13 +205,14 @@ jobs:
         id: unity-build
         timeout-minutes: ${{ matrix.buildTimeout }}
         continue-on-error: true
-        uses: BasisVR/unity-builder@main
+        uses: Toys0125/unity-builder@upgrade/game-ci-v6.0.0
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
           customImage: ${{ steps.unity-image.outputs.image }}
+          dockerShmSize: 2g
           buildName: ${{ matrix.buildName }}
           buildMethod: ${{ matrix.buildMethod }}
           customParameters: ${{ matrix.customParameters }}
@@ -223,13 +224,14 @@ jobs:
       - name: "Build Unity project (retry)"
         if: steps.unity-build.outcome == 'failure'
         timeout-minutes: ${{ matrix.buildTimeout }}
-        uses: BasisVR/unity-builder@main
+        uses: Toys0125/unity-builder@upgrade/game-ci-v6.0.0
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
           customImage: ${{ steps.unity-image.outputs.image }}
+          dockerShmSize: 2g
           buildName: ${{ matrix.buildName }}
           buildMethod: ${{ matrix.buildMethod }}
           customParameters: ${{ matrix.customParameters }}
