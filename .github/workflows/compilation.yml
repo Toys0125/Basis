@@ -140,6 +140,12 @@ jobs:
             echo "Deleting cache id: $cache_id"
             gh cache delete $cache_id
           done
+      - name: "Separate Linux CoreCLR debug symbols"
+        if: matrix.targetPlatform == 'StandaloneLinux64'
+        run: |
+          symbols="build/${{ matrix.targetPlatform }}/${{ env.buildName }}_BackUpThisFolder_ButDontShipItWithYourGame/CoreCLR/native"
+          mkdir -p "$symbols"
+          find "build/${{ matrix.targetPlatform }}/CoreCLR/native" -maxdepth 1 -type f -name '*.dbg' -exec mv -t "$symbols" -- {} +
       - name: "Upload client artifact"
         timeout-minutes: 2
         uses: actions/upload-artifact@v4
