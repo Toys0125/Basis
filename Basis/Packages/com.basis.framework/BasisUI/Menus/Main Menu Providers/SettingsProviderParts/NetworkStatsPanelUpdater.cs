@@ -139,7 +139,7 @@ namespace Basis.BasisUI
                     float lastPacket = peer.TimeSinceLastPacket;
                     PingField.SetDescription(
                         $"Ping: {ping}ms | RTT: {rtt}ms\n" +
-                        $"Last Packet: {lastPacket:F1}s ago");
+                        $"Last Packet: {lastPacket:F1}ms ago");
 
                     _pingSeverity = BasisPanelTint.Grade(rtt, PingCautionRtt, PingHotRtt, _pingSeverity);
                     BasisPanelTint.Apply(PingTint, _pingSeverity);
