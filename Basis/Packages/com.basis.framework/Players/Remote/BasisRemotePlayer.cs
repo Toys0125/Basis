@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.Scripts.Addressable_Driver.Resource;
 using Basis.Scripts.Avatar;
 using Basis.Scripts.Drivers;
@@ -25,7 +26,8 @@ namespace Basis.Scripts.BasisSdk.Players
     /// explicit: the disconnect path calls <see cref="OnDestroy"/> to release the nameplate and
     /// mouth (the avatar is unloaded separately by the avatar factory).
     /// </remarks>
-    public class BasisRemotePlayer : IBasisPlayer
+    [AutoStaticsCleanup]
+    public partial class BasisRemotePlayer : IBasisPlayer
     {
         #region IBasisPlayer shared state
 
@@ -228,6 +230,8 @@ namespace Basis.Scripts.BasisSdk.Players
         /// </summary>
         public Action<string> OnChatMessageReceived;
 
+        public readonly BasisChatHistory ChatHistory = new BasisChatHistory();
+
         /// <summary>
         /// Fired when this player's transient chat typing state changes.
         /// </summary>
@@ -349,10 +353,11 @@ namespace Basis.Scripts.BasisSdk.Players
         public const float AvatarRangeDebounceSeconds = 0.5f;
 
         /// <summary>
-        /// Current mesh LOD level (0 = closest, 3 = furthest). Set by BasisTransmissionResults.
+        /// Current pose LOD level (0 = closest, 3 = furthest). Set by BasisTransmissionResults.
         /// Used to control pose update frequency — distant players update less often.
         /// </summary>
         public short CurrentLodLevel;
+        public short CurrentMeshLodLevel;
 
         /// <summary>
         /// Frame counter for LOD-based pose skip. When > 0, SetHumanPose and muscle
@@ -982,6 +987,13 @@ namespace Basis.Scripts.BasisSdk.Players
         /// </param>
         public void ChangeMeshLOD(short grid)
         {
+            CurrentMeshLodLevel = grid;
+            ForceMeshLod(grid);
+            BasisAvatarSkinLOD.Apply(this, grid);
+            BasisAvatarShadowLOD.Apply(this, grid);
+        }
+        public void ForceMeshLod(short grid)
+        {
             if (BasisAvatar != null && BasisAvatar.Renders != null)
             {
                 int length = BasisAvatar.Renders.Length;
@@ -994,9 +1006,6 @@ namespace Basis.Scripts.BasisSdk.Players
                     }
                 }
             }
-
-            BasisAvatarSkinLOD.Apply(this, grid);
-            BasisAvatarShadowLOD.Apply(this, grid);
         }
 
         #endregion

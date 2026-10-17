@@ -198,9 +198,8 @@ namespace Unity.XR.OpenVR
             CreateSubsystem<XRInputSubsystemDescriptor, XRInputSubsystem>(s_InputSubsystemDescriptors, "OpenVR Input");
 
             OpenVREvents.Initialize();
-            TickCallbackDelegate callback = TickCallback;
-            RegisterTickCallback(callback);
-            callback(0);
+            RegisterTickCallback(s_TickCallback);
+            s_TickCallback(0);
 
             return displaySubsystem != null && inputSubsystem != null;
         }
@@ -252,6 +251,7 @@ namespace Unity.XR.OpenVR
         private void SetupFileSystemWatcher()
         {
             watcherThread = new System.Threading.Thread(new System.Threading.ThreadStart(ManualFileWatcherLoop));
+            watcherThread.IsBackground = true;
             watcherThread.Start();
         }
 
@@ -274,7 +274,10 @@ namespace Unity.XR.OpenVR
                 {
                     lastLength = -1;
                 }
-                System.Threading.Thread.Sleep(1000);
+                for (int slice = 0; slice < 10 && running; slice++)
+                {
+                    System.Threading.Thread.Sleep(100);
+                }
             }
         }
 
@@ -282,7 +285,8 @@ namespace Unity.XR.OpenVR
         {
             if (watcherThread != null)
             {
-                watcherThread.Abort();
+                running = false;
+                watcherThread.Join(500);
                 watcherThread = null;
             }
         }
@@ -433,10 +437,19 @@ namespace Unity.XR.OpenVR
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         delegate void TickCallbackDelegate(int value);
 
+        private static readonly TickCallbackDelegate s_TickCallback = TickCallback;
+
         [AOT.MonoPInvokeCallback(typeof(TickCallbackDelegate))]
         public static void TickCallback(int value)
         {
-            OpenVREvents.Update();
+            try
+            {
+                OpenVREvents.Update();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
         }
 
 #if UNITY_EDITOR

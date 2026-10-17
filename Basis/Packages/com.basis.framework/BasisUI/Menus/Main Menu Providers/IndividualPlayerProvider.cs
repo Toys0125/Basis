@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Unity.Scripting.LifecycleManagement;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Basis.Scripts.BasisCharacterController;
@@ -18,7 +19,8 @@ using P2PState = Basis.Scripts.Networking.BasisP2PManager.P2PSessionState;
 
 namespace Basis.BasisUI
 {
-    public partial class IndividualPlayerProvider : BasisMenuActionProvider<BasisMainMenu>
+    [AutoStaticsCleanup]
+    public partial class IndividualPlayerProvider : BasisMenuActionProvider<BasisMainMenu>, IBasisMenuSharePlace
     {
         [RuntimeInitializeOnLoadMethod]
         public static void AddToMenu()
@@ -35,6 +37,26 @@ namespace Basis.BasisUI
 
         // ---- Context (who are we editing?) ----
         public static BasisRemotePlayer remotePlayer;
+
+        public string DescribeSharePlace(PanelComponent control, out string label)
+        {
+            label = remotePlayer != null ? remotePlayer.SafeDisplayName : null;
+            return remotePlayer != null ? remotePlayer.UUID : null;
+        }
+
+        public bool OpenSharePlace(string place)
+        {
+            if (!BasisNetworkPlayers.TryGetPlayerByUUID(place, out BasisNetworkPlayer player) || player.Player is not BasisRemotePlayer remote) return false;
+            remotePlayer = remote;
+            BasisMainMenu.OpenWithProvider(this);
+            return true;
+        }
+
+        public RectTransform SharePlaceRoot(string place)
+        {
+            BasisMenuPanel panel = BasisMainMenu.Instance ? BasisMainMenu.Instance.ActiveMenu : null;
+            return panel != null && remotePlayer != null && remotePlayer.UUID == place ? panel.Descriptor.ContentParent : null;
+        }
 
         // ======== Static Highlight Beacon (persists across UI open/close) ========
 
@@ -232,6 +254,7 @@ namespace Basis.BasisUI
             s_beaconElapsed = 0f;
 
             s_beaconGO = new GameObject("PlayerHighlightBeacon");
+            s_beaconGO.layer = LayerMask.NameToLayer("UI");
             if (BasisDeviceManagement.Instance != null)
             {
                 s_beaconGO.transform.SetParent(BasisDeviceManagement.Instance.transform, true);
@@ -275,7 +298,7 @@ namespace Basis.BasisUI
         // ========= Addressables Sprite (cached) =========
         private const string MeterSpriteAddress = "Packages/com.basis.sdk/Sprites/HalfCircle 512 Right.png";
         private static Sprite s_meterSprite;
-        private static Task<Sprite> s_meterSpriteTask;
+        [NoAutoStaticsCleanup] private static Task<Sprite> s_meterSpriteTask;
 
         private static Task<Sprite> GetMeterSpriteAsync()
         {
@@ -351,6 +374,7 @@ namespace Basis.BasisUI
         private static async Task<MeterRefs> CreateVolumeMeterUIAsync(Transform parent)
         {
             var sprite = await GetMeterSpriteAsync();
+            if (parent == null) return default;
 
             // Root
             var root = CreateUIObject("VolumeMeter", parent);
@@ -470,6 +494,7 @@ namespace Basis.BasisUI
             // Per-player settings are read once up front because the Actions tab needs them
             // before any of the detail tabs that own the same toggles have been built.
             var settings = await BasisPlayerSettingsManager.RequestPlayerSettings(remotePlayer.UUID);
+            if (panel == null || panel.IsReleased) return;
 
             // Every control the Actions tab duplicates registers its repaint here, so pressing
             // a row on either side leaves the other side showing the truth.
@@ -639,6 +664,7 @@ namespace Basis.BasisUI
 
             // ---- Create meter UI (Addressables sprite) ----
             MeterRefs meter = await CreateVolumeMeterUIAsync(audioGroup.ContentParent);
+            if (panel == null || panel.IsReleased || meter.Root == null) return;
 
             // ---- Add sampler and wire UI refs ----
             var sampler = meter.Root.AddComponent<BasisUIVolumeSampler>();
@@ -904,6 +930,12 @@ namespace Basis.BasisUI
             };
 
             AddPage(audioTabKey, audioPage);
+
+            const string chatTabKey = "settings.tab.chat";
+            PanelTabPage chatPage = NewPage(chatTabKey, AddressableAssets.Sprites.Clock);
+            ChatHistoryView chatHistoryView = BuildChatHistory(chatPage.Descriptor.ContentParent);
+            PaintChatHistory(remotePlayer, chatHistoryView);
+            AddPage(chatTabKey, chatPage);
 
             // ================= Network =================
             const string networkTabKey = "menu.individualPlayer.network";
@@ -1200,6 +1232,7 @@ namespace Basis.BasisUI
                     {
                         if (remotePlayer == null) return;
                         remotePlayer.BypassPerformanceLimits = on;
+                        Basis.Scripts.Avatar.BasisAvatarFactory.ClearDownloadLimitFailure(remotePlayer);
                         // Full reload: turning on restores destroyed components
                         // (no in-place path exists for restore), turning off re-runs
                         // Evaluate and TrimExcessComponents with the real limits.
@@ -1282,7 +1315,7 @@ namespace Basis.BasisUI
                 if (remotePlayer != null)
                 {
                     remotePlayer.AlwaysShowAvatar = on;
-                    if (remotePlayer.IsConsideredFallBackAvatar == on)
+                    if (Basis.Scripts.Avatar.BasisAvatarFactory.ClearDownloadLimitFailure(remotePlayer) || remotePlayer.IsConsideredFallBackAvatar == on)
                     {
                         remotePlayer.ReloadAvatar();
                     }
@@ -1468,18 +1501,55 @@ namespace Basis.BasisUI
                         BasisNetworkModeration.EnableShoutMode(announcePlayerId);
                 };
 
-                // Server-enforced mutes. The admin client doesn't track the target's current
-                // state, so like the full-quality toggle these start off and send the explicit
-                // state on change — the server's reply popup reports the authoritative result.
-                PanelToggle voiceMuteToggle = PanelToggle.CreateNewEntry(adminGroup.ContentParent);
-                voiceMuteToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.muteVoice"));
-                voiceMuteToggle.Descriptor.SetTooltip(BasisLocalization.Get("menu.individualPlayer.muteVoice.tooltip"));
-                voiceMuteToggle.OnValueChanged += muted => BasisNetworkModeration.SetVoiceMute(targetUUID, muted);
+                // Server-enforced mutes, painted from the state the server reports: asked for on
+                // open and echoed back after every change, so a refused change snaps the toggle back.
+                if (BasisNetworkModeration.LocalPlayerHasNode(PermNodes.ModerationMute))
+                {
+                    PanelToggle voiceMuteToggle = PanelToggle.CreateNewEntry(adminGroup.ContentParent);
+                    voiceMuteToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.muteVoice"));
+                    voiceMuteToggle.Descriptor.SetTooltip(BasisLocalization.Get("menu.individualPlayer.muteVoice.tooltip"));
+                    voiceMuteToggle.OnValueChanged += muted => BasisNetworkModeration.SetVoiceMute(targetUUID, muted);
 
-                PanelToggle textMuteToggle = PanelToggle.CreateNewEntry(adminGroup.ContentParent);
-                textMuteToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.muteText"));
-                textMuteToggle.Descriptor.SetTooltip(BasisLocalization.Get("menu.individualPlayer.muteText.tooltip"));
-                textMuteToggle.OnValueChanged += muted => BasisNetworkModeration.SetTextMute(targetUUID, muted);
+                    PanelToggle textMuteToggle = PanelToggle.CreateNewEntry(adminGroup.ContentParent);
+                    textMuteToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.muteText"));
+                    textMuteToggle.Descriptor.SetTooltip(BasisLocalization.Get("menu.individualPlayer.muteText.tooltip"));
+                    textMuteToggle.OnValueChanged += muted => BasisNetworkModeration.SetTextMute(targetUUID, muted);
+
+                    Action<BasisNetworkModeration.MuteStateResult> muteStateHandler = null;
+                    muteStateHandler = result =>
+                    {
+                        if (!string.Equals(result.Uuid, targetUUID, StringComparison.Ordinal)) return;
+                        if (panel == null || panel.Descriptor == null || voiceMuteToggle == null || textMuteToggle == null)
+                        {
+                            BasisNetworkModeration.OnMuteStateResult -= muteStateHandler;
+                            return;
+                        }
+                        voiceMuteToggle.SetValueWithoutNotify(result.VoiceMuted);
+                        textMuteToggle.SetValueWithoutNotify(result.TextMuted);
+                    };
+                    BasisNetworkModeration.OnMuteStateResult += muteStateHandler;
+                    BasisNetworkModeration.QueryMuteState(targetUUID);
+                }
+
+                PanelTextField renameField = PanelTextField.CreateNewEntry(adminGroup.ContentParent);
+                renameField.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.rename"));
+                renameField.Descriptor.SetDescription(BasisLocalization.Get("menu.individualPlayer.rename.description"));
+                renameField.SetValueWithoutNotify(remotePlayer.DisplayName);
+
+                PanelButton renameBtn = PanelButton.CreateNew(adminGroup.ContentParent);
+                renameBtn.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.applyRename"));
+                renameBtn.Descriptor.SetDescription(BasisLocalization.Get("menu.individualPlayer.applyRename.description"));
+                renameBtn.OnClicked += () =>
+                {
+                    string newName = renameField.Value;
+                    if (string.IsNullOrWhiteSpace(newName))
+                    {
+                        BasisDebug.LogError("Name is empty.");
+                        return;
+                    }
+                    if (BasisNetworkPlayers.PlayerToNetworkedPlayer(remotePlayer, out BasisNetworkPlayer np))
+                        BasisNetworkModeration.RenamePlayer(np.playerId, newName);
+                };
 
                 PanelTextField msgField = PanelTextField.CreateNewEntry(adminGroup.ContentParent);
                 msgField.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.message"));
@@ -1590,10 +1660,10 @@ namespace Basis.BasisUI
                 }
 
                 ApplyLocomotionSliderVisibility();
-                jumpToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); locomotionGroup.ForceRebuild(); };
-                walkToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); locomotionGroup.ForceRebuild(); };
-                runToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); locomotionGroup.ForceRebuild(); };
-                gravityToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); locomotionGroup.ForceRebuild(); };
+                jumpToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); RebuildSection(locomotionGroup, adminPage); };
+                walkToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); RebuildSection(locomotionGroup, adminPage); };
+                runToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); RebuildSection(locomotionGroup, adminPage); };
+                gravityToggle.OnValueChanged += _ => { ApplyLocomotionSliderVisibility(); RebuildSection(locomotionGroup, adminPage); };
 
                 PanelButton locomotionApplyBtn = PanelButton.CreateNew(locomotionGroup.ContentParent);
                 locomotionApplyBtn.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.locomotion.apply"));
@@ -1631,7 +1701,7 @@ namespace Basis.BasisUI
                     visible =>
                     {
                         if (visible) ApplyLocomotionSliderVisibility();
-                        locomotionGroup.ForceRebuild();
+                        RebuildSection(locomotionGroup, adminPage);
                     });
 
                 // ---- Per-user permissions ----
@@ -1784,78 +1854,6 @@ namespace Basis.BasisUI
 
             networkGroup.IsolateAsCanvas();
 
-            // ---- Audio Debug Section ----
-            var audioDebugGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, root);
-            audioDebugGroup.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug"));
-            audioDebugGroup.SetDescription(BasisLocalization.Get("menu.individualPlayer.audioDebug.description"));
-
-            // Toggle to show/hide the audio debug fields for this player
-            PanelToggle audioDebugToggle = PanelToggle.CreateNewEntry(audioDebugGroup.ContentParent);
-            audioDebugToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.showAudioDebug"));
-            audioDebugToggle.Descriptor.SetDescription(BasisLocalization.Get("menu.individualPlayer.showAudioDebug.description"));
-            audioDebugToggle.AssignBinding(BasisSettingsDefaults.AudioDebugEnabled);
-
-            // Create all the audio debug fields
-            PanelElementDescriptor audioSourceField = null;
-            PanelElementDescriptor volumeChainField = null;
-            PanelElementDescriptor decodedBufferField = null;
-            PanelElementDescriptor encodedBufferField = null;
-            PanelElementDescriptor silenceField = null;
-            PanelElementDescriptor visemeField = null;
-
-            void CreateAudioDebugFields()
-            {
-                // Clear existing children below the toggle (skip index 0 which is the toggle)
-                // Create fresh fields based on current section toggles
-                if (BasisSettingsDefaults.AudioDebugShowSource.RawValue)
-                {
-                    audioSourceField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, audioDebugGroup.ContentParent);
-                    audioSourceField.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug.source"));
-                    audioSourceField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AudioDebugShowVolume.RawValue)
-                {
-                    volumeChainField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, audioDebugGroup.ContentParent);
-                    volumeChainField.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug.volumeChain"));
-                    volumeChainField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AudioDebugShowRingBuffer.RawValue)
-                {
-                    decodedBufferField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, audioDebugGroup.ContentParent);
-                    decodedBufferField.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug.decodedPcm"));
-                    decodedBufferField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AudioDebugShowJitter.RawValue)
-                {
-                    encodedBufferField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, audioDebugGroup.ContentParent);
-                    encodedBufferField.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug.encodedPackets"));
-                    encodedBufferField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AudioDebugShowSilence.RawValue)
-                {
-                    silenceField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, audioDebugGroup.ContentParent);
-                    silenceField.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug.silence"));
-                    silenceField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AudioDebugShowViseme.RawValue)
-                {
-                    visemeField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, audioDebugGroup.ContentParent);
-                    visemeField.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug.viseme"));
-                    visemeField.SetDescription("...");
-                }
-            }
-
-            // Initially create fields if audio debug is enabled
-            if (BasisSettingsDefaults.AudioDebugEnabled.RawValue)
-            {
-                CreateAudioDebugFields();
-            }
-
             var updater = panel.gameObject.AddComponent<IndividualPlayerPanelUpdater>();
             updater.RemotePlayer = remotePlayer;
             updater.PanelDescriptor = panel.Descriptor;
@@ -1870,118 +1868,12 @@ namespace Basis.BasisUI
             updater.DirectConnRebuildStopAt = networkPage.Descriptor.ContentParent;
             updater.AvatarStatusField = avatarStatusField;
             updater.AvatarStatusTint = avatarStatusTint;
+            updater.ChatHistoryView = chatHistoryView;
 
-            // Wire audio debug fields
-            updater.AudioSourceField = audioSourceField;
-            updater.VolumeChainField = volumeChainField;
-            updater.DecodedBufferField = decodedBufferField;
-            updater.EncodedBufferField = encodedBufferField;
-            updater.SilenceField = silenceField;
-            updater.VisemeField = visemeField;
-
-            // When toggled on/off, show/hide the audio debug fields
-            audioDebugToggle.OnValueChanged += enabled =>
+            if (BasisSettingsDefaults.ShowDeveloperTab.RawValue)
             {
-                // Destroy existing fields. Destroy is deferred to end of frame, so deactivate
-                // first — otherwise the rebuild below still measures the doomed rows.
-                if (audioSourceField != null) { audioSourceField.SetActive(false); UnityEngine.Object.Destroy(audioSourceField.gameObject); audioSourceField = null; }
-                if (volumeChainField != null) { volumeChainField.SetActive(false); UnityEngine.Object.Destroy(volumeChainField.gameObject); volumeChainField = null; }
-                if (decodedBufferField != null) { decodedBufferField.SetActive(false); UnityEngine.Object.Destroy(decodedBufferField.gameObject); decodedBufferField = null; }
-                if (encodedBufferField != null) { encodedBufferField.SetActive(false); UnityEngine.Object.Destroy(encodedBufferField.gameObject); encodedBufferField = null; }
-                if (silenceField != null) { silenceField.SetActive(false); UnityEngine.Object.Destroy(silenceField.gameObject); silenceField = null; }
-                if (visemeField != null) { visemeField.SetActive(false); UnityEngine.Object.Destroy(visemeField.gameObject); visemeField = null; }
-
-                if (enabled)
-                {
-                    CreateAudioDebugFields();
-                }
-
-                // Re-wire updater references
-                updater.AudioSourceField = audioSourceField;
-                updater.VolumeChainField = volumeChainField;
-                updater.DecodedBufferField = decodedBufferField;
-                updater.EncodedBufferField = encodedBufferField;
-                updater.SilenceField = silenceField;
-                updater.VisemeField = visemeField;
-
-                RebuildSection(audioDebugGroup, debugPage);
-            };
-
-            // ---- Avatar Data Debug Section ----
-            var avatarDataDebugGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, root);
-            avatarDataDebugGroup.SetTitle(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug"));
-            avatarDataDebugGroup.SetDescription(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug.description"));
-
-            PanelToggle avatarDataDebugToggle = PanelToggle.CreateNewEntry(avatarDataDebugGroup.ContentParent);
-            avatarDataDebugToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.showAvatarDataDebug"));
-            avatarDataDebugToggle.Descriptor.SetDescription(BasisLocalization.Get("menu.individualPlayer.showAvatarDataDebug.description"));
-            avatarDataDebugToggle.AssignBinding(BasisSettingsDefaults.AvatarDataDebugEnabled);
-
-            PanelElementDescriptor avatarReceiveField = null;
-            PanelElementDescriptor avatarStagingField = null;
-            PanelElementDescriptor avatarInterpField = null;
-            PanelElementDescriptor avatarMetaField = null;
-
-            void CreateAvatarDataDebugFields()
-            {
-                if (BasisSettingsDefaults.AvatarDataDebugShowReceive.RawValue)
-                {
-                    avatarReceiveField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, avatarDataDebugGroup.ContentParent);
-                    avatarReceiveField.SetTitle(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug.receive"));
-                    avatarReceiveField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AvatarDataDebugShowStaging.RawValue)
-                {
-                    avatarStagingField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, avatarDataDebugGroup.ContentParent);
-                    avatarStagingField.SetTitle(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug.staging"));
-                    avatarStagingField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AvatarDataDebugShowInterp.RawValue)
-                {
-                    avatarInterpField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, avatarDataDebugGroup.ContentParent);
-                    avatarInterpField.SetTitle(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug.interp"));
-                    avatarInterpField.SetDescription("...");
-                }
-
-                if (BasisSettingsDefaults.AvatarDataDebugShowMeta.RawValue)
-                {
-                    avatarMetaField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, avatarDataDebugGroup.ContentParent);
-                    avatarMetaField.SetTitle(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug.meta"));
-                    avatarMetaField.SetDescription("...");
-                }
+                BuildRemoteDebug(debugPage, updater);
             }
-
-            if (BasisSettingsDefaults.AvatarDataDebugEnabled.RawValue)
-            {
-                CreateAvatarDataDebugFields();
-            }
-
-            updater.AvatarReceiveField = avatarReceiveField;
-            updater.AvatarStagingField = avatarStagingField;
-            updater.AvatarInterpField = avatarInterpField;
-            updater.AvatarMetaField = avatarMetaField;
-
-            avatarDataDebugToggle.OnValueChanged += enabled =>
-            {
-                if (avatarReceiveField != null) { avatarReceiveField.SetActive(false); UnityEngine.Object.Destroy(avatarReceiveField.gameObject); avatarReceiveField = null; }
-                if (avatarStagingField != null) { avatarStagingField.SetActive(false); UnityEngine.Object.Destroy(avatarStagingField.gameObject); avatarStagingField = null; }
-                if (avatarInterpField != null) { avatarInterpField.SetActive(false); UnityEngine.Object.Destroy(avatarInterpField.gameObject); avatarInterpField = null; }
-                if (avatarMetaField != null) { avatarMetaField.SetActive(false); UnityEngine.Object.Destroy(avatarMetaField.gameObject); avatarMetaField = null; }
-
-                if (enabled)
-                {
-                    CreateAvatarDataDebugFields();
-                }
-
-                updater.AvatarReceiveField = avatarReceiveField;
-                updater.AvatarStagingField = avatarStagingField;
-                updater.AvatarInterpField = avatarInterpField;
-                updater.AvatarMetaField = avatarMetaField;
-
-                RebuildSection(avatarDataDebugGroup, debugPage);
-            };
 
             AddPage(debugTabKey, debugPage);
 
@@ -2030,6 +1922,176 @@ namespace Basis.BasisUI
 
             panel.Descriptor.ForceRebuild();
             panel.Descriptor.ForceRebuild();
+        }
+
+        private static void BuildRemoteDebug(PanelTabPage debugPage, IndividualPlayerPanelUpdater updater)
+        {
+            RectTransform root = debugPage.Descriptor.ContentParent;
+
+            void RebuildGroup(PanelElementDescriptor group)
+            {
+                PanelElementDescriptor.RebuildLayoutChain(group.ContentParent, root);
+            }
+
+            var voiceRangeGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, root);
+            voiceRangeGroup.SetTitle(BasisLocalization.Get("settings.developer.voiceRange.title"));
+            voiceRangeGroup.SetDescription(BasisLocalization.Get("settings.developer.voiceRange.description"));
+
+            PanelToggle voiceRangeToggle = CreateDebugToggle(voiceRangeGroup, "settings.developer.voiceRange.enable", "settings.developer.voiceRange.enable.tooltip", BasisSettingsDefaults.ShowVoiceRange);
+
+            var voiceRangeStatusField = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, voiceRangeGroup.ContentParent);
+            voiceRangeStatusField.SetTitle(BasisLocalization.Get("settings.developer.voiceRange.status.title"));
+            voiceRangeStatusField.SetDescription(BasisLocalization.Get("settings.developer.voiceRange.empty"));
+            // Isolate only this live status field (it re-batches every tick via BasisVoiceRangePanelUpdater),
+            // not the whole group, otherwise the toggle above is trapped on the nested canvas and the
+            // pointer can't select it.
+            voiceRangeStatusField.IsolateAsCanvas();
+
+            void RefreshVoiceRange(bool on)
+            {
+                voiceRangeStatusField.SetActive(on);
+                if (on) BasisVoiceRangePanelUpdater.Attach(voiceRangeStatusField);
+                else BasisVoiceRangePanelUpdater.Detach();
+            }
+            RefreshVoiceRange(voiceRangeToggle.Value);
+            voiceRangeToggle.OnValueChanged += on =>
+            {
+                RefreshVoiceRange(on);
+                RebuildGroup(voiceRangeGroup);
+            };
+
+            var audioDebugGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, root);
+            audioDebugGroup.SetTitle(BasisLocalization.Get("menu.individualPlayer.audioDebug"));
+            audioDebugGroup.SetDescription(BasisLocalization.Get("menu.individualPlayer.audioDebug.description"));
+
+            PanelToggle audioDebugToggle = PanelToggle.CreateNewEntry(audioDebugGroup.ContentParent);
+            audioDebugToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.showAudioDebug"));
+            audioDebugToggle.Descriptor.SetDescription(BasisLocalization.Get("menu.individualPlayer.showAudioDebug.description"));
+            audioDebugToggle.AssignBinding(BasisSettingsDefaults.AudioDebugEnabled);
+
+            PanelToggle[] audioSections =
+            {
+                CreateDebugToggle(audioDebugGroup, "menu.individualPlayer.audioDebug.source", "settings.developer.audioDebug.source.tooltip", BasisSettingsDefaults.AudioDebugShowSource),
+                CreateDebugToggle(audioDebugGroup, "menu.individualPlayer.audioDebug.volumeChain", "settings.developer.audioDebug.volumeChain.tooltip", BasisSettingsDefaults.AudioDebugShowVolume),
+                CreateDebugToggle(audioDebugGroup, "settings.developer.audioDebug.ringBuffer", "settings.developer.audioDebug.ringBuffer.tooltip", BasisSettingsDefaults.AudioDebugShowRingBuffer),
+                CreateDebugToggle(audioDebugGroup, "settings.developer.audioDebug.jitter", "settings.developer.audioDebug.jitter.tooltip", BasisSettingsDefaults.AudioDebugShowJitter),
+                CreateDebugToggle(audioDebugGroup, "menu.individualPlayer.audioDebug.silence", "settings.developer.audioDebug.silence.tooltip", BasisSettingsDefaults.AudioDebugShowSilence),
+                CreateDebugToggle(audioDebugGroup, "menu.individualPlayer.audioDebug.viseme", "settings.developer.audioDebug.viseme.tooltip", BasisSettingsDefaults.AudioDebugShowViseme),
+            };
+
+            void RefreshAudioDebug()
+            {
+                bool on = BasisSettingsDefaults.AudioDebugEnabled.RawValue;
+                for (int i = 0; i < audioSections.Length; i++)
+                {
+                    audioSections[i].Descriptor.SetActive(on);
+                }
+
+                DestroyDebugField(updater.AudioSourceField);
+                DestroyDebugField(updater.VolumeChainField);
+                DestroyDebugField(updater.DecodedBufferField);
+                DestroyDebugField(updater.EncodedBufferField);
+                DestroyDebugField(updater.SilenceField);
+                DestroyDebugField(updater.VisemeField);
+
+                updater.AudioSourceField = CreateDebugField(audioDebugGroup, on && BasisSettingsDefaults.AudioDebugShowSource.RawValue, "menu.individualPlayer.audioDebug.source");
+                updater.VolumeChainField = CreateDebugField(audioDebugGroup, on && BasisSettingsDefaults.AudioDebugShowVolume.RawValue, "menu.individualPlayer.audioDebug.volumeChain");
+                updater.DecodedBufferField = CreateDebugField(audioDebugGroup, on && BasisSettingsDefaults.AudioDebugShowRingBuffer.RawValue, "menu.individualPlayer.audioDebug.decodedPcm");
+                updater.EncodedBufferField = CreateDebugField(audioDebugGroup, on && BasisSettingsDefaults.AudioDebugShowJitter.RawValue, "menu.individualPlayer.audioDebug.encodedPackets");
+                updater.SilenceField = CreateDebugField(audioDebugGroup, on && BasisSettingsDefaults.AudioDebugShowSilence.RawValue, "menu.individualPlayer.audioDebug.silence");
+                updater.VisemeField = CreateDebugField(audioDebugGroup, on && BasisSettingsDefaults.AudioDebugShowViseme.RawValue, "menu.individualPlayer.audioDebug.viseme");
+            }
+            RefreshAudioDebug();
+            audioDebugToggle.OnValueChanged += _ =>
+            {
+                RefreshAudioDebug();
+                RebuildGroup(audioDebugGroup);
+            };
+            for (int i = 0; i < audioSections.Length; i++)
+            {
+                audioSections[i].OnValueChanged += _ =>
+                {
+                    RefreshAudioDebug();
+                    RebuildGroup(audioDebugGroup);
+                };
+            }
+
+            var avatarDataDebugGroup = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, root);
+            avatarDataDebugGroup.SetTitle(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug"));
+            avatarDataDebugGroup.SetDescription(BasisLocalization.Get("menu.individualPlayer.avatarDataDebug.description"));
+
+            PanelToggle avatarDataDebugToggle = PanelToggle.CreateNewEntry(avatarDataDebugGroup.ContentParent);
+            avatarDataDebugToggle.Descriptor.SetTitle(BasisLocalization.Get("menu.individualPlayer.showAvatarDataDebug"));
+            avatarDataDebugToggle.Descriptor.SetDescription(BasisLocalization.Get("menu.individualPlayer.showAvatarDataDebug.description"));
+            avatarDataDebugToggle.AssignBinding(BasisSettingsDefaults.AvatarDataDebugEnabled);
+
+            PanelToggle[] avatarDataSections =
+            {
+                CreateDebugToggle(avatarDataDebugGroup, "menu.individualPlayer.avatarDataDebug.receive", "settings.developer.avatarDataDebug.receive.tooltip", BasisSettingsDefaults.AvatarDataDebugShowReceive),
+                CreateDebugToggle(avatarDataDebugGroup, "menu.individualPlayer.avatarDataDebug.staging", "settings.developer.avatarDataDebug.staging.tooltip", BasisSettingsDefaults.AvatarDataDebugShowStaging),
+                CreateDebugToggle(avatarDataDebugGroup, "menu.individualPlayer.avatarDataDebug.interp", "settings.developer.avatarDataDebug.interp.tooltip", BasisSettingsDefaults.AvatarDataDebugShowInterp),
+                CreateDebugToggle(avatarDataDebugGroup, "menu.individualPlayer.avatarDataDebug.meta", "settings.developer.avatarDataDebug.meta.tooltip", BasisSettingsDefaults.AvatarDataDebugShowMeta),
+            };
+
+            void RefreshAvatarDataDebug()
+            {
+                bool on = BasisSettingsDefaults.AvatarDataDebugEnabled.RawValue;
+                for (int i = 0; i < avatarDataSections.Length; i++)
+                {
+                    avatarDataSections[i].Descriptor.SetActive(on);
+                }
+
+                DestroyDebugField(updater.AvatarReceiveField);
+                DestroyDebugField(updater.AvatarStagingField);
+                DestroyDebugField(updater.AvatarInterpField);
+                DestroyDebugField(updater.AvatarMetaField);
+
+                updater.AvatarReceiveField = CreateDebugField(avatarDataDebugGroup, on && BasisSettingsDefaults.AvatarDataDebugShowReceive.RawValue, "menu.individualPlayer.avatarDataDebug.receive");
+                updater.AvatarStagingField = CreateDebugField(avatarDataDebugGroup, on && BasisSettingsDefaults.AvatarDataDebugShowStaging.RawValue, "menu.individualPlayer.avatarDataDebug.staging");
+                updater.AvatarInterpField = CreateDebugField(avatarDataDebugGroup, on && BasisSettingsDefaults.AvatarDataDebugShowInterp.RawValue, "menu.individualPlayer.avatarDataDebug.interp");
+                updater.AvatarMetaField = CreateDebugField(avatarDataDebugGroup, on && BasisSettingsDefaults.AvatarDataDebugShowMeta.RawValue, "menu.individualPlayer.avatarDataDebug.meta");
+            }
+            RefreshAvatarDataDebug();
+            avatarDataDebugToggle.OnValueChanged += _ =>
+            {
+                RefreshAvatarDataDebug();
+                RebuildGroup(avatarDataDebugGroup);
+            };
+            for (int i = 0; i < avatarDataSections.Length; i++)
+            {
+                avatarDataSections[i].OnValueChanged += _ =>
+                {
+                    RefreshAvatarDataDebug();
+                    RebuildGroup(avatarDataDebugGroup);
+                };
+            }
+        }
+
+        private static PanelToggle CreateDebugToggle(PanelElementDescriptor group, string titleKey, string tooltipKey, BasisSettingsBinding<bool> binding)
+        {
+            PanelToggle toggle = PanelToggle.CreateNewEntry(group.ContentParent);
+            toggle.Descriptor.SetTitle(BasisLocalization.Get(titleKey));
+            toggle.Descriptor.SetTooltip(BasisLocalization.Get(tooltipKey));
+            toggle.AssignBinding(binding);
+            return toggle;
+        }
+
+        private static PanelElementDescriptor CreateDebugField(PanelElementDescriptor group, bool show, string titleKey)
+        {
+            if (!show) return null;
+            var field = PanelElementDescriptor.CreateNew(PanelElementDescriptor.ElementStyles.Group, group.ContentParent);
+            field.SetTitle(BasisLocalization.Get(titleKey));
+            field.SetDescription("...");
+            return field;
+        }
+
+        private static void DestroyDebugField(PanelElementDescriptor field)
+        {
+            if (field == null) return;
+            // Destroy is deferred to end of frame, so deactivate first, otherwise the rebuild still
+            // measures the doomed row.
+            field.SetActive(false);
+            UnityEngine.Object.Destroy(field.gameObject);
         }
     }
 }

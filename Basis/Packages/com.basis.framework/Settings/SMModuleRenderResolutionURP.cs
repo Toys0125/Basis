@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.BasisUI;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Rendering;
@@ -6,6 +7,7 @@ using UnityEngine;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.XR;
 
+[NoAutoStaticsCleanup]
 public class SMModuleRenderResolutionURP : BasisSettingsBase
 {
     public float RenderScale = 1;
@@ -46,12 +48,17 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
     {
         BasisDeviceManagement.OnBootModeChanged += OnBootModeChanged;
         BasisDlssXrState.ActiveChanged += OnDlssXrActiveChanged;
+        BasisDeviceManagement.OnXRSessionResumed += OnXRSessionResumed;
+        SMModuleAntialiasingURP.TemporalUpscalerChanged += OnTemporalUpscalerChanged;
+
     }
 
     private void OnDisable()
     {
         BasisDeviceManagement.OnBootModeChanged -= OnBootModeChanged;
         BasisDlssXrState.ActiveChanged -= OnDlssXrActiveChanged;
+        BasisDeviceManagement.OnXRSessionResumed -= OnXRSessionResumed;
+        SMModuleAntialiasingURP.TemporalUpscalerChanged -= OnTemporalUpscalerChanged;
     }
 
     private void OnDlssXrActiveChanged(bool active)
@@ -59,19 +66,30 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
         ReapplyDisplaySettings();
     }
 
+    private void OnTemporalUpscalerChanged()
+    {
+        HandleRenderResolution(BasisSettingsDefaults.RenderResolution.RawValue);
+
+    }
+
     private void OnBootModeChanged(string mode)
     {
         ReapplyDisplaySettings();
+    }
+
+    private void OnXRSessionResumed()
+    {
+        ReapplyDisplaySettings(true);
     }
 
     /// <summary>
     /// Foveation and render scale both need a live XR display, so the value loaded at startup is
     /// dropped when it arrives before the loader has one. Re-apply once the boot mode settles.
     /// </summary>
-    public void ReapplyDisplaySettings()
+    public void ReapplyDisplaySettings(bool force = false)
     {
         HandleRenderResolution(BasisSettingsDefaults.RenderResolution.RawValue);
-        HandleFoveatedRendering(BasisSettingsDefaults.FoveatedRendering.RawValue);
+        HandleFoveatedRendering(BasisSettingsDefaults.FoveatedRendering.RawValue, force);
     }
 
     public override void ValidSettingsChange(string matchedSettingName, string optionValue)
@@ -197,9 +215,10 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
         if (asset == null)
         {
             return;
+
         }
 
-        bool temporalVendorUpscaler = IsTemporalVendorUpscaler(asset);
+        bool temporalVendorUpscaler = BasisDlssXrState.IsActive;
         float targetScale;
         if (temporalVendorUpscaler)
         {
@@ -211,7 +230,12 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
         }
         else
         {
-            targetScale = Mathf.Clamp(regularRenderScale, 0.1f, 2f);
+            // URP's new vendor providers negotiate their input resolution
+            // through UpscalerOptions. Do not override their quality presets
+            // with the old Basis temporal-source setting on desktop.
+            targetScale = SMModuleAntialiasingURP.TemporalUpscalerActive
+                ? Mathf.Min(regularRenderScale, 1f)
+                : Mathf.Clamp(regularRenderScale, 0.1f, 2f);
         }
 
         if (Mathf.Approximately(asset.renderScale, targetScale))
@@ -227,16 +251,6 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
             BasisDebug.LogTag.Video);
     }
 
-    private static bool IsTemporalVendorUpscaler(UniversalRenderPipelineAsset asset)
-    {
-#if ENABLE_UPSCALER_FRAMEWORK
-        return asset.upscalerName == BasisFsr2Upscaler.UpscalerName
-            || asset.upscalerName == BasisDlssXrState.UpscalerName;
-#else
-        return false;
-#endif
-    }
-
     private void HandleDynamicResolution()
     {
       //  BasisDynamicResolution.Configure(
@@ -246,7 +260,7 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
         //    BasisSettingsDefaults.DynamicResolutionTargetOverride.RawValue ? BasisSettingsDefaults.DynamicResolutionTargetFrameRate.RawValue : 0f);
     }
 
-    private void HandleFoveatedRendering(float value)
+    private void HandleFoveatedRendering(float value, bool force = false)
     {
         foveatedRenderingLevel = value;
 
@@ -282,7 +296,8 @@ public class SMModuleRenderResolutionURP : BasisSettingsBase
             return;
         }
 
-        if (Mathf.Approximately(xrDisplaySubsystem.foveatedRenderingLevel, value))
+        bool unchanged = Mathf.Approximately(xrDisplaySubsystem.foveatedRenderingLevel, value);
+        if (unchanged && (!force || Mathf.Approximately(value, 0f)))
         {
             return;
         }

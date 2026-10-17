@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using System.Collections.Generic;
 using Basis.Scripts.BasisSdk.Players;
@@ -33,7 +34,8 @@ namespace Basis.Shims
 	/// Nothing here is a write handle: every method returns a bool, and a UUID never crosses the
 	/// boundary. Players are named by the <see cref="IBasisPlayer"/> the roster already handed out.
 	/// </summary>
-	public static class BasisPermissionsShim
+	[AutoStaticsCleanup]
+	public static partial class BasisPermissionsShim
 	{
 		/// <summary>How long an answer about another player is reused before asking again.</summary>
 		private const float CacheSeconds = 5f;
@@ -89,10 +91,10 @@ namespace Basis.Shims
 		public static bool LocalIsAdmin => LocalHasPermission( PermNodes.PermissionsView );
 
 		/// <summary>
-		/// Whether the local player is a moderator — the node behind the Settings Moderator tab.
-		/// Admins are not implicitly moderators; a server grants the two separately.
+		/// Whether the local player is a moderator — the same check behind the Settings Moderator
+		/// tab: the basis.moderation node, or any basis.moderation.* action node such as kick or ban.
 		/// </summary>
-		public static bool LocalIsModerator => LocalHasPermission( PermNodes.PlayerModeration );
+		public static bool LocalIsModerator => BasisNetworkModeration.LocalPlayerIsModerator();
 
 		/// <summary>
 		/// Every permission node the local player holds, as a fresh copy. Empty before the join

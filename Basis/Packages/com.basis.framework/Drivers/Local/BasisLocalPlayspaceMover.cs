@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Interactions;
 using Basis.Scripts.BasisSdk.Players;
@@ -5,7 +6,6 @@ using Basis.Scripts.Common;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Device_Management.Devices;
 using Basis.Scripts.TransformBinders.BoneControl;
-using Basis.Scripts.BasisCharacterController;
 using UnityEngine;
 
 namespace Basis.Scripts.Drivers
@@ -29,7 +29,8 @@ namespace Basis.Scripts.Drivers
     /// mode uses for its height delta. That shifts the whole tracking space (view, hands, avatar) without
     /// moving the capsule or touching gravity, so it persists for free. Gated by the "Vertical" toggle.
     /// </summary>
-    public static class BasisLocalPlayspaceMover
+    [AutoStaticsCleanup]
+    public static partial class BasisLocalPlayspaceMover
     {
         public const string InputGrip = "Grip";
         public const string InputTrigger = "Trigger";
@@ -51,7 +52,6 @@ namespace Basis.Scripts.Drivers
 
         private const float MinHeight = 0.1f;
         private const float MaxHeight = 5f;
-        private const float TriggerThreshold = 0.5f;
 
         private static bool _grabbing;
         private static bool _capLeft;
@@ -481,7 +481,7 @@ namespace Basis.Scripts.Drivers
                     _scriptScaleRestoreCustom = BasisSettingsDefaults.CustomScale.RawValue;
                     _scriptScaleRestore = _scriptScaleRestoreCustom
                         ? BasisSettingsDefaults.SelectedScale.RawValue
-                        : BasisHeightDriver.SelectedUnScaledAvatarHeight;
+                        : BasisHeightDriver.AvatarEyeHeight;
                     if (_scriptScaleRestore < 1e-3f) _scriptScaleRestore = BasisHeightDriver.FallbackHeightInMeters;
                 }
 
@@ -524,6 +524,10 @@ namespace Basis.Scripts.Drivers
             GizmoSample.SpanCurrent = curDist;
 
             float target = Mathf.Clamp(_grabBaseHeight * (curDist / grabDist), MinHeight, MaxHeight);
+            if (_scaleDirty && SMModuleCalibration.ApplyCustomScale && Mathf.Abs(target - _pendingScaleHeight) <= target * 0.002f)
+            {
+                return;
+            }
 
             // Drive the full height/scale recompute live (same path the avatar-scale slider uses) so
             // the avatar, camera eye height, and scaled controller positions all update immediately.
@@ -585,11 +589,12 @@ namespace Basis.Scripts.Drivers
 
         private static void CaptureScaleBaseline(Vector3 leftUnscaled, Vector3 rightUnscaled)
         {
+            BasisHeightDriver.ClearRuntimeOscEyeHeightOverride();
             _grabLeftUnscaled = leftUnscaled;
             _grabRightUnscaled = rightUnscaled;
             _grabBaseHeight = BasisSettingsDefaults.CustomScale.RawValue
                 ? BasisSettingsDefaults.SelectedScale.RawValue
-                : BasisHeightDriver.SelectedUnScaledAvatarHeight;
+                : BasisHeightDriver.AvatarEyeHeight;
             if (_grabBaseHeight < 1e-3f) _grabBaseHeight = BasisHeightDriver.FallbackHeightInMeters;
         }
 
@@ -666,7 +671,7 @@ namespace Basis.Scripts.Drivers
                         present = true;
                         // Grip is also the pickup input — while this hand is holding an interactable,
                         // don't let it drive the mover until the object is released.
-                        if (IsHandHoldingObject(device))
+                        if (IsHandHoldingObject(device) || BasisDeviceOffsetEditor.IsCapturing(device))
                         {
                             mainHeld = false;
                             rotateHeld = false;
@@ -702,7 +707,7 @@ namespace Basis.Scripts.Drivers
             local = ApplyFlipToLocalPoint(local);
         }
 
-        private static bool IsHandHoldingObject(BasisInput device)
+        public static bool IsHandHoldingObject(BasisInput device)
         {
             // A jiggle grab holds no BasisInteractableObject on purpose, so it can't be seen through
             // InteractInputs below — ask the grab driver directly or grip would pull the chain and
@@ -752,8 +757,8 @@ namespace Basis.Scripts.Drivers
         {
             switch (inputMode)
             {
-                case InputTrigger: return state.Trigger >= TriggerThreshold;
-                case InputSecondaryTrigger: return state.SecondaryTrigger >= TriggerThreshold;
+                case InputTrigger: return state.Trigger >= BasisTriggerPressure.PlaySpaceTriggerThreshold;
+                case InputSecondaryTrigger: return state.SecondaryTrigger >= BasisTriggerPressure.PlaySpaceTriggerThreshold;
                 case InputPrimary: return state.PrimaryButtonGetState;
                 case InputSecondary: return state.SecondaryButtonGetState;
                 case InputJoystick: return state.Primary2DAxisClick;

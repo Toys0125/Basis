@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System.Collections.Generic;
 using Basis.Scripts.Device_Management.Devices;
 using Basis.Scripts.Drivers;
@@ -19,7 +20,8 @@ namespace Basis.Scripts.Device_Management
     /// BasisEventDriver just before the gizmo submission; gizmo ids are lazily re-created after
     /// the debug-gizmo master teardown wipes the manager.
     /// </summary>
-    public static class BasisTrackerMarkerGizmos
+    [AutoStaticsCleanup]
+    public static partial class BasisTrackerMarkerGizmos
     {
         // Matches FallbackSphere's BasisVisualTracker.ScaleOfModel.
         private const float MarkerDiameter = 0.05f;
@@ -107,8 +109,7 @@ namespace Basis.Scripts.Device_Management
                 // The device transform is written from ScaledDeviceCoord by ApplyFinalMovement
                 // during AfterSimulateOnRender — after this tick. Recompute the same world pose
                 // here so the ball rides this frame's pose instead of last frame's transform.
-                Vector3 localPosition = input.ScaledDeviceCoord.position;
-                Quaternion localRotation = input.ScaledDeviceCoord.rotation;
+                input.GetFinalScaledPose(out Vector3 localPosition, out Quaternion localRotation);
                 BasisLocalPlayspaceMover.ApplyFlipToLocalPose(ref localPosition, ref localRotation);
                 Transform parent = input.transform.parent;
                 Vector3 worldPosition = parent != null ? parent.TransformPoint(localPosition) : localPosition;

@@ -1,4 +1,5 @@
-﻿using Basis.BasisUI;
+﻿using Unity.Scripting.LifecycleManagement;
+using Basis.BasisUI;
 using Basis.Network.Core;
 using Basis.Scripts.BasisSdk;
 using Basis.Scripts.BasisSdk.Players;
@@ -16,6 +17,7 @@ using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
 using static SerializableBasis;
+[AutoStaticsCleanup]
 [System.Serializable]
 public partial class BasisTransmissionResults
 {
@@ -192,7 +194,7 @@ public partial class BasisTransmissionResults
     /// </remarks>
     public static float MaxAvatarReloadMillisecondsPerTick = 2f;
 
-    private static readonly System.Diagnostics.Stopwatch sAvatarReloadClock = new System.Diagnostics.Stopwatch();
+    [NoAutoStaticsCleanup] private static readonly System.Diagnostics.Stopwatch sAvatarReloadClock = new System.Diagnostics.Stopwatch();
 
     /// <summary>
     /// Max remote voice sources admitted to <c>StartAudio</c> per transmit tick, for the same
@@ -221,7 +223,7 @@ public partial class BasisTransmissionResults
     /// </summary>
     public static float MaxAudioStartMillisecondsPerTick = 1f;
 
-    private static readonly System.Diagnostics.Stopwatch sAudioStartClock = new System.Diagnostics.Stopwatch();
+    [NoAutoStaticsCleanup] private static readonly System.Diagnostics.Stopwatch sAudioStartClock = new System.Diagnostics.Stopwatch();
 
     /// <summary>Half-angle (degrees) of the eye-gaze cone used to boost MeshLod detail for players the user is looking at.</summary>
     public static float GazeFoveationConeDegrees = 20f;
@@ -639,7 +641,6 @@ public partial class BasisTransmissionResults
         }
 
         bool microphoneChange = IndexChanged || AnyMicrophoneRangeChanged || ForceVoiceRecipientResend;
-        bool lodChange = IndexChanged || AnyLodRangeChanged;
 
         // Avatar range is always evaluated per-player in the loop below — the debounce
         // logic needs to run every tick so pending transitions can commit on the
@@ -676,7 +677,6 @@ public partial class BasisTransmissionResults
             float* pConeShelf = dampenEnabled ? (float*)coneShelfDb.GetUnsafeReadOnlyPtr() : null;
             float* pDirectivityShelf = dampenEnabled ? (float*)directivityShelfDb.GetUnsafeReadOnlyPtr() : null;
             bool* pAvatarRange = (bool*)AvatarRange.GetUnsafeReadOnlyPtr();
-            bool* pMeshLodRange = (bool*)MeshLodRange.GetUnsafeReadOnlyPtr();
             short* pMeshLodLevel = (short*)MeshLodLevel.GetUnsafeReadOnlyPtr();
             short* pPoseLodLevel = (short*)PoseLodLevel.GetUnsafeReadOnlyPtr();
             BasisJiggleColliderTier* pTargetColliderTier = (BasisJiggleColliderTier*)targetColliderTier.GetUnsafeReadOnlyPtr();
@@ -853,7 +853,7 @@ public partial class BasisTransmissionResults
                     }
                 }
 
-                if (lodChange && pMeshLodRange[i])
+                if (pMeshLodLevel[i] != remote.CurrentMeshLodLevel)
                 {
                     using (BasisNetworkMarkers.TransmitChangeMeshLOD.Auto())
                     {

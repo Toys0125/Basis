@@ -1,3 +1,5 @@
+using Unity.Scripting.LifecycleManagement;
+using Basis.Scripts.BasisSdk;
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Drivers;
 using Basis.Scripts.Networking;
@@ -23,29 +25,32 @@ using UnityEngine.Jobs;
 /// - Managed face/eye-array references are cached in Simulate so the Apply loop
 ///   doesn't redo receiver→remote→driver chains 1k times per frame.
 /// </summary>
-public static class BasisRemoteFaceManagement
+[AutoStaticsCleanup]
+public static partial class BasisRemoteFaceManagement
 {
-    public static NativeArray<EyeState> eyeStates;
-    public static NativeArray<BlinkState> blinkStates;
+    [NoAutoStaticsCleanup] public static NativeArray<EyeState> eyeStates;
+    [NoAutoStaticsCleanup] public static NativeArray<BlinkState> blinkStates;
 
     // Authoritative per-remote eye state. Job updates in-place; Apply reads.
-    public static NativeArray<EyeOutput> eyeOut;
-    public static NativeArray<float> blinkOut;
+    [NoAutoStaticsCleanup] public static NativeArray<EyeOutput> eyeOut;
+    [NoAutoStaticsCleanup] public static NativeArray<float> blinkOut;
 
     // Per-slot eye calibration + active flag, pushed each Simulate from Face drivers.
     // useJobEye[i] = 1 when the slot has eye bones AND is not face-tracking-overridden.
-    public static NativeArray<EyeCalibrationBlit> eyeCalLeft;
-    public static NativeArray<EyeCalibrationBlit> eyeCalRight;
-    public static NativeArray<byte> useJobEye;
+    [NoAutoStaticsCleanup] public static NativeArray<EyeCalibrationBlit> eyeCalLeft;
+    [NoAutoStaticsCleanup] public static NativeArray<EyeCalibrationBlit> eyeCalRight;
+    [NoAutoStaticsCleanup] public static NativeArray<float> eyeMaxLookRad;
+    [NoAutoStaticsCleanup] public static NativeArray<byte> useJobEye;
+    const float DefaultMaxLookRad = BasisRemoteFaceDriver.UncappedLookAngleRad;
 
     // Pre-computed eye localRotation outputs from the burst job.
-    public static NativeArray<quaternion> eyeRotL;
-    public static NativeArray<quaternion> eyeRotR;
+    [NoAutoStaticsCleanup] public static NativeArray<quaternion> eyeRotL;
+    [NoAutoStaticsCleanup] public static NativeArray<quaternion> eyeRotR;
 
     // Last blink weight (0..100) actually written to SkinnedMeshRenderer per slot.
     // NaN sentinel forces first-write through. Used to skip SetBlendShapeWeight
     // when the weight hasn't changed since last frame (steady-state: w=0 every frame).
-    public static NativeArray<float> lastBlinkApplied;
+    [NoAutoStaticsCleanup] public static NativeArray<float> lastBlinkApplied;
 
     // Managed caches built each Simulate. Indexed [0, count). Avoids
     // snapshot[i].RemotePlayer.RemoteFaceDriver / .EyesAndMouth dereferences in Apply.
@@ -68,8 +73,8 @@ public static class BasisRemoteFaceManagement
     // Membership is "slot has eye bones AND both transforms non-null" — OverrideEye
     // is checked dynamically inside the job via useJobEye, so flipping override
     // does NOT trigger a rebuild.
-    public static TransformAccessArray eyeTransforms;
-    public static NativeArray<int> pairToSlot;
+    [NoAutoStaticsCleanup] public static TransformAccessArray eyeTransforms;
+    [NoAutoStaticsCleanup] public static NativeArray<int> pairToSlot;
     public static int eyeTransformPairCount;
 
     // Driver-keyed registry behind eyeTransforms: pair p (transforms 2p, 2p+1) is owned by pairDriver[p], in a
@@ -87,7 +92,7 @@ public static class BasisRemoteFaceManagement
     // lastHasEyeBones[i] mirrors the slot's eye-bones-presence as it was when we
     // last built eyeTransforms. Compared against the current value during Simulate
     // to detect avatar reloads / player swaps cheaply.
-    public static NativeArray<byte> lastHasEyeBones;
+    [NoAutoStaticsCleanup] public static NativeArray<byte> lastHasEyeBones;
     public static int lastBuiltCount;
     public static bool eyeTransformJobScheduled;
     public static uint lastSnapshotVersion;
@@ -169,6 +174,7 @@ public static class BasisRemoteFaceManagement
         {
             EyeCalibrationBlit* pCalL = (EyeCalibrationBlit*)eyeCalLeft.GetUnsafePtr();
             EyeCalibrationBlit* pCalR = (EyeCalibrationBlit*)eyeCalRight.GetUnsafePtr();
+            float* pMaxLook = (float*)eyeMaxLookRad.GetUnsafePtr();
             byte* pUse = (byte*)useJobEye.GetUnsafePtr();
             byte* pLastHas = (byte*)lastHasEyeBones.GetUnsafePtr();
 
@@ -187,7 +193,7 @@ public static class BasisRemoteFaceManagement
                     {
                         faceCache[Index] = Face;
                         eyesCache[Index] = receiver.EyesAndMouth;
-                        if (BlitSlot(Face, Index, pCalL, pCalR, pLastHas)) needRebuild = true;
+                        if (BlitSlot(Face, Index, pCalL, pCalR, pMaxLook, pLastHas)) needRebuild = true;
                     }
 
                     pUse[Index] = (pLastHas[Index] != 0 && !Face.OverrideEye) ? (byte)1 : (byte)0;
@@ -201,7 +207,7 @@ public static class BasisRemoteFaceManagement
 
                     if (lastFaceGen[Index] != Face.FaceGeneration)
                     {
-                        if (BlitSlot(Face, Index, pCalL, pCalR, pLastHas)) needRebuild = true;
+                        if (BlitSlot(Face, Index, pCalL, pCalR, pMaxLook, pLastHas)) needRebuild = true;
                     }
 
                     pUse[Index] = (pLastHas[Index] != 0 && !Face.OverrideEye) ? (byte)1 : (byte)0;
@@ -242,6 +248,7 @@ public static class BasisRemoteFaceManagement
 
             eyeCalLeft = eyeCalLeft,
             eyeCalRight = eyeCalRight,
+            eyeMaxLookRad = eyeMaxLookRad,
             useJobEye = useJobEye,
             eyeRotL = eyeRotL,
             eyeRotR = eyeRotR,
@@ -275,7 +282,7 @@ public static class BasisRemoteFaceManagement
     // Returns true when this slot's contribution to eyeTransforms changed (eye bones gained/lost, or the eye
     // transforms swapped on an avatar reload) so a rebuild is required; a pure calibration bump re-blits the
     // data below and returns false, sparing the full ~26k-transform rebuild.
-    static unsafe bool BlitSlot(BasisRemoteFaceDriver Face, int Index, EyeCalibrationBlit* pCalL, EyeCalibrationBlit* pCalR, byte* pLastHas)
+    static unsafe bool BlitSlot(BasisRemoteFaceDriver Face, int Index, EyeCalibrationBlit* pCalL, EyeCalibrationBlit* pCalR, float* pMaxLook, byte* pLastHas)
     {
         Transform left = Face.LeftEyeTransform;
         Transform right = Face.RightEyeTransform;
@@ -301,6 +308,7 @@ public static class BasisRemoteFaceManagement
                 invBasis = Face.calRight.invBasis,
                 initialRotation = Face.calRight.initialRotation,
             };
+            pMaxLook[Index] = Face.MaxLookAngleRad;
         }
 
         bool setChanged = wasValid != hasValidEyeBones
@@ -687,6 +695,8 @@ public static class BasisRemoteFaceManagement
 
         var newEyeCalLeft = new NativeArray<EyeCalibrationBlit>(newCap, Allocator.Persistent, NativeArrayOptions.ClearMemory);
         var newEyeCalRight = new NativeArray<EyeCalibrationBlit>(newCap, Allocator.Persistent, NativeArrayOptions.ClearMemory);
+        var newEyeMaxLookRad = new NativeArray<float>(newCap, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+        for (int i = 0; i < newCap; i++) newEyeMaxLookRad[i] = DefaultMaxLookRad;
         var newUseJobEye = new NativeArray<byte>(newCap, Allocator.Persistent, NativeArrayOptions.ClearMemory);
         var newEyeRotL = new NativeArray<quaternion>(newCap, Allocator.Persistent, NativeArrayOptions.ClearMemory);
         var newEyeRotR = new NativeArray<quaternion>(newCap, Allocator.Persistent, NativeArrayOptions.ClearMemory);
@@ -711,6 +721,7 @@ public static class BasisRemoteFaceManagement
 
             NativeArray<EyeCalibrationBlit>.Copy(eyeCalLeft, newEyeCalLeft, copyCount);
             NativeArray<EyeCalibrationBlit>.Copy(eyeCalRight, newEyeCalRight, copyCount);
+            NativeArray<float>.Copy(eyeMaxLookRad, newEyeMaxLookRad, copyCount);
             NativeArray<byte>.Copy(useJobEye, newUseJobEye, copyCount);
             NativeArray<quaternion>.Copy(eyeRotL, newEyeRotL, copyCount);
             NativeArray<quaternion>.Copy(eyeRotR, newEyeRotR, copyCount);
@@ -728,6 +739,7 @@ public static class BasisRemoteFaceManagement
 
         eyeCalLeft = newEyeCalLeft;
         eyeCalRight = newEyeCalRight;
+        eyeMaxLookRad = newEyeMaxLookRad;
         useJobEye = newUseJobEye;
         eyeRotL = newEyeRotL;
         eyeRotR = newEyeRotR;
@@ -902,6 +914,7 @@ public static class BasisRemoteFaceManagement
 
         if (eyeCalLeft.IsCreated) eyeCalLeft.Dispose();
         if (eyeCalRight.IsCreated) eyeCalRight.Dispose();
+        if (eyeMaxLookRad.IsCreated) eyeMaxLookRad.Dispose();
         if (useJobEye.IsCreated) useJobEye.Dispose();
         if (eyeRotL.IsCreated) eyeRotL.Dispose();
         if (eyeRotR.IsCreated) eyeRotR.Dispose();
@@ -964,6 +977,7 @@ public static class BasisRemoteFaceManagement
         // Per-slot calibration + active flag, written by Simulate.
         [ReadOnly] public NativeArray<EyeCalibrationBlit> eyeCalLeft;
         [ReadOnly] public NativeArray<EyeCalibrationBlit> eyeCalRight;
+        [ReadOnly] public NativeArray<float> eyeMaxLookRad;
         [ReadOnly] public NativeArray<byte> useJobEye;
 
         // Per-slot computed eye bone rotations (canonical→rig). Apply consumes these.
@@ -974,6 +988,10 @@ public static class BasisRemoteFaceManagement
         {
             var es = eyeStates[Index];
             var e = eyeOut[Index];
+            float maxLookRad = eyeMaxLookRad[Index];
+            float maxLookSin = math.sin(math.min(maxLookRad, math.PI * 0.5f));
+            float horizLimit = math.min(maxHoriz, maxLookSin);
+            float vertLimit = math.min(maxVert, maxLookSin);
 
             // Sanitize current state so NaNs don’t propagate forever
             e.vL = Sanitize(e.vL);
@@ -987,8 +1005,8 @@ public static class BasisRemoteFaceManagement
                 es.nextLookAroundTime = time + interval;
 
                 es.target = new float2(
-                    es.rng.NextFloat(-maxHoriz, maxHoriz),
-                    es.rng.NextFloat(-maxVert, maxVert)
+                    es.rng.NextFloat(-horizLimit, horizLimit),
+                    es.rng.NextFloat(-vertLimit, vertLimit)
                 );
 
                 es.isLooking = 1;
@@ -1028,8 +1046,8 @@ public static class BasisRemoteFaceManagement
             // no asin, no quaternion muls on the main thread.
             if (useJobEye[Index] != 0)
             {
-                eyeRotL[Index] = ComputeEyeRotation(eyeCalLeft[Index], e.hL, e.vL);
-                eyeRotR[Index] = ComputeEyeRotation(eyeCalRight[Index], e.hR, e.vR);
+                eyeRotL[Index] = ComputeEyeRotation(eyeCalLeft[Index], e.hL, e.vL, maxLookRad);
+                eyeRotR[Index] = ComputeEyeRotation(eyeCalRight[Index], e.hR, e.vR, maxLookRad);
             }
 
             // --------------------
@@ -1089,13 +1107,13 @@ public static class BasisRemoteFaceManagement
         // [-1, 1]; asin maps them into a half-pi yaw/pitch range. Negate y so
         // positive vertical means look up. The result is a rig-local rotation
         // ready to assign directly to Transform.localRotation.
-        static quaternion ComputeEyeRotation(EyeCalibrationBlit cal, float x, float y)
+        static quaternion ComputeEyeRotation(EyeCalibrationBlit cal, float x, float y, float maxRad)
         {
             x = math.clamp(math.isfinite(x) ? x : 0f, -1f, 1f);
             y = math.clamp(math.isfinite(y) ? y : 0f, -1f, 1f);
 
-            float xRad = math.asin(x);
-            float yRad = math.asin(-y);
+            float xRad = math.clamp(math.asin(x), -maxRad, maxRad);
+            float yRad = math.clamp(math.asin(-y), -maxRad, maxRad);
             quaternion yaw = quaternion.AxisAngle(new float3(0f, 1f, 0f), xRad);
             quaternion pitch = quaternion.AxisAngle(new float3(1f, 0f, 0f), yRad);
             quaternion canonical = math.mul(yaw, pitch);

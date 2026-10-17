@@ -62,7 +62,9 @@ namespace Basis.ImagePickup
             0x0A,
         };
 
-        public static string GenerateSafeFileName() => $"Image_{Guid.NewGuid():N}.png";
+        public static string GenerateSafeFileName() => GenerateSafeFileName(".png");
+
+        internal static string GenerateSafeFileName(string extension) => $"Image_{Guid.NewGuid():N}{extension}";
 
         public static bool HasPngExtension(string path)
         {
@@ -376,7 +378,7 @@ namespace Basis.ImagePickup
             byte[] bytes;
             try
             {
-                bytes = await Task.Run(() => File.ReadAllBytes(path));
+                bytes = await BasisTasks.Run(() => File.ReadAllBytes(path));
             }
             catch (Exception e)
             {
@@ -573,7 +575,7 @@ namespace Basis.ImagePickup
 
             bool downscale = allowDownscale && ExceedsDisplayCaps(sourceWidth, sourceHeight);
 
-            (Color32[] pixels, int width, int height, byte[] clean, bool hasAlpha, string error) = await Task.Run(() =>
+            (Color32[] pixels, int width, int height, byte[] clean, bool hasAlpha, string error) = await BasisTasks.Run(() =>
             {
                 Color32[] finalPixels = sourcePixels;
                 int finalWidth = sourceWidth;
@@ -631,7 +633,12 @@ namespace Basis.ImagePickup
                 return result;
             }
 
-            Texture2D finalTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            Texture2D finalTexture = new Texture2D(
+                width,
+                height,
+                GraphicsFormatUtility.GetGraphicsFormat(TextureFormat.RGBA32, true),
+                TextureCreationFlags.DontInitializePixels | TextureCreationFlags.DontUploadUponCreate
+            );
             finalTexture.SetPixels32(pixels);
             result.HasAlpha = hasAlpha;
             finalTexture.wrapMode = TextureWrapMode.Clamp;

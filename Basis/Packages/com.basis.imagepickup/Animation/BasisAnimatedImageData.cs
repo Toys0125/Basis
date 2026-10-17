@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using System.Collections.Generic;
 using Unity.Collections;
@@ -71,9 +72,10 @@ namespace Basis.ImagePickup
     /// Native animation owner used by every runtime stage while an animation is resident. Payload-backed
     /// pickups may dispose this decoded pool and reconstruct it later from their compact payload.
     /// </summary>
-    public sealed class BasisAnimatedImageData : IDisposable
+    [AutoStaticsCleanup]
+    public sealed partial class BasisAnimatedImageData : IDisposable
     {
-        private static readonly object MemoryBudgetLock = new();
+        [NoAutoStaticsCleanup] private static readonly object MemoryBudgetLock = new();
         private static long _residentNativeBytes;
         private static long _residentCompositorBytes;
         private static long _reservedRestoreBytes;
@@ -113,6 +115,8 @@ namespace Basis.ImagePickup
         public bool RequiresPreviousCanvas { get; }
         public int FrameCount => _frames.IsCreated ? _frames.Length : 0;
 		public bool IsCreated => !_disposed && _frames.IsCreated && _pixels.IsCreated;
+
+        public bool HasPixels => !_disposed && _pixels.IsCreated;
 
         internal NativeArray<BasisAnimatedImageFrame> FramesNative => _frames;
         internal NativeArray<Color32> PixelsNative => _pixels;
@@ -195,7 +199,7 @@ namespace Basis.ImagePickup
 
             long frameScratchBytes = checked(
                 (long)BasisImagePickupSettings.MaxAnimationFrames
-                * (4096L * sizeof(ushort) + 4096L + 4097L + sizeof(int) + 256L)
+                * (4096L * sizeof(ushort) + 4096L + 4097L + sizeof(int) + 256L + 256L * 4L)
             );
             return checked(
                 sourceBytes
@@ -351,6 +355,18 @@ namespace Basis.ImagePickup
                 && residentBytes <= limitBytes
                 && reservedBytes <= limitBytes - residentBytes
                 && candidateBytes <= limitBytes - residentBytes - reservedBytes;
+        }
+
+        internal void ReleasePixels()
+        {
+            if (_disposed || !_pixels.IsCreated)
+                return;
+            long pixelBytes = (long)_pixels.Length * UnsafeUtility.SizeOf<Color32>();
+            _pixels.Dispose();
+            _pixels = default;
+            _nativeByteCount = Math.Max(0, _nativeByteCount - pixelBytes);
+            lock (MemoryBudgetLock)
+                _residentNativeBytes = Math.Max(0, _residentNativeBytes - pixelBytes);
         }
 
         public BasisAnimatedImageFrame GetFrame(int index)

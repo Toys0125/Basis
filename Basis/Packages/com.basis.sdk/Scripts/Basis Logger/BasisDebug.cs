@@ -1,9 +1,11 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using UnityEngine;
 
-public static class BasisDebug
+[AutoStaticsCleanup]
+public static partial class BasisDebug
 {
     /// <summary>
     /// When true, all BasisDebug Log/LogWarning/LogError calls are suppressed.
@@ -11,7 +13,7 @@ public static class BasisDebug
     /// </summary>
     public static bool LoggingDisabled;
 
-    public static LogTag? TagFilter;
+    [NoAutoStaticsCleanup] public static LogTag? TagFilter;
 
     public static MessageType MinimumLevel = MessageType.Info;
 
@@ -238,6 +240,7 @@ public static class BasisDebug
             LogTag.AuthoredMotion => "#BA55D3", // Medium Orchid
             LogTag.Rendering => "#ADFF2F",    // Green Yellow
             LogTag.TrackerObjects => "#F4A460", // Sandy Brown
+            LogTag.Language => "#5ff5d9", // Near Moon
             _ => "#FFFFFF"                    // Default White
         };
     }
@@ -290,6 +293,7 @@ public static class BasisDebug
         AuthoredMotion,
         Rendering,
         TrackerObjects,
+        Language,
     }
 
     public enum MessageType

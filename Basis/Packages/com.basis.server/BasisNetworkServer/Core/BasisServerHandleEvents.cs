@@ -447,6 +447,7 @@ namespace BasisServerHandle
             Basis.Network.Server.Generic.BasisNetworkingGeneric.RemovePeerSceneEgress(id);
             BasisNetworkMessageProcessor.ClearPeerErrors(id);
             BasisServerMessageRegistry.ClearSubscription(id);
+            BasisNetworkServer.Storage.BasisServerStorage.RemovePeer(peer, id);
             JoinBroadcast.UnregisterPeer(id);
 
             // Value-matched, mirroring RejectWithReason(NetPeer): the guard above raced against a
@@ -469,8 +470,9 @@ namespace BasisServerHandle
                 lock (_joinLock)
                 {
                     bool slotHeldByAnother = NetworkServer.AuthenticatedPeers.TryGetValue(id, out NetPeer holder) && !Equals(holder, peer);
+                    bool removed = CleanupPeerSubsystems(peer, id);
 
-                    if (CleanupPeerSubsystems(peer, id))
+                    if (removed)
                     {
                         NetworkServer.RebuildPeerSnapshot();
                         BNL.Log($"Peer removed: {id}");
@@ -491,7 +493,7 @@ namespace BasisServerHandle
                         BasisNetworkContentShare.Reset();
                     }
 
-                    if (!slotHeldByAnother)
+                    if (removed)
                     {
                         JoinBroadcast.EnqueueLeave(id);
                     }
@@ -555,6 +557,7 @@ namespace BasisServerHandle
             if (((ICollection<KeyValuePair<int, NetPeer>>)NetworkServer.AuthenticatedPeers).Remove(kvp))
             {
                 NetworkServer.RebuildPeerSnapshot();
+                JoinBroadcast.EnqueueLeave(id);
             }
             request.Disconnect(reasonBytes);
             BNL.LogError($"Rejected after accept with reason: {reason}");
@@ -606,6 +609,16 @@ namespace BasisServerHandle
                     RejectVersionMismatch(ConReq, BasisNetworkVersion.ServerVersion, ClientVersion);
                     return;
                 }
+                if (!BasisNetworkApplication.TryRead(ConReq.Data, out string companyName, out string productName))
+                {
+                    RejectWithReason(ConReq, "Invalid client data.");
+                    return;
+                }
+                if (!BasisNetworkApplication.Matches(NetworkServer.Configuration.CompanyName, NetworkServer.Configuration.ProductName, companyName, productName))
+                {
+                    RejectWithReason(ConReq, BasisNetworkApplication.UnsupportedReason(NetworkServer.Configuration.CompanyName, NetworkServer.Configuration.ProductName, companyName, productName));
+                    return;
+                }
                 if (NetworkServer.Configuration.UseAuth)
                 {
                     BytesMessage authMessage = new BytesMessage();
@@ -616,7 +629,7 @@ namespace BasisServerHandle
                     }
                     if (NetworkServer.Auth.IsAuthenticated(AuthBytes) == false)
                     {
-                        RejectWithReason(ConReq, "Authentication failed, Auth rejected");
+                        RejectStructured(ConReq, BasisNetworkCommons.RejectKind_PasswordRejected, 0, 0, BasisNetworkCommons.PasswordRejectedReason);
                         return;
                     }
                 }
@@ -628,11 +641,29 @@ namespace BasisServerHandle
                 }
                 if (NetworkServer.Configuration.UseAuthIdentity)
                 {
-                    accepted = ConReq.Accept();//can do both way Communication from here on
-                    NetworkServer.AuthIdentity.ProcessConnection(NetworkServer.Configuration, ConReq, accepted);
+                    string verifiedIdentity = ConReq.VerifiedIdentity;
+                    if (!string.IsNullOrEmpty(verifiedIdentity))
+                    {
+                        accepted = ConReq.Accept();//can do both way Communication from here on
+                        NetworkServer.AuthIdentity.ProcessVerifiedConnection(NetworkServer.Configuration, ConReq, accepted, verifiedIdentity);
+                    }
+                    else
+                    {
+                        accepted = ConReq.AcceptAwaitingSeal();
+                        if (accepted == null)
+                        {
+                            RejectWithReason(ConReq, "Transport cannot protect the login.");
+                            return;
+                        }
+                        NetworkServer.AuthIdentity.ProcessConnection(NetworkServer.Configuration, ConReq, accepted);
+                    }
                 }
                 else
                 {
+                    // The connection key only matters to DID login; read past it.
+                    BytesMessage connectionKeyMessage = new BytesMessage();
+                    connectionKeyMessage.Deserialize(ConReq.Data, out byte[] UnusedKey);
+
                     ReadyMessage readyMessage = new ReadyMessage();
                     readyMessage.Deserialize(ConReq.Data);
 
@@ -648,7 +679,8 @@ namespace BasisServerHandle
                     }
 
                     accepted = ConReq.Accept();//can do both way Communication from here on
-                    OnNetworkAccepted(accepted, readyMessage, ResolveUnauthenticatedUuid(readyMessage.playerMetaDataMessage.playerUUID));
+                    string verifiedOrClaimed = ConReq.VerifiedIdentity;
+                    OnNetworkAccepted(accepted, readyMessage, string.IsNullOrEmpty(verifiedOrClaimed) ? ResolveUnauthenticatedUuid(readyMessage.playerMetaDataMessage.playerUUID) : verifiedOrClaimed);
                 }
             }
             catch (Exception e)
@@ -781,6 +813,7 @@ namespace BasisServerHandle
                     UplinkDeltaEnabled = Config.EnableUplinkAvatarDelta,
                     ImageShareEgressMegabitsPerSecond = Config.ImageShareEgressMegabitsPerSecond,
                     ImagePickupRangeMeters = Math.Max(0f, Config.ImagePickupRangeMeters),
+                    ServerUUID = Config.ServerUUID,
                 };
                 ServerMetaDataMessage.SetPermissions(PermissionIntegration.Manager.GetAllAllowedRules(UUID), PermissionIntegration.Manager.GetAllDeniedRules(UUID));
                 NetDataWriter Writer = NetworkServer.RentWriter();
@@ -988,7 +1021,6 @@ namespace BasisServerHandle
         {
             if (!BasisSavedState.IsInAnnounceMode(peer.Id))
             {
-                BNL.LogError($"Peer {peer.Id} sent announce voice but is not in announce mode. Ignoring.");
                 reader.Recycle();
                 return;
             }
@@ -1432,6 +1464,11 @@ namespace BasisServerHandle
         {
             try
             {
+                if (!BasisSavedState.GetLastPlayerMetaData(peer, out var metaData))
+                {
+                    ServerReadyMessage = new ServerReadyMessage();
+                    return false;
+                }
                 ClientAvatarChangeMessage changeState;
                 bool haveRecord = BasisSavedState.GetLastAvatarChangeState(peer, out changeState);
                 bool haveAvatar = haveRecord && changeState.byteArray != null;
@@ -1474,18 +1511,6 @@ namespace BasisServerHandle
                     // Optionally log fallback
                     // BNL.LogError("Unable to get Last Player Avatar Data! Using Error Fallback");
                 }
-                // Meta Data
-                if (!BasisSavedState.GetLastPlayerMetaData(peer, out var metaData))
-                {
-                    metaData = new ClientMetaDataMessage
-                    {
-                        playerDisplayName = "Error",
-                        playerUUID = string.Empty,
-                        playerPlatform = string.Empty
-                    };
-                    BNL.LogError("Unable to get Last Player Meta Data! Using Error Fallback");
-                }
-
                 // Construct ServerReadyMessage
                 ServerReadyMessage = new ServerReadyMessage
                 {
@@ -1527,11 +1552,11 @@ namespace BasisServerHandle
 
             if (NetworkServer.AuthIdentity.NetIDToUUID(Peer, out string uuid) == false)
             {
-                BNL.LogError($"User UUID not found for peer: {Peer}");
+                BNL.LogError($"User UUID not found for peer: {Peer.Id}");
                 return;
             }
             LocalLoadResource.Deserialize(Reader);
-            bool isPrivileged = PermissionIntegration.HasValidRequirement(Peer, PermNodes.protection);
+            bool isPrivileged = PermissionIntegration.HasValidRequirement(uuid, PermNodes.protection);
             LocalLoadResource.IsAdminLocked = isPrivileged;
             LocalLoadResource.UUIDOfCreator = UUID;
             if (!isPrivileged)

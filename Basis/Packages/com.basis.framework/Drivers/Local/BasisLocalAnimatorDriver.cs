@@ -75,7 +75,6 @@ namespace Basis.Scripts.Animator_Driver
             Animator = localPlayer.BasisAvatar.Animator;
             Animator.logWarnings = false;
             Animator.updateMode = AnimatorUpdateMode.Normal;
-            Animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
 
             basisAnimatorVariableApply.LoadCachedAnimatorHashes(Animator);
             if (!HasEvents)
@@ -128,7 +127,8 @@ namespace Basis.Scripts.Animator_Driver
         {
             // Calculate the velocity of the character controller
             var charDriver = LocalPlayer.LocalCharacterDriver;
-            currentVelocity = Quaternion.Inverse(BasisLocalBoneDriver.HipsControl.OutgoingWorldData.rotation) *
+            Quaternion velocityFrame = charDriver.IsLocomoting ? BasisLocalCharacterDriver.GetMovementFacing() : BasisLocalBoneDriver.HipsControl.OutgoingWorldData.rotation;
+            currentVelocity = Quaternion.Inverse(velocityFrame) *
                               (charDriver.bottomPointLocalSpace - charDriver.LastBottomPoint) / DeltaTime;
 
             // Sanitize currentVelocity

@@ -4,6 +4,7 @@ using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Drivers;
 using Basis.Scripts.Networking;
+using Basis.Scripts.Networking.NetworkedAvatar;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -80,11 +81,16 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
 
         if (BasisLocalCameraDriver.HasInstance) BasisLocalCameraDriver.Instance.ExitThirdPerson();
 
-        if (BasisNetworkConnection.LocalPlayerPeer != null)
-        {
-            GetNetworkedMarkerPose(out Vector3 pipPos, out Quaternion pipRot);
-            BasisNetworkPIPCameraDriver.SendPIPState(true, pipPos, pipRot);
-        }
+        BasisNetworkPlayer.OnLocalPlayerJoined -= AnnouncePipOnJoin;
+        BasisNetworkPlayer.OnLocalPlayerJoined += AnnouncePipOnJoin;
+        AnnouncePip();
+    }
+    private void AnnouncePipOnJoin(BasisNetworkPlayer player, BasisLocalPlayer local) => AnnouncePip();
+    private void AnnouncePip()
+    {
+        if (this == null || !BasisNetworkConnection.LocalPlayerIsConnected) return;
+        GetNetworkedMarkerPose(out Vector3 pipPos, out Quaternion pipRot);
+        BasisNetworkPIPCameraDriver.SendPIPState(true, pipPos, pipRot);
     }
     public new void Start()
     {
@@ -93,10 +99,11 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     }
     public new async void OnDestroy()
     {
-#if BASIS_HAS_GI && !UNITY_ANDROID
+#if BASIS_HAS_GI && !UNITY_ANDROID && !UNITY_WEBGL
         SMModuleGlobalIlluminationURP.UnregisterCamera(captureCamera);
 #endif
-        if (BasisNetworkConnection.LocalPlayerPeer != null) BasisNetworkPIPCameraDriver.SendPIPState(false, Vector3.zero, Quaternion.identity);
+        BasisNetworkPlayer.OnLocalPlayerJoined -= AnnouncePipOnJoin;
+        if (BasisNetworkConnection.LocalPlayerIsConnected) BasisNetworkPIPCameraDriver.SendPIPState(false, Vector3.zero, Quaternion.identity);
 
         BasisHandHeldCameraReticle.Release();
         BasisHandHeldCameraRegistry.Remove(this);
@@ -119,6 +126,7 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         BasisCullingCameraRegistry.Unregister(captureCamera);
         BasisMirrorViewerRegistry.Unregister(captureCamera);
         ShutdownDirectToScreen();
+        ReleaseRenderPasses();
         BasisCameraRenderTargets.Release(ref renderTexture);
         ReleaseFocusPeaking();
         ReleaseViewfinderGrid();
@@ -128,7 +136,11 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         BasisCameraRenderTargets.Release(ref srgbResolveTexture);
         BasisCameraRenderTargets.DestroyAndClear(ref actualMaterial);
 
-        if (HandHeld != null) HandHeld.ReleaseUILock();
+        if (HandHeld != null)
+        {
+            HandHeld.ReleaseUILock();
+            HandHeld.ReleaseLocalizedLabels();
+        }
 
         BasisLocalPlayer.AfterSimulateOnRender.RemoveAction(SimulateLatePriority, SimulateLate);
 
@@ -159,7 +171,9 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         captureCamera.forceIntoRenderTexture = true;
         captureCamera.allowHDR = true;
         captureCamera.allowMSAA = true;
+#pragma warning disable 618
         captureCamera.useOcclusionCulling = true;
+#pragma warning restore 618
         captureCamera.usePhysicalProperties = true;
         captureCamera.targetTexture = renderTexture;
         captureCamera.targetDisplay = 1;
@@ -175,11 +189,13 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
     {
         TickDirectToScreen();
         UpdateRenderGate();
+        TickRenderPasses();
         TickBody();
         TickAutoBrightness();
         TickFocusPeaking();
         TickViewfinderGrid();
         TickVideoOutput();
+        TickPassOutputs();
         TickGifRecorder();
         TickVideoRecorder();
         TickPhotogrammetry();
@@ -191,7 +207,7 @@ public partial class BasisHandHeldCamera : BasisHandHeldCameraInteractable
         TickLookAtPointer();
         DebugGizmos.Tick(this);
 
-        if (BasisNetworkConnection.LocalPlayerPeer != null)
+        if (BasisNetworkConnection.LocalPlayerIsConnected)
         {
             GetNetworkedMarkerPose(out Vector3 pos, out Quaternion rot);
             BasisNetworkPIPCameraDriver.SendPIPPosition(pos, rot);

@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Interactions;
 using Basis.Scripts.Device_Management;
@@ -11,7 +12,8 @@ using UnityEngine.EventSystems;
 
 namespace Basis.Scripts.UI
 {
-    public class BasisUIRaycastProcess
+    [AutoStaticsCleanup]
+    public partial class BasisUIRaycastProcess
     {
         public float ClickSpeed = 0.3f;
         public static bool HasTarget;
@@ -24,8 +26,8 @@ namespace Basis.Scripts.UI
         private static bool IsTriggerDown(BasisInput input, bool wasDown)
         {
             float trigger = input.CurrentInputState.Trigger;
-            float press = BasisSettingsDefaults.UIClickPressThreshold.RawValue;
-            float release = Mathf.Min(BasisSettingsDefaults.UIClickReleaseThreshold.RawValue, press);
+            float press = BasisTriggerPressure.UIClickPressThreshold;
+            float release = Mathf.Min(BasisTriggerPressure.UIClickReleaseThreshold, press);
             return wasDown ? trigger >= release : trigger >= press;
         }
 
@@ -77,6 +79,18 @@ namespace Basis.Scripts.UI
                 BasisInput input = snapshot[Index];
                 if (input == null)
                 {
+                    continue;
+                }
+
+                if (input.HasRaycaster && !input.PointerActive)
+                {
+                    var staleEventData = input.BasisUIRaycast.CurrentEventData;
+                    if (staleEventData != null && staleEventData.WasLastDown)
+                    {
+                        EffectiveMouseUp(staleEventData, input);
+                        staleEventData.WasLastDown = false;
+                    }
+                    input.BasisUIRaycast.ToolkitPointer.Release();
                     continue;
                 }
 
@@ -324,6 +338,7 @@ namespace Basis.Scripts.UI
                 EventSystem.current.SetSelectedGameObject(selectHandler, CurrentEventData);
             }
 
+            BasisUserActivation.Note(hit.graphic.gameObject);
             GameObject newPressed = ExecuteEvents.ExecuteHierarchy(hit.graphic.gameObject, CurrentEventData, ExecuteEvents.pointerDownHandler);
             if (newPressed == null)
             {
@@ -390,6 +405,7 @@ namespace Basis.Scripts.UI
                     BaseInput.PlayHaptic(0.1f, 0.1f, 0.5f);
                 }
                 // BaseInput.PlaySoundEffect("press", SMModuleAudio.ActiveMenusVolume / 80);
+                BasisUserActivation.Note(pressClickHandler);
                 ExecuteEvents.Execute(pressClickHandler, CurrentEventData, ExecuteEvents.pointerClickHandler);
             }
             else if (CurrentEventData.dragging && pointerDrag != null && releaseGameObject != null)

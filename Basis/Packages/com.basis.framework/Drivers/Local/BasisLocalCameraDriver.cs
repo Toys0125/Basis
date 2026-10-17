@@ -1,9 +1,12 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Helpers;
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.TransformBinders;
+#if STEAMAUDIO_ENABLED && !UNITY_WEBGL
 using SteamAudio;
+#endif
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -17,7 +20,8 @@ namespace Basis.Scripts.Drivers
     /// manages render-time head scaling, positions UI relative to the camera,
     /// and wires microphone visual feedback into the camera lifecycle.
     /// </summary>
-    public class BasisLocalCameraDriver : MonoBehaviour
+    [AutoStaticsCleanup]
+    public partial class BasisLocalCameraDriver : MonoBehaviour
     {
         /// <summary>True when an instance is alive and assigned to <see cref="Instance"/>.</summary>
         public static bool HasInstance;
@@ -31,7 +35,7 @@ namespace Basis.Scripts.Drivers
 
         public Transform ListenerTransform;
         public AudioListener Listener;
-#if STEAMAUDIO_ENABLED
+#if STEAMAUDIO_ENABLED && !UNITY_WEBGL
         public SteamAudioListener SteamListener;
 #endif
 
@@ -405,6 +409,9 @@ namespace Basis.Scripts.Drivers
                 BasisLocalMicrophoneDriver.MainThreadOnHasSilence += microphoneIconDriver.MicrophoneNotTransmitting;
                 BasisNetworkModeration.OnAnnounceModeChanged += OnAnnounceModeChangedForIcon;
                 Basis.Scripts.Networking.BasisTalkModeManager.OnLocalTalkModeChanged += microphoneIconDriver.OnTalkModeChanged;
+                BasisNetworkModeration.OnLocalVoiceMutedByModeratorChanged += OnServerVoiceMuteChangedForIcon;
+                BasisNetworkModeration.OnGlobalVoiceChatLockedChanged += OnServerVoiceMuteChangedForIcon;
+                Basis.Scripts.Networking.BasisNetworkManagement.OnlocalPermissionsChanged += microphoneIconDriver.OnServerMuteChanged;
                 BasisLocalMicrophoneDriver.OnInitializedAction += OnMicrophoneDriverInitialized;
 #endif
 
@@ -436,7 +443,7 @@ namespace Basis.Scripts.Drivers
 
             avatarPreviewDriver.Initialize(this);
 
-#if STEAMAUDIO_ENABLED
+#if STEAMAUDIO_ENABLED && !UNITY_WEBGL
             if (SteamListener != null)
             {
                 SteamAudioManager.NotifyAudioListenerChanged();
@@ -454,7 +461,7 @@ namespace Basis.Scripts.Drivers
 
             ListenerTransform = null;
             Listener = null;
-#if STEAMAUDIO_ENABLED
+#if STEAMAUDIO_ENABLED && !UNITY_WEBGL
             SteamListener = null;
 #endif
 
@@ -473,6 +480,9 @@ namespace Basis.Scripts.Drivers
             BasisLocalMicrophoneDriver.OnInitializedAction -= OnMicrophoneDriverInitialized;
             BasisNetworkModeration.OnAnnounceModeChanged -= OnAnnounceModeChangedForIcon;
             Basis.Scripts.Networking.BasisTalkModeManager.OnLocalTalkModeChanged -= microphoneIconDriver.OnTalkModeChanged;
+            BasisNetworkModeration.OnLocalVoiceMutedByModeratorChanged -= OnServerVoiceMuteChangedForIcon;
+            BasisNetworkModeration.OnGlobalVoiceChatLockedChanged -= OnServerVoiceMuteChangedForIcon;
+            Basis.Scripts.Networking.BasisNetworkManagement.OnlocalPermissionsChanged -= microphoneIconDriver.OnServerMuteChanged;
             microphoneIconDriver.Dispose();
 #endif
             HasEvents = false;
@@ -498,6 +508,9 @@ namespace Basis.Scripts.Drivers
                 BasisLocalMicrophoneDriver.MainThreadOnHasSilence -= microphoneIconDriver.MicrophoneNotTransmitting;
                 BasisNetworkModeration.OnAnnounceModeChanged -= OnAnnounceModeChangedForIcon;
                 Basis.Scripts.Networking.BasisTalkModeManager.OnLocalTalkModeChanged -= microphoneIconDriver.OnTalkModeChanged;
+                BasisNetworkModeration.OnLocalVoiceMutedByModeratorChanged -= OnServerVoiceMuteChangedForIcon;
+                BasisNetworkModeration.OnGlobalVoiceChatLockedChanged -= OnServerVoiceMuteChangedForIcon;
+                Basis.Scripts.Networking.BasisNetworkManagement.OnlocalPermissionsChanged -= microphoneIconDriver.OnServerMuteChanged;
 #endif
                 HasEvents = false;
             }
@@ -512,7 +525,7 @@ namespace Basis.Scripts.Drivers
         {
             if (mode == BasisConstants.Desktop)
             {
-                Camera.fieldOfView = DefaultCameraFov;
+                Camera.fieldOfView = BasisSettingsDefaults.FieldOfView.RawValue;
             }
             else
             {
@@ -543,6 +556,11 @@ namespace Basis.Scripts.Drivers
             // which is only ever set for the local player, plus the local talk mode), so any announce-mode
             // signal just re-derives the local color. No need to look up the network player to filter.
             microphoneIconDriver.OnAnnounceModeChanged();
+        }
+
+        private void OnServerVoiceMuteChangedForIcon(bool blocked)
+        {
+            microphoneIconDriver.OnServerMuteChanged();
         }
 #endif
 
@@ -592,7 +610,7 @@ namespace Basis.Scripts.Drivers
             // Ensure that the near clip plane is never far enough away that the avatar body clips through it.
             // Critically we need to avoid small player heights causing the UI to become unusable due to clipping.
             // At the same time, we need to pull in the far clip plane on mobile platforms to avoid depth buffer precision issues.
-            float eyeHeightMeters = Mathf.Max(BasisHeightDriver.SelectedScaledPlayerHeight, 1e-4f);
+            float eyeHeightMeters = Mathf.Max(BasisHeightDriver.ScaledAvatarEyeHeight, 1e-4f);
             if (BasisDeviceManagement.IsMobileHardware())
             {
                 Camera.nearClipPlane = Mathf.Clamp(DesiredClipNear, eyeHeightMeters / 32.0f, eyeHeightMeters / 16.0f);
@@ -733,6 +751,7 @@ namespace Basis.Scripts.Drivers
                     ListenerTransform.SetLocalPose(Vector3.zero, Quaternion.identity);
                     _listenerDetachedFromCamera = false;
                 }
+#if !BASIS_DISABLE_MICROPHONE
                 if (CameraData.allowXRRendering)
                 {
                     Vector3 offset = VRMicrophoneLocalOffset;
@@ -772,6 +791,7 @@ namespace Basis.Scripts.Drivers
                         _micLayoutDistance = MicrophoneAnchorDistance;
                     }
                 }
+#endif
                 avatarPreviewDriver.Simulate();
             }
 
@@ -780,7 +800,7 @@ namespace Basis.Scripts.Drivers
                 if (_wasThirdPerson)
                 {
                     SelfTransform.SetLocalPose(Vector3.zero, Quaternion.identity);
-                    CameraInstance.fieldOfView = DefaultCameraFov;
+                    CameraInstance.fieldOfView = BasisSettingsDefaults.FieldOfView.RawValue;
                     _wasThirdPerson = false;
                 }
                 return;
@@ -906,6 +926,15 @@ namespace Basis.Scripts.Drivers
             if (Instance != null)
             {
                 Instance.CameraData.allowXRRendering = AllowXRRendering;
+                StereoTargetEyeMask targetEye = AllowXRRendering ? StereoTargetEyeMask.Both : StereoTargetEyeMask.None;
+                if (Instance.Camera.stereoTargetEye != targetEye)
+                {
+                    Instance.Camera.stereoTargetEye = targetEye;
+                    if (!AllowXRRendering)
+                    {
+                        Instance.Camera.ResetAspect();
+                    }
+                }
             }
             else
             {

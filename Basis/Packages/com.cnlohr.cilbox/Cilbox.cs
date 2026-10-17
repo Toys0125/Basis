@@ -37,8 +37,10 @@ namespace Cilbox
 		public int HandlerOffset;
 		public int HandlerLength;
 		public int HandlerEndOffset;
+		#nullable enable
 		public Type? CatchType;
 		public string? CatchTypeName;
+		#nullable restore
 	}
 
 	public class CilboxHeapInstance
@@ -50,6 +52,8 @@ namespace Cilbox
 
 	public class CilboxMethod
 	{
+		private static readonly ArrayPool<StackElement> s_stackElementPool = ArrayPool<StackElement>.Create();
+
 		public CilboxClass parentClass;
 		public int MaxStackSize;
 		public String methodName;
@@ -155,19 +159,24 @@ namespace Cilbox
 			int plen = parametersIn?.Length ?? 0;
 			int thisOffset = isStatic ? 0 : 1;
 
-			StackElement [] parameters = new StackElement[plen+thisOffset];
-			StackElement [] stackBuffer = new StackElement[Cilbox.defaultStackSize];
+			int paramArrayLen = plen+thisOffset;
+			StackElement[] paramStackArray = s_stackElementPool.Rent(paramArrayLen + Cilbox.defaultStackSize);
 
+			ArraySegment<StackElement> parameters  = new (paramStackArray, 0, paramArrayLen);
+			ArraySegment<StackElement> stackBuffer = new (paramStackArray, paramArrayLen, Cilbox.defaultStackSize);
+
+			// Calling parameters[p].Load does not modify the original element in paramStackArray
+			// Use the full paramStackArray assuming that parameters start at index 0
 			if( isStatic )
 			{
 				for( int p = 0; p < plen; p++ )
-					parameters[p].Load( parametersIn[p] );
+					paramStackArray[p].Load( parametersIn[p] );
 			}
 			else
 			{
-				parameters[0].Load( ths );
+				paramStackArray[0].Load( ths );
 				for( int p = 0; p < plen; p++ )
-					parameters[p+1].Load( parametersIn[p] );
+					paramStackArray[p+1].Load( parametersIn[p] );
 				plen++;
 			}
 
@@ -184,6 +193,10 @@ namespace Cilbox
 				else parentClass.box.DisableWithReason(e.ToString());
 				if( e is CilboxUnhandledInterpretedException uhe && uhe.Throwee is System.Exception te ) throw te;
 				throw;
+			}
+			finally
+			{
+				s_stackElementPool.Return(paramStackArray, true);
 			}
 			parentClass.box.InterpreterExit();
 
@@ -1418,8 +1431,8 @@ spiperf.Begin();
 						case 6: // ldelem.i8: the only variant without an unsigned counterpart, emitted for
 							// long[] and ulong[] alike.  A (ulong[]) cast also succeeds on a long[], so
 							// only here the element type must decide the signedness of the stack type.
-							if( Type.GetTypeCode( arr.GetType().GetElementType() ) == TypeCode.UInt64 )
-								stackBuffer[sp].LoadUlong( ((ulong[])arr)[index] );
+							if( arr is ulong[] ulongArr )
+								stackBuffer[sp].LoadUlong( ulongArr[index] );
 							else
 								stackBuffer[sp].LoadLong( ((long[])arr)[index] );
 							break;
@@ -1514,8 +1527,8 @@ spiperf.Begin();
 							break;
 						case 4: // stelem.i8 (used for Int64/UInt64 element arrays; SetValue can't
 							// put a boxed long into a ulong[], so store through the array cast)
-							if( Type.GetTypeCode( asArr.GetType().GetElementType() ) == TypeCode.UInt64 )
-								((ulong[])asArr)[index] = valSE.e;
+							if( asArr is ulong[] ulongArr )
+								ulongArr[index] = valSE.e;
 							else
 								((long[])asArr)[index] = valSE.l;
 							break;
@@ -2047,6 +2060,16 @@ spiperf.End();
 
 		public String [] baseClassNames = new String[0];
 
+		// cache importFunctionNames because they won't change between Cilbox loads; avoids
+		// reflection lookups on every class load.
+		private static readonly string[] importFunctionNames = BuildImportFunctionNames();
+		private static string[] BuildImportFunctionNames()
+		{
+			string[] names = Enum.GetNames(typeof(ImportFunctionID));
+			names[0] = ".ctor";
+			return names;
+		}
+
 		public bool LoadCilboxClass( Cilbox box, SerializedClass sc )
 		{
 			this.box = box;
@@ -2087,21 +2110,43 @@ spiperf.End();
 
 			// These imports are for things like Start(), Update(), Awake(), etc...
 			// so that we can call back into the class.
-			int numImportFunctions = Enum.GetNames(typeof(ImportFunctionID)).Length;
+			int numImportFunctions = importFunctionNames.Length;
 			importFunctionToId = new uint[numImportFunctions];
 			for( int i = 0; i < numImportFunctions; i++ )
 			{
-				String fn = Enum.GetName(typeof(ImportFunctionID), i);
-				if( i == 0 ) fn = ".ctor";
-				uint idx = 0;
-				importFunctionToId[i] = 0xffffffff;
-				if( methodNameToIndex.TryGetValue(fn, out idx ) )
-				{
-					importFunctionToId[i] = idx;
-				}
+				importFunctionToId[i] = methodNameToIndex.GetValueOrDefault(importFunctionNames[i], 0xffffffff);
 			}
 
 			return true;
+		}
+
+		/// <summary>
+		/// Interpret method via Import ID
+		/// </summary>
+		/// <param name="proxy"></param>
+		/// <param name="importId"></param>
+		/// <param name="parameters"></param>
+		/// <returns></returns>
+		public object InterpretMethod(CilboxProxy proxy, ImportFunctionID importId, object [] parameters)
+		{
+			uint index = importFunctionToId[(int)importId];
+			if( index == 0xffffffff ) return null;
+			return methods[index].Interpret(proxy, parameters);
+		}
+
+		/// <summary>
+		/// Interpret method via method name
+		/// Note: This shouldn't be used in high performance situations
+		/// </summary>
+		/// <param name="proxy"></param>
+		/// <param name="methodName"></param>
+		/// <param name="parameters"></param>
+		/// <returns></returns>
+		public object InterpretMethod(CilboxProxy proxy, string methodName, object[] parameters)
+		{
+			uint index = methodNameToIndex[methodName];
+			if( index == 0xffffffff ) return null;
+			return methods[index].Interpret(proxy, parameters);
 		}
 	}
 
@@ -2238,8 +2283,8 @@ spiperf.End();
 		}
 
 		abstract public bool CheckMethodAllowed( out MethodInfo mi, Type declaringType, String name, SerializedTypeDescriptor [] parametersIn, SerializedTypeDescriptor [] genericArgumentsIn, String fullSignature );
-		abstract public bool CheckTypeAllowed( String sType );
-		abstract public bool CheckFieldAllowed( String sType, String sFieldName );
+		abstract public bool CheckTypeAllowed( Type t ); //String sType );
+		abstract public bool CheckFieldAllowed( Type t, String sFieldName );
 		abstract public bool GetTypeOverride( String sType, out Type t );
 
 		public delegate void CilboxDisabledEvent( Cilbox box, string reason );
@@ -2320,32 +2365,34 @@ spiperf.End();
 				case MetaTokenType.mtField:
 					// The type has been "sealed" so-to-speak. In that we have an index for it.
 					t.Name = st.name;
-					t.declaringTypeName = usage.GetNativeTypeNameFromDescriptor( st.typeDescriptor );
+					
 					t.fieldIsStatic = st.isStatic;
 
 					if( st.fieldHasIndex )
 					{
+						t.declaringTypeName = usage.GetNativeTypeNameFromDescriptor( st.typeDescriptor );
 						t.fieldIndex = st.fieldIndex;
 						if( classes.TryGetValue( t.declaringTypeName, out int fieldClassId ) )
 							t.interpretiveFieldClass = fieldClassId;
 					}
 					else
 					{
-						bool bAllowed = CheckFieldAllowed( t.declaringTypeName, t.Name );
+						Type declaringType = usage.GetNativeTypeFromDescriptor( st.typeDescriptor );
+						t.declaringTypeName = declaringType.FullName;
+						if (declaringType == null) 
+						{
+							throw new CilboxException($"Could not find declaring type {t.declaringTypeName} for field {t.Name} in meta {st.metaTokenIndex}.");
+						}
+
+						bool bAllowed = CheckFieldAllowed( declaringType, t.Name );
 						if( !bAllowed )
 						{
 							throw new CilboxException( $"Illegal field reference outside of the cilbox. {t.declaringTypeName}.{t.Name} in meta {st.metaTokenIndex}." );
 						}
 						t.isFieldWhiteListed = true;
 
-						Type ty = usage.GetNativeTypeFromDescriptor( st.typeDescriptor );
-						if( ty == null )
-						{
-							throw new CilboxException( $"Could not get allowed type for checking field, {t.declaringTypeName} in meta {st.metaTokenIndex}." );
-						}
-
 						// We have a type for the declaring type, but, we need a field.
-						FieldInfo f = ty.GetField( t.Name, BindingFlags.Static | BindingFlags.Public | BindingFlags.Instance );
+						FieldInfo f = declaringType.GetField( t.Name, BindingFlags.Static | BindingFlags.Public | BindingFlags.Instance );
 
 						if( f == null )
 						{
@@ -2467,8 +2514,11 @@ spiperf.End();
 					else
 					{
 						Type declaringType = usage.GetNativeTypeFromDescriptor( stDt );
-						if( declaringType == null )
-							throw new CilboxException( $"Error: Could not find referenced type {useAssembly}/{declaringTypeName}/" );
+						if ( declaringType == null )
+						{
+							Debug.LogError( $"Error: Could not find referenced type {useAssembly}/{declaringTypeName}/ {fullSignature}" );
+							break;
+						}
 
 						MethodBase m = usage.GetNativeMethodFromTypeAndName( declaringType, name, parametersSer, genericArguments, fullSignature );
 
@@ -2505,7 +2555,7 @@ spiperf.End();
 					{
 						if( c.methods[cctorIndex].isStatic )
 						{
-							c.methods[cctorIndex].Interpret( null, new object[0] );
+							c.methods[cctorIndex].Interpret( null, System.Array.Empty<object>() );
 						}
 					}
 				}
@@ -2518,17 +2568,6 @@ spiperf.End();
 			int clsid;
 			if( classes.TryGetValue(className, out clsid)) return classesList[clsid];
 			return null;
-		}
-
-		public object InterpretIID( CilboxClass cls, CilboxProxy ths, ImportFunctionID iid, object [] parameters )
-		{
-			if( cls == null ) return null;
-			uint index = cls.importFunctionToId[(uint)iid];
-			if( index == 0xffffffff ) return null;
-
-			object ret = cls.methods[index].Interpret( ths, parameters );
-
-			return ret;
 		}
 
 		public bool InterpreterEntry( CilboxMethod m )
@@ -2607,6 +2646,67 @@ spiperf.End();
 			this.disabled = true;
 			//this.InterpreterExit();
 			OnCilboxDisabled?.Invoke(this, reason);
+		}
+
+		// For a given type, returns the type name with ref, array, and generic components removed. For use with type whitelisting.
+		public static string GetSanitizedTypeName(Type type)
+		{
+			ReadOnlySpan<char> typeName = type.FullName.AsSpan();
+			int charCnt = typeName.Length;
+
+			// ignore terminal ref
+			if (typeName[charCnt - 1] == '&') {
+				charCnt = charCnt - 1;
+			}
+
+			// Ignore terminal generic type array if present
+			if (typeName[charCnt - 1] == ']') {
+				int braceCount = 1;
+				for (int cIdx = charCnt - 2; cIdx >= 0; cIdx--) {
+					if (typeName[cIdx] == '[') {
+						braceCount--;
+						if (braceCount < 1) {
+							charCnt = cIdx;
+							break;
+						}
+					}
+					if (typeName[cIdx] == ']') {
+						braceCount++;
+					}
+				}
+			}
+
+			// 128 bytes should be safe for a stackalloc (C# uses UTS-16 chars so 64 chars)
+			Span<char> modTypeName = charCnt < 65 ? stackalloc char[charCnt] : new char[charCnt];
+
+			// Copy typeName to modTypeName in chunks, skipping over unwanted characters
+			int sourceCnt = charCnt;
+			int destCnt = 0;
+			int srcCopyStart = 0;
+
+
+			for (int sIdx = 0; sIdx < sourceCnt; sIdx++) {
+				// remove generic type counts, these start with a ` followed by one or more digits expressing how many generic type parameters there are
+				if (typeName[sIdx] == '`') {
+					int copyCount = sIdx - srcCopyStart;
+					typeName[srcCopyStart..sIdx].CopyTo(modTypeName[destCnt..(destCnt + copyCount)]);
+					destCnt += copyCount;
+					// skip past digits
+					sIdx++;
+					for (; sIdx < sourceCnt; sIdx++) {
+						if (!char.IsDigit(typeName[sIdx])) break;
+					}
+					srcCopyStart = sIdx;
+				}
+			}
+			if (srcCopyStart < sourceCnt)
+			{
+				int copyCount = sourceCnt - srcCopyStart;
+				typeName[srcCopyStart..sourceCnt].CopyTo(modTypeName[destCnt..(destCnt + copyCount)]);
+				destCnt += copyCount;
+			}
+
+			return modTypeName[0..destCnt].ToString();
 		}
 	}
 

@@ -1,3 +1,4 @@
+using Basis.Network.Core;
 using System.Xml.Linq;
 
 namespace Basis.Config
@@ -7,6 +8,9 @@ namespace Basis.Config
         public static string Password = "default_password";
         public static string Ip = "localhost";
         public static int Port = 4296;
+        public static string NetworkStackId = string.Empty;
+        public static string CompanyName = BasisNetworkApplication.DefaultCompanyName;
+        public static string ProductName = BasisNetworkApplication.DefaultProductName;
         public static int ClientCount = 250;
         public static int ClientConnectIntervalMs = 1;
 
@@ -179,6 +183,12 @@ namespace Basis.Config
                                 new XElement("Ip", Ip),
                                 new XComment(" Server UDP port; must match the server's <SetPort>. int, range 1-65535. "),
                                 new XElement("Port", Port),
+                                new XComment(" Network stack the fake clients connect with: litenetlib, websocket or steam, as the server lists them in <NetworkStackId>. Empty uses litenetlib. string. "),
+                                new XElement("NetworkStackId", NetworkStackId),
+                                new XComment(" Company name each fake client reports; must match the server's <CompanyName>. string. "),
+                                new XElement("CompanyName", CompanyName),
+                                new XComment(" Product name each fake client reports; must match the server's <ProductName>. string. "),
+                                new XElement("ProductName", ProductName),
                                 new XComment(" Number of simulated clients to spawn for load testing. int (>= 1); higher counts need more CPU, memory and sockets. "),
                                 new XElement("ClientCount", ClientCount),
                                 new XComment(" Delay in ms between starting each simulated client's connection, controlling how fast the crowd ramps up. 0 or less starts them as fast as the loop runs. int. "),
@@ -278,6 +288,9 @@ namespace Basis.Config
                     Password = ReadString(root, "Password", Password);
                     Ip = ReadString(root, "Ip", Ip);
                     Port = ReadInt(root, "Port", Port);
+                    NetworkStackId = ReadString(root, "NetworkStackId", NetworkStackId);
+                    CompanyName = ReadString(root, "CompanyName", CompanyName);
+                    ProductName = ReadString(root, "ProductName", ProductName);
                     ClientCount = ReadInt(root, "ClientCount", ClientCount);
                     ClientConnectIntervalMs = ReadInt(root, "ClientConnectIntervalMs", ClientConnectIntervalMs);
 

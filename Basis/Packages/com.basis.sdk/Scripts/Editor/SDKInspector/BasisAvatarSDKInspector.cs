@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using Basis.Editor.Localization;
 using Basis.Scripts.BasisSdk;
@@ -12,6 +13,7 @@ using static BasisAvatarValidator;
 using Basis.Scripts.BasisSdk.Players;
 
 [CustomEditor(typeof(BasisAvatar))]
+[NoAutoStaticsCleanup]
 public partial class BasisAvatarSDKInspector : Editor
 {
     private const string PendingTestInEditorAvatarIdSessionKey = "BasisAvatarSDKInspector.PendingTestInEditorAvatarId";
@@ -25,15 +27,15 @@ public partial class BasisAvatarSDKInspector : Editor
     public static event Action ValueChanged;
     public VisualTreeAsset visualTree;
     public BasisAvatar Avatar;
-    public VisualElement uiElementsRoot;
+    [NonSerialized] public VisualElement uiElementsRoot;
     public bool AvatarEyePositionState = false;
     public bool AvatarMouthPositionState = false;
-    public VisualElement rootElement;
-    public AvatarSDKVisemes AvatarSDKVisemes = new AvatarSDKVisemes();
+    [NonSerialized] public VisualElement rootElement;
+    [NonSerialized] public AvatarSDKVisemes AvatarSDKVisemes = new AvatarSDKVisemes();
     public Button EventCallbackAvatarBundleButton { get; private set; }
     private Label resultLabel; // Store the result label for later clearing
     public string Error;
-    public BasisAvatarValidator BasisAvatarValidator;
+    [NonSerialized] public BasisAvatarValidator BasisAvatarValidator;
 
     [InitializeOnLoadMethod]
     private static void InitializeTestInEditorHooks()
@@ -119,6 +121,7 @@ public partial class BasisAvatarSDKInspector : Editor
         if (visualTree != null)
         {
             uiElementsRoot = visualTree.CloneTree();
+            BasisEditorLocalization.LocalizeTree(uiElementsRoot, "sdk.uxml.avatar.");
             rootElement.Add(uiElementsRoot);
             BasisAvatarValidator = new BasisAvatarValidator(Avatar, rootElement);
             Button button = BasisSDKCommonInspector.DocumentationButton(rootElement, BasisEditorLocalization.Get("sdk.avatar.documentation.button"));
@@ -245,6 +248,29 @@ public partial class BasisAvatarSDKInspector : Editor
             BasisLocalEyeDriverData.PersonalityDirty = true;
         }
     }
+    private void OnEyeMaxLookAngleEnabledChanged(ChangeEvent<bool> evt)
+    {
+        Undo.RecordObject(Avatar, "Toggle Eye Max Look Angle");
+        Avatar.EyeMaxLookAngleEnabled = evt.newValue;
+        EditorUtility.SetDirty(Avatar);
+        ValueChanged?.Invoke();
+        uiElementsRoot.Q<Slider>(BasisSDKConstants.EyeMaxLookAngleField)?.SetEnabled(evt.newValue);
+        if (Application.isPlaying)
+        {
+            BasisLocalEyeDriverData.SetMaxLookAngle(Avatar.EyeMaxLookAngleEnabled, Avatar.EyeMaxLookAngle);
+        }
+    }
+    private void OnEyeMaxLookAngleChanged(ChangeEvent<float> evt)
+    {
+        Undo.RecordObject(Avatar, "Change Eye Max Look Angle");
+        Avatar.EyeMaxLookAngle = evt.newValue;
+        EditorUtility.SetDirty(Avatar);
+        ValueChanged?.Invoke();
+        if (Application.isPlaying)
+        {
+            BasisLocalEyeDriverData.SetMaxLookAngle(Avatar.EyeMaxLookAngleEnabled, Avatar.EyeMaxLookAngle);
+        }
+    }
     public void EventCallbackAnimator(ChangeEvent<UnityEngine.Object> evt, ref Animator Renderer)
     {
         //  Debug.Log(nameof(EventCallbackAnimator));
@@ -309,6 +335,19 @@ public partial class BasisAvatarSDKInspector : Editor
             attentivenessSlider.value = Avatar.EyeAttentiveness;
             attentivenessSlider.RegisterCallback<ChangeEvent<float>>(OnEyeAttentivenessChanged);
         }
+        Toggle maxLookAngleEnabledToggle = uiElementsRoot.Q<Toggle>(BasisSDKConstants.EyeMaxLookAngleEnabledField);
+        if (maxLookAngleEnabledToggle != null)
+        {
+            maxLookAngleEnabledToggle.value = Avatar.EyeMaxLookAngleEnabled;
+            maxLookAngleEnabledToggle.RegisterCallback<ChangeEvent<bool>>(OnEyeMaxLookAngleEnabledChanged);
+        }
+        Slider maxLookAngleSlider = uiElementsRoot.Q<Slider>(BasisSDKConstants.EyeMaxLookAngleField);
+        if (maxLookAngleSlider != null)
+        {
+            maxLookAngleSlider.value = BasisAvatar.ClampEyeMaxLookAngle(Avatar.EyeMaxLookAngle);
+            maxLookAngleSlider.SetEnabled(Avatar.EyeMaxLookAngleEnabled);
+            maxLookAngleSlider.RegisterCallback<ChangeEvent<float>>(OnEyeMaxLookAngleChanged);
+        }
 
         // Initialize ObjectFields and assign references
         ObjectField animatorField = uiElementsRoot.Q<ObjectField>(BasisSDKConstants.animatorField);
@@ -359,7 +398,7 @@ public partial class BasisAvatarSDKInspector : Editor
         // end of the inspector: what the avatar is goes under Settings, how it is published goes in
         // the build blocks above the build button, each its own collapsible section.
         BasisSDKCommonInspector.CreateBuildTargetOptions(BasisSDKCommonInspector.ResolveBuildTargetsContainer(uiElementsRoot));
-        BasisSDKCommonInspector.CreateBuildOptionsDropdown(BasisSDKCommonInspector.ResolveBuildContainer(uiElementsRoot));
+        BasisSDKCommonInspector.CreateBuildOptionsDropdown(BasisSDKCommonInspector.ResolveBuildContainer(uiElementsRoot), serializedObject);
 
         BasisSDKCommonInspector.CreateContentTagsFoldout(BasisSDKCommonInspector.ResolveContentTagsContainer(uiElementsRoot), Avatar);
         BasisSDKCommonInspector.CreateContentGroupIdFoldout(BasisSDKCommonInspector.ResolveContentTagsContainer(uiElementsRoot), Avatar);
@@ -374,6 +413,7 @@ public partial class BasisAvatarSDKInspector : Editor
             BasisEditorLocalization.Get("sdk.avatar.icon.generate"),
             BasisEditorLocalization.Get("sdk.avatar.icon.generate.tooltip"),
             () => BasisIconCapture.CaptureGameObject(Avatar.gameObject, BasisIconCapture.AvatarYaw, BasisIconCapture.AvatarPitch));
+        BasisSDKCommonInspector.CreateAuthorshipFoldout(BasisSDKCommonInspector.ResolveDescriptionContainer(uiElementsRoot), serializedObject);
         avatarBundleButton.clicked += () => EventCallbackAvatarBundle(assetBundleObject.selectedTargets, Avatar.BasisBundleDescription.AssetBundleIcon);
 
 
@@ -442,7 +482,7 @@ public partial class BasisAvatarSDKInspector : Editor
 #endif
 
                 BasisDebug.Log($"Building Avatar Bundles for: {string.Join(", ", targets.ConvertAll(t => BasisSDKConstants.targetDisplayNames[t]))}");
-                BundleCreatedState = await BasisBundleBuild.GameObjectBundleBuild(ImageBytes, Avatar, targets, assetBundleObject.UseCustomPassword, assetBundleObject.UserSelectedPassword);
+                BundleCreatedState = await BasisBundleBuild.GameObjectBundleBuild(ImageBytes, Avatar, targets, Avatar.UseCustomPassword, Avatar.UserSelectedPassword);
 
                 EditorUtility.ClearProgressBar();
                 // Clear any previous result label

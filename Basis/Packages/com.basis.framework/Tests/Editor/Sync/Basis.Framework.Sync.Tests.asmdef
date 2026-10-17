@@ -5,13 +5,12 @@
         "Basis Framework",
         "Basis Framework Editor",
         "BasisCommon",
+        "BasisSettings",
         "BasisNetworkCore",
         "Unity.Collections",
         "Unity.Mathematics",
         "UnityEngine.TestRunner",
-        "BasisSDK",
-        "BasisShims",
-        "Cilbox"
+        "BasisSDK"
     ],
     "includePlatforms": [
         "Editor"

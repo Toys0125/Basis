@@ -1,7 +1,11 @@
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using Basis.BasisUI;
+using Basis.Localization;
+using Basis.Scripts.TransformBinders.BoneControl;
+using Basis.Scripts.UI.UI_Panels;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
 
@@ -33,7 +37,7 @@ namespace Basis.Tests.UI
         [TearDown]
         public void TearDown()
         {
-            BasisLocalization.SetLanguage(_originalLanguage);
+            BasisLocalization.LoadLanguage(_originalLanguage);
             BasisLocalization.TrackMissingKeys = _originalTrackMissingKeys;
             BasisLocalization.ClearMissingKeys();
         }
@@ -41,7 +45,7 @@ namespace Basis.Tests.UI
         [Test]
         public void Get_OnAKnownKeyReturnsNonEmptyText()
         {
-            BasisLocalization.SetLanguage("en");
+            BasisLocalization.LoadLanguage("en");
             Assert.That(BasisLocalization.Get("settings.title"), Is.Not.Empty.And.Not.EqualTo("settings.title"));
         }
 
@@ -89,7 +93,7 @@ namespace Basis.Tests.UI
             BasisLocalization.OnLanguageChanged += handler;
             try
             {
-                BasisLocalization.SetLanguage("ja");
+                BasisLocalization.LoadLanguage("ja");
                 Assert.That(BasisLocalization.CurrentLanguage, Is.EqualTo("ja"));
                 Assert.That(fired, Is.True);
             }
@@ -105,10 +109,10 @@ namespace Basis.Tests.UI
             // This is the exact mechanism the provider-title bug (menu.provider.mirror etc.) relied
             // on being true: a live Get() call must return DIFFERENT text after SetLanguage, not
             // whatever text was captured the first time something read it.
-            BasisLocalization.SetLanguage("en");
+            BasisLocalization.LoadLanguage("en");
             string english = BasisLocalization.Get("settings.title");
 
-            BasisLocalization.SetLanguage("ja");
+            BasisLocalization.LoadLanguage("ja");
             string japanese = BasisLocalization.Get("settings.title");
 
             Assert.That(japanese, Is.Not.EqualTo(english),
@@ -123,7 +127,7 @@ namespace Basis.Tests.UI
             // not a bug, so it must be expected rather than left to auto-fail the test.
             LogAssert.Expect(LogType.Error, new Regex("Language table not loaded for code"));
 
-            BasisLocalization.SetLanguage("not-a-real-language-code");
+            BasisLocalization.LoadLanguage("not-a-real-language-code");
             Assert.That(BasisLocalization.CurrentLanguage, Is.EqualTo("en"));
         }
 
@@ -174,7 +178,7 @@ namespace Basis.Tests.UI
         [Test]
         public void NewProviderTitleKeys_ResolveInEnglish([ValueSource(nameof(NewProviderTitleKeys))] string key)
         {
-            BasisLocalization.SetLanguage("en");
+            BasisLocalization.LoadLanguage("en");
             Assert.That(BasisLocalization.Get(key), Is.Not.EqualTo(key),
                 $"'{key}' fell through to the raw key — it is missing from en.json");
         }
@@ -182,7 +186,7 @@ namespace Basis.Tests.UI
         [Test]
         public void NewDropdownAndDialogKeys_ResolveInEnglish([ValueSource(nameof(NewDropdownAndDialogKeys))] string key)
         {
-            BasisLocalization.SetLanguage("en");
+            BasisLocalization.LoadLanguage("en");
             Assert.That(BasisLocalization.Get(key), Is.Not.EqualTo(key),
                 $"'{key}' fell through to the raw key — it is missing from en.json");
         }
@@ -195,7 +199,7 @@ namespace Basis.Tests.UI
             // Falling back to English for a missing translation is a lesser bug than the raw-key
             // case above, but still worth catching — a language file that never got this batch's
             // insert would silently show English instead of failing loudly.
-            BasisLocalization.SetLanguage(language);
+            BasisLocalization.LoadLanguage(language);
             Assert.That(BasisLocalization.Get(key), Is.Not.EqualTo(key),
                 $"'{key}' fell through to the raw key under '{language}'");
         }
@@ -205,7 +209,7 @@ namespace Basis.Tests.UI
             [ValueSource(nameof(NewDropdownAndDialogKeys))] string key,
             [ValueSource(nameof(SpotCheckLanguages))] string language)
         {
-            BasisLocalization.SetLanguage(language);
+            BasisLocalization.LoadLanguage(language);
             Assert.That(BasisLocalization.Get(key), Is.Not.EqualTo(key),
                 $"'{key}' fell through to the raw key under '{language}'");
         }
@@ -217,12 +221,12 @@ namespace Basis.Tests.UI
             // Full sentences, unlike single-word labels, essentially never coincide with English by
             // accident (a "Local"/"Avatar"-style loanword might legitimately match) — a safe place
             // to assert on TRANSLATED, not merely PRESENT.
-            BasisLocalization.SetLanguage("en");
+            BasisLocalization.LoadLanguage("en");
             string englishAddTitle = BasisLocalization.Get("settings.admin.confirm.addDefaultLibrary.title");
             string englishAddBody = BasisLocalization.Get("settings.admin.confirm.addDefaultLibrary.body");
             string englishRemoveBody = BasisLocalization.Get("settings.admin.confirm.removeDefaultLibrary.body");
 
-            BasisLocalization.SetLanguage(language);
+            BasisLocalization.LoadLanguage(language);
             Assert.That(BasisLocalization.Get("settings.admin.confirm.addDefaultLibrary.title"), Is.Not.EqualTo(englishAddTitle));
             Assert.That(BasisLocalization.Get("settings.admin.confirm.addDefaultLibrary.body"), Is.Not.EqualTo(englishAddBody));
             Assert.That(BasisLocalization.Get("settings.admin.confirm.removeDefaultLibrary.body"), Is.Not.EqualTo(englishRemoveBody));
@@ -232,9 +236,176 @@ namespace Basis.Tests.UI
         public void AdminConfirmDialogBodies_KeepTheirFormatPlaceholderInEveryLanguage(
             [ValueSource(nameof(SpotCheckLanguages))] string language)
         {
-            BasisLocalization.SetLanguage(language);
+            BasisLocalization.LoadLanguage(language);
             Assert.That(BasisLocalization.Get("settings.admin.confirm.addDefaultLibrary.body"), Does.Contain("{0}"));
             Assert.That(BasisLocalization.Get("settings.admin.confirm.removeDefaultLibrary.body"), Does.Contain("{0}"));
+        }
+
+        private const string EmbeddedItemsCatalogPath = "Packages/com.basis.sdk/Settings/EmbeddedItemsCatalog.asset";
+        private const string FrameworkLanguagesFolder = "Packages/com.basis.framework/BasisUI/Localization/Languages";
+
+        [Test]
+        public void EmbeddedItemDisplayNames_ExistInEveryLanguageFile()
+        {
+            EmbeddedItemsCatalogAsset catalog = AssetDatabase.LoadAssetAtPath<EmbeddedItemsCatalogAsset>(EmbeddedItemsCatalogPath);
+            Assert.That(catalog, Is.Not.Null, $"catalog not found: {EmbeddedItemsCatalogPath}");
+            foreach ((string path, HashSet<string> keys) in FrameworkLanguageKeySets())
+            {
+                foreach (EmbeddedItemDefinition definition in catalog.Entries)
+                {
+                    if (!definition.Key.EmbeddedSettings.IsEmbedded) continue;
+                    Assert.That(definition.HasCustomDisplayName && !string.IsNullOrEmpty(definition.DisplayNameKey), Is.True,
+                        $"'{definition.Key.Url}' has no display name, so the library and the hotbar show its address in every language");
+                    Assert.That(keys, Does.Contain(definition.DisplayNameKey), $"'{definition.DisplayNameKey}' is missing from {path}");
+                }
+            }
+        }
+
+        [Test]
+        public void LabelKeysBuiltFromEnums_ExistInEveryLanguageFile()
+        {
+            List<string> expected = new List<string>();
+            foreach (BasisBoneTrackedRole role in System.Enum.GetValues(typeof(BasisBoneTrackedRole)))
+            {
+                expected.Add("ui.bodyRole." + LowerFirst(role.ToString()));
+            }
+            foreach (BasisActionDriver.ActionId action in System.Enum.GetValues(typeof(BasisActionDriver.ActionId)))
+            {
+                if (action != BasisActionDriver.ActionId.Count) expected.Add("settings.controls.actionId." + LowerFirst(action.ToString()));
+            }
+            foreach ((string path, HashSet<string> keys) in FrameworkLanguageKeySets())
+            {
+                foreach (string key in expected)
+                {
+                    Assert.That(keys, Does.Contain(key), $"'{key}' is missing from {path}, so that label shows its raw key");
+                }
+            }
+        }
+
+        private static List<(string path, HashSet<string> keys)> FrameworkLanguageKeySets()
+        {
+            string[] languageFiles = AssetDatabase.FindAssets("t:TextAsset", new[] { FrameworkLanguagesFolder });
+            Assert.That(languageFiles, Is.Not.Empty);
+            List<(string path, HashSet<string> keys)> sets = new List<(string path, HashSet<string> keys)>();
+            foreach (string guid in languageFiles)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                BasisLanguageTable table = JsonUtility.FromJson<BasisLanguageTable>(AssetDatabase.LoadAssetAtPath<TextAsset>(path).text);
+                HashSet<string> keys = new HashSet<string>();
+                foreach (BasisLanguageEntry entry in table.entries)
+                {
+                    if (!string.IsNullOrEmpty(entry.value)) keys.Add(entry.key);
+                }
+                sets.Add((path, keys));
+            }
+            return sets;
+        }
+
+        private static string LowerFirst(string value) => char.ToLowerInvariant(value[0]) + value.Substring(1);
+
+        private const string EditorLanguagesFolder = "Packages/com.basis.sdk/Localization/Languages";
+
+        [Test]
+        public void EditorLanguageFiles_HaveEveryEnglishKey()
+        {
+            Dictionary<string, Dictionary<string, string>> tables = EditorLanguageTables();
+            Dictionary<string, string> english = tables["en"];
+            foreach (KeyValuePair<string, Dictionary<string, string>> table in tables)
+            {
+                List<string> missing = new List<string>();
+                foreach (string key in english.Keys)
+                {
+                    if (!table.Value.TryGetValue(key, out string value) || string.IsNullOrEmpty(value)) missing.Add(key);
+                }
+                Assert.That(missing, Is.Empty, $"{table.Key}.json is missing {missing.Count} editor keys, first: {string.Join(", ", missing.GetRange(0, System.Math.Min(5, missing.Count)))}");
+            }
+        }
+
+        [Test]
+        public void EditorLanguageFiles_KeepTheEnglishPlaceholders()
+        {
+            Dictionary<string, Dictionary<string, string>> tables = EditorLanguageTables();
+            Dictionary<string, string> english = tables["en"];
+            foreach (KeyValuePair<string, Dictionary<string, string>> table in tables)
+            {
+                if (table.Key == "en") continue;
+                List<string> mismatched = new List<string>();
+                foreach (KeyValuePair<string, string> entry in english)
+                {
+                    if (table.Value.TryGetValue(entry.Key, out string value) && Placeholders(entry.Value) != Placeholders(value)) mismatched.Add(entry.Key);
+                }
+                Assert.That(mismatched, Is.Empty, $"{table.Key}.json changes the {{n}} placeholders of {mismatched.Count} editor keys, first: {string.Join(", ", mismatched.GetRange(0, System.Math.Min(5, mismatched.Count)))}");
+            }
+        }
+
+        private static string Placeholders(string value)
+        {
+            List<string> found = new List<string>();
+            foreach (Match match in Regex.Matches(value, @"\{\d+(?:[,:][^{}]*)?\}")) found.Add(match.Value);
+            found.Sort(System.StringComparer.Ordinal);
+            return string.Join("|", found);
+        }
+
+        private static Dictionary<string, Dictionary<string, string>> EditorLanguageTables()
+        {
+            string[] languageFiles = AssetDatabase.FindAssets("t:TextAsset", new[] { EditorLanguagesFolder });
+            Assert.That(languageFiles, Is.Not.Empty);
+            Dictionary<string, Dictionary<string, string>> tables = new Dictionary<string, Dictionary<string, string>>();
+            foreach (string guid in languageFiles)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                BasisLanguageTable table = JsonUtility.FromJson<BasisLanguageTable>(AssetDatabase.LoadAssetAtPath<TextAsset>(path).text);
+                Dictionary<string, string> entries = new Dictionary<string, string>();
+                foreach (BasisLanguageEntry entry in table.entries)
+                {
+                    if (!string.IsNullOrEmpty(entry.key)) entries[entry.key] = entry.value;
+                }
+                tables[table.code] = entries;
+            }
+            Assert.That(tables, Does.ContainKey("en"));
+            return tables;
+        }
+
+        [Test]
+        public void CachedEmbeddedItemAndItsPinnedButton_FollowALanguageSwitch()
+        {
+            BasisDataStoreItemKeys.ItemKey item = null;
+            EmbeddedItemDefinition definition = null;
+            foreach (BasisDataStoreItemKeys.ItemKey candidate in EmbeddedItems.HardcodedKeys)
+            {
+                if (EmbeddedItems.TryGetDefinition(candidate, out definition) && definition.HasCustomDisplayName)
+                {
+                    item = candidate;
+                    break;
+                }
+            }
+            Assert.That(item, Is.Not.Null, "no embedded item has a display name to follow");
+
+            CachedMetaData.TryGetMeta(item.Url, out CachedMetaData.CachedContent previous);
+            CachedMetaData.CachedContent meta = new CachedMetaData.CachedContent
+            {
+                BasisBundleConnector = new BasisBundleConnector { BasisBundleDescription = new BasisBundleDescription() }
+            };
+            try
+            {
+                CachedMetaData.SetMetaData(item.Url, meta);
+                BasisLocalization.LoadLanguage("en");
+                Assert.That(meta.Name, Is.EqualTo(BasisLocalization.Get(definition.DisplayNameKey)), "the cached name did not follow a language switch");
+                PinnedItemProvider pinned = new PinnedItemProvider(item, meta);
+                foreach (string language in SpotCheckLanguages)
+                {
+                    BasisLocalization.LoadLanguage(language);
+                    string expected = BasisLocalization.Get(definition.DisplayNameKey);
+                    Assert.That(meta.Name, Is.EqualTo(expected), $"the cached name stayed in the previous language under '{language}'");
+                    Assert.That(meta.BasisBundleConnector.BasisBundleDescription.AssetBundleDescription, Is.EqualTo(BasisLocalization.Get("library.embeddedItem")));
+                    Assert.That(pinned.Title, Is.EqualTo(expected), $"the pinned hotbar button stayed in the previous language under '{language}'");
+                }
+            }
+            finally
+            {
+                if (previous != null) CachedMetaData.SetMetaData(item.Url, previous);
+                else CachedMetaData.RemoveMetaData(item.Url);
+            }
         }
     }
 }

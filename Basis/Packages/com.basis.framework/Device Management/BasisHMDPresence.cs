@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using UnityEngine;
 
@@ -8,12 +9,14 @@ namespace Basis.Scripts.Device_Management
     /// Each VR SDK (OpenVR, OpenXR) reports presence from its own assembly via <see cref="ReportPresence"/>.
     /// Consumers subscribe to <see cref="OnPresenceChanged"/> — debounced to reject flicker.
     /// </summary>
-    public static class BasisHMDPresence
+    [AutoStaticsCleanup]
+    public static partial class BasisHMDPresence
     {
         /// <summary>
         /// Current committed presence state. Only changes after the debounce window.
         /// </summary>
         public static bool IsPresent { get; private set; } = false;
+        public static bool IsSettled { get; private set; }
 
         /// <summary>
         /// Fired when <see cref="IsPresent"/> changes after debounce.
@@ -52,7 +55,7 @@ namespace Basis.Scripts.Device_Management
         /// <param name="present">Whether the headset detects a user wearing it.</param>
         public static void ReportPresence(bool present)
         {
-            if (present == IsPresent)
+            if (IsSettled && present == IsPresent)
             {
                 // Matches committed state — cancel any pending change (flicker rejection)
                 _hasPending = false;
@@ -72,6 +75,7 @@ namespace Basis.Scripts.Device_Management
             if (Time.time - _lastChangeTime >= DebounceSeconds)
             {
                 IsPresent = present;
+                IsSettled = true;
                 _hasPending = false;
                 try
                 {
@@ -90,8 +94,9 @@ namespace Basis.Scripts.Device_Management
         /// </summary>
         public static void ForcePresence(bool present)
         {
-            if (present == IsPresent) return;
+            if (IsSettled && present == IsPresent) return;
             IsPresent = present;
+            IsSettled = true;
             _hasPending = false;
             try
             {
@@ -109,6 +114,7 @@ namespace Basis.Scripts.Device_Management
         public static void Reset()
         {
             IsPresent = false;
+            IsSettled = false;
             _hasPending = false;
             OnPresenceChanged = null;
         }

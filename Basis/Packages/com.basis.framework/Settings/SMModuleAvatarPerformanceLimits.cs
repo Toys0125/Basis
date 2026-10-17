@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System.Collections.Generic;
 using Basis.BasisUI;
 using Basis.Scripts.Avatar;
@@ -5,7 +6,8 @@ using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Networking;
 using UnityEngine;
 using Basis.Scripts.Settings;
-public static class SMModuleAvatarPerformanceLimits
+[AutoStaticsCleanup]
+public static partial class SMModuleAvatarPerformanceLimits
 {
     private const double DebounceSeconds = 0.35f;
     private static double _pendingFireTime = -1f;
@@ -104,6 +106,11 @@ public static class SMModuleAvatarPerformanceLimits
         }
         if (BasisAvatarFactory.IsLoadingAvatar(bundle))
         {
+            return;
+        }
+        if (BasisAvatarFactory.ClearDownloadLimitFailure(player))
+        {
+            player.ReloadAvatar();
             return;
         }
         if (player.BasisAvatar == null || player.IsConsideredFallBackAvatar)

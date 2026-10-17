@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.Scripts.Audio;
 using Basis.Scripts.Avatar;
 using Basis.Scripts.BasisSdk.Helpers;
@@ -18,7 +19,8 @@ namespace Basis.Scripts.Device_Management.Devices
     /// Manages device identity, role assignment, calibration offsets, raycasting helpers,
     /// and lifecycle hooks for polling and applying data to the local rig.
     /// </summary>
-    public abstract class BasisInput : MonoBehaviour
+    [AutoStaticsCleanup]
+    public abstract partial class BasisInput : MonoBehaviour
     {
         /// <summary>
         /// Whether event subscriptions have been registered for this input.
@@ -91,7 +93,7 @@ namespace Basis.Scripts.Device_Management.Devices
         /// <summary>
         /// Device pose before player scaling is applied.
         /// </summary>
-        public BasisCalibratedCoords UnscaledDeviceCoord = new BasisCalibratedCoords();
+        public BasisCalibratedCoords UnscaledDeviceCoord = BasisCalibratedCoords.Identity;
 
         /// <summary>
         /// Signed vertical offset (tracking space, metres) from this device's tracked origin to the
@@ -111,7 +113,7 @@ namespace Basis.Scripts.Device_Management.Devices
         /// <summary>
         /// Device pose after scaling/elevation adjustments.
         /// </summary>
-        public BasisCalibratedCoords ScaledDeviceCoord = new BasisCalibratedCoords();
+        public BasisCalibratedCoords ScaledDeviceCoord = BasisCalibratedCoords.Identity;
 
         /// <summary>
         /// World-space position offset added to the bone Control only (not the camera/raycast/transform), so a
@@ -239,6 +241,22 @@ namespace Basis.Scripts.Device_Management.Devices
         /// this is used for example when we have multi touch support and need a way to get a bunch of different fingers coming from the same "head role"
         /// </summary>
         public bool HasRayCastOverrideSupport;
+        [System.NonSerialized] public string OverrideKey;
+        [System.NonSerialized] public BasisDeviceIgnore IgnoredParts;
+        [System.NonSerialized] public bool HasNaturalRole;
+        [System.NonSerialized] public BasisBoneTrackedRole NaturalRole;
+        private bool roleFromOverride, pointerWasActive;
+        public bool IgnoresDevice => (IgnoredParts & BasisDeviceIgnore.Device) != 0;
+        public bool IgnoresPose => (IgnoredParts & (BasisDeviceIgnore.Pose | BasisDeviceIgnore.Device)) != 0;
+        public bool IgnoresButtons => (IgnoredParts & (BasisDeviceIgnore.Buttons | BasisDeviceIgnore.Device)) != 0;
+        public bool IgnoresSticks => (IgnoredParts & (BasisDeviceIgnore.Sticks | BasisDeviceIgnore.Device)) != 0;
+        public bool IgnoresFingers => (IgnoredParts & (BasisDeviceIgnore.Fingers | BasisDeviceIgnore.Device)) != 0;
+        public bool IgnoresPointer => (IgnoredParts & (BasisDeviceIgnore.Pointer | BasisDeviceIgnore.Device)) != 0;
+        public bool IsHandDevice => (HasNaturalRole && BasisDeviceOverrides.IsHandRole(NaturalRole)) || (hasRoleAssigned && BasisDeviceOverrides.IsHandRole(trackedRole));
+        public bool HasRoleOverride => IsHandDevice && BasisDeviceOverrides.TryGetHand(OverrideKey, out _);
+        public bool HoldsForcedRole(BasisBoneTrackedRole role) => IsHandDevice && BasisDeviceOverrides.TryGetHand(OverrideKey, out BasisBoneTrackedRole forced) && forced == role;
+        public bool IsPoseDriving => HasControl && Control != null && Control.DevicesWithRoles.Contains(UniqueDeviceIdentifier);
+        public bool PointerActive => HasRaycaster && !IgnoresPointer && (hasRoleAssigned || HasRayCastOverrideSupport);
         /// <summary>
         /// Initialize the tracking lifecycle for this input device, register events, and (optionally) create raycast helpers.
         /// </summary>
@@ -263,14 +281,14 @@ namespace Basis.Scripts.Device_Management.Devices
             TrackingHardware = BasisTrackingHardwareClassifier.Refine(TrackingHardware, CommonDeviceIdentifier, DeviceSerial, IsCameraTracked);
             // Resolve capabilities/overrides (role, visuals, raycast support...)
             DeviceMatchSettings = BasisDeviceManagement.Instance.BasisDeviceNameMatcher.GetAssociatedDeviceMatchableNames(CommonDeviceIdentifier, basisBoneTrackedRole, ForceAssignTrackedRole);
-            if (DeviceMatchSettings.HasTrackedRole)
-            {
-                BasisDebug.Log("Overriding Tracker " + DeviceMatchSettings.DeviceID, BasisDebug.LogTag.Input);
-                AssignRoleAndTracker(DeviceMatchSettings.TrackedRole);
-            }
+            HasNaturalRole = DeviceMatchSettings.HasTrackedRole;
+            NaturalRole = DeviceMatchSettings.TrackedRole;
+            OverrideKey = BasisDeviceOverrides.KeyFor(this);
+            IgnoredParts = BasisDeviceOverrides.GetIgnore(OverrideKey);
+            ResolveRole();
 
             // Initialize raycasting helpers if supported
-            if (HasRaycastSupport())
+            if (WantsRaycaster())
             {
                 CreateRayCaster(this);
             }
@@ -287,23 +305,86 @@ namespace Basis.Scripts.Device_Management.Devices
                 BasisDebug.Log("has device events assigned already " + UniqueDeviceIdentifier, BasisDebug.LogTag.Input);
             }
         }
+        [System.NonSerialized]
+        public BasisCalibratedCoords PhysicalDeviceCoord = BasisCalibratedCoords.Identity;
+        [System.NonSerialized]
+        public string DeviceOffsetKey;
+        [System.NonSerialized]
+        public bool HasDeviceOffset;
+        [System.NonSerialized]
+        public Vector3 DeviceOffsetPosition;
+        [System.NonSerialized]
+        public Quaternion DeviceOffsetRotation = Quaternion.identity;
+        public virtual bool AppliesDeviceOffsetAtSource => false;
+        public bool SupportsDeviceOffset => AppliesDeviceOffsetAtSource || !(this is BasisInputController);
+        public void RefreshDeviceOffset()
+        {
+            if (!BasisDeviceOffsets.TryGetKey(this, out string key))
+            {
+                ClearDeviceOffset();
+                return;
+            }
+            DeviceOffsetKey = key;
+            BasisDeviceOffsets.TryGet(key, out Vector3 position, out Quaternion rotation);
+            SetDeviceOffset(position, rotation);
+        }
+        public void SetDeviceOffset(Vector3 position, Quaternion rotation)
+        {
+            DeviceOffsetPosition = position;
+            DeviceOffsetRotation = rotation;
+            HasDeviceOffset = !BasisDeviceOffsetMath.IsIdentity(position, rotation);
+        }
+        public void ClearDeviceOffset()
+        {
+            DeviceOffsetKey = null;
+            SetDeviceOffset(Vector3.zero, Quaternion.identity);
+        }
+        public void ResolveUnscaledFromPhysical(bool applyDeviceOffset)
+        {
+            if (applyDeviceOffset && HasDeviceOffset)
+            {
+                BasisDeviceOffsetMath.Compose(PhysicalDeviceCoord.position, PhysicalDeviceCoord.rotation, DeviceOffsetPosition, DeviceOffsetRotation, out UnscaledDeviceCoord.position, out UnscaledDeviceCoord.rotation);
+                return;
+            }
+            UnscaledDeviceCoord = PhysicalDeviceCoord;
+        }
+        public void GetPhysicalUnscaledPose(out Vector3 position, out Quaternion rotation)
+        {
+            if (AppliesDeviceOffsetAtSource)
+            {
+                position = PhysicalDeviceCoord.position;
+                rotation = PhysicalDeviceCoord.rotation;
+                return;
+            }
+            position = UnscaledDeviceCoord.position;
+            rotation = UnscaledDeviceCoord.rotation;
+        }
+        public void GetFinalScaledPose(out Vector3 position, out Quaternion rotation)
+        {
+            position = ScaledDeviceCoord.position;
+            rotation = ScaledDeviceCoord.rotation;
+            if (HasDeviceOffset && !AppliesDeviceOffsetAtSource)
+            {
+                BasisDeviceOffsetMath.ApplyScaled(ref position, ref rotation, DeviceOffsetPosition, DeviceOffsetRotation, BasisHeightDriver.DeviceScale);
+            }
+        }
         public void ComputeUnscaledDeviceCoord(ref BasisCalibratedCoords coords,Vector3 position)
         {
             // Vertical tracking-space offsets (VR only). Seated mode raises the eye to standing height;
             // the play-space mover adds its live OVRAS-style "Space Drag" vertical offset. Both shift the
             // whole tracking space here so the camera, hands, and avatar move together as one without
             // moving the character controller capsule.
-            if (BasisDeviceManagement.IsCurrentModeVR())
-            {
-                float yOffset = BasisLocalPlayspaceMover.VerticalOffset;
-                if (SMModuleSitStand.IsSteatedMode)
-                {
-                    yOffset += SMModuleSitStand.MissingHeightDelta;
-                }
-                yOffset += BasisHeightDriver.HeightModeGroundingOffset;
-                position.y += yOffset;
-            }
+            position.y += UnscaledVerticalLift();
             coords.position = position;
+        }
+        public static float UnscaledVerticalLift()
+        {
+            if (!BasisDeviceManagement.IsCurrentModeVR())
+            {
+                return 0f;
+            }
+            float yOffset = BasisLocalPlayspaceMover.VerticalOffset + BasisHeightDriver.HeightModeGroundingOffset;
+            return SMModuleSitStand.IsSteatedMode ? yOffset + SMModuleSitStand.MissingHeightDelta : yOffset;
         }
         /// <summary>
         /// Computes the raycast origin/direction using the hand’s final transform and active offset.
@@ -332,6 +413,106 @@ namespace Basis.Scripts.Device_Management.Devices
             return false;
         }
 
+        public void ResolveRole()
+        {
+            BasisBoneTrackedRole hand = BasisBoneTrackedRole.CenterEye;
+            bool overridden = IsHandDevice && BasisDeviceOverrides.TryGetHand(OverrideKey, out hand);
+            if (IgnoresDevice)
+            {
+                if (hasRoleAssigned || Control != null)
+                {
+                    BasisDebug.Log($"Device {UniqueDeviceIdentifier} is ignored, releasing its role", BasisDebug.LogTag.Input);
+                    ReleaseRole();
+                }
+                return;
+            }
+            if (!overridden && !HasNaturalRole)
+            {
+                if (roleFromOverride)
+                {
+                    ReleaseRole();
+                    return;
+                }
+                SyncPoseDriving();
+                return;
+            }
+            BasisBoneTrackedRole role = overridden ? hand : NaturalRole;
+            if (hasRoleAssigned && trackedRole == role && HasControl && Control != null)
+            {
+                SyncPoseDriving();
+                roleFromOverride = overridden;
+                return;
+            }
+            BasisDebug.Log($"Resolving {UniqueDeviceIdentifier} to {role}" + (overridden ? " (override)" : string.Empty), BasisDebug.LogTag.Input);
+            AssignRoleAndTracker(role);
+            roleFromOverride = overridden;
+        }
+        private void SyncPoseDriving()
+        {
+            if (!hasRoleAssigned || Control == null)
+            {
+                return;
+            }
+            bool driving = IsPoseDriving;
+            if (driving && IgnoresPose)
+            {
+                ReleasePoseDriving();
+            }
+            else if (!driving && !IgnoresPose)
+            {
+                SetRealTrackers(BasisHasTracked.HasTracker, BasisHasRigLayer.HasRigLayer, UniqueDeviceIdentifier);
+            }
+        }
+        public void RefreshOverrides()
+        {
+            IgnoredParts = BasisDeviceOverrides.GetIgnore(OverrideKey);
+            ResolveRole();
+            if (!IgnoresDevice && !hasRoleAssigned && BasisDeviceManagement.Instance != null)
+            {
+                BasisDeviceManagement.Instance.TryRestoreCachedRole(this);
+            }
+            if (HasRaycaster == false && HasEvents && WantsRaycaster())
+            {
+                CreateRayCaster(this);
+            }
+        }
+        public bool WantsRaycaster()
+        {
+            if (HasRayCastOverrideSupport)
+            {
+                return true;
+            }
+            return (HasNaturalRole || HasRoleOverride) && DeviceMatchSettings != null && DeviceMatchSettings.HasRayCastSupport;
+        }
+        private void ReleaseRole()
+        {
+            UnAssignTracker();
+            ForgetRole();
+        }
+        private void ReleasePoseDriving()
+        {
+            if (Control == null)
+            {
+                return;
+            }
+            bool wasAssigned = hasRoleAssigned;
+            SetRealTrackers(BasisHasTracked.HasNoTracker, BasisHasRigLayer.HasNoRigLayer, UniqueDeviceIdentifier);
+            if (Control.DevicesWithRoles.Count == 0)
+            {
+                Control.SetIncoming(Vector3.zero, Quaternion.identity);
+            }
+            hasRoleAssigned = wasAssigned;
+        }
+        private void ForgetRole()
+        {
+            hasRoleAssigned = false;
+            roleFromOverride = false;
+            trackedRole = BasisBoneTrackedRole.CenterEye;
+            ClearDeviceOffset();
+            Control = null;
+            HasControl = false;
+        }
+
         /// <summary>
         /// Assigns this device to drive a specific bone role and binds its <see cref="Control"/>.
         /// Also validates multiple-role constraints and sets tracker state on success.
@@ -339,6 +520,17 @@ namespace Basis.Scripts.Device_Management.Devices
         /// <param name="Role">The bone role to drive.</param>
         public void AssignRoleAndTracker(BasisBoneTrackedRole Role)
         {
+            roleFromOverride = false;
+            if (IgnoresDevice)
+            {
+                BasisDebug.Log($"Device {UniqueDeviceIdentifier} is ignored, refusing role {Role}", BasisDebug.LogTag.Input);
+                return;
+            }
+            if (hasRoleAssigned && HasControl && Control != null && trackedRole != Role)
+            {
+                SetRealTrackers(BasisHasTracked.HasNoTracker, BasisHasRigLayer.HasNoRigLayer, UniqueDeviceIdentifier);
+            }
+            bool forced = HoldsForcedRole(Role);
             int InputsCount = BasisDeviceManagement.Instance.AllInputDevices.Count;
             for (int Index = 0; Index < InputsCount; Index++)
             {
@@ -361,6 +553,12 @@ namespace Basis.Scripts.Device_Management.Devices
                             // (e.g. hand-tracking coexisting with a controller) are intentionally kept.
                             if (Input.SubSystemIdentifier == SubSystemIdentifier)
                             {
+                                if (!forced && Input.HoldsForcedRole(found))
+                                {
+                                    BasisDebug.Log($"{Role} is forced onto {Input.UniqueDeviceIdentifier}, {UniqueDeviceIdentifier} stays unassigned", BasisDebug.LogTag.Input);
+                                    hasRoleAssigned = false;
+                                    return;
+                                }
                                 BasisDebug.Log($"Reclaiming {Role} from same-backend holder {Input.UniqueDeviceIdentifier}", BasisDebug.LogTag.Input);
                                 Input.UnAssignTracker();
                             }
@@ -374,9 +572,15 @@ namespace Basis.Scripts.Device_Management.Devices
             }
             hasRoleAssigned = true;
             trackedRole = Role;
+            RefreshDeviceOffset();
             HasControl = BasisLocalPlayer.Instance.LocalBoneDriver.FindBone(out Control, trackedRole);
             if (HasControl)
             {
+                if (IgnoresPose)
+                {
+                    BasisDebug.Log($"Device {UniqueDeviceIdentifier} holds {Role} for input only, its pose is ignored", BasisDebug.LogTag.Input);
+                    return;
+                }
                 if (BasisBoneTrackedRoleCommonCheck.CheckItsFBTracker(trackedRole))//we dont want to offset these ones
                 {
                     CalculateOffset();
@@ -398,12 +602,15 @@ namespace Basis.Scripts.Device_Management.Devices
         public bool HasCalibratedOffsetSnapshot;
         public Vector3 CalibratedUnscaledPosition;
         public Quaternion CalibratedUnscaledRotation = Quaternion.identity;
+        public float CalibratedUnscaledLift;
         // Head anchor the snapshot above was captured against, in the same unscaled space. Each
         // tracker pairs with its OWN capture-time head so reprojection and continuous-calibration
         // adoption rebuild the geometry of THIS capture — a mid-session recapture (device reconnect,
         // matcher-pinned tracker) must not be rebuilt against the ritual-calibration head.
         public Vector3 CalibratedUnscaledHeadPosition;
         public Quaternion CalibratedUnscaledHeadRotation = Quaternion.identity;
+        public bool HasCalibratedHeadFromEye;
+        public Vector3 CalibratedUnscaledHeadFromEye;
 
         /// <summary>
         /// Computes and applies the inverse offset from the driven bone so that the tracker maintains
@@ -413,7 +620,11 @@ namespace Basis.Scripts.Device_Management.Devices
         {
             BasisInverseOffsetData = new BasisInverseOffsetFromBoneData();
 
-            BasisCalibratedCoords tracker = ScaledDeviceCoord;
+            // Runtime drives the bone from GetFinalScaledPose, which includes a configured tracker
+            // mount/device offset for backends that do not bake it at source. Calibration must use
+            // that same virtual tracker pose or the mount offset appears a second time after capture.
+            GetFinalScaledPose(out Vector3 trackerPosition, out Quaternion trackerRotation);
+            BasisCalibratedCoords tracker = new BasisCalibratedCoords(trackerPosition, trackerRotation);
             BasisCalibratedCoords bone = Control.OutGoingData;
 
             BasisInverseOffsetData.TrackerPosition = tracker.position;
@@ -425,17 +636,28 @@ namespace Basis.Scripts.Device_Management.Devices
             // DriveTpose), converted from world into the bone-sim/player-root frame. The bone sim's
             // degenerate yaw doesn't reliably track the head at large angles, so this uses the real
             // T-pose pose for the head/body direction actually calibrated in, then follows tracker
-            // deltas. The bone position comes from the load-time raw-joint T-pose snapshot anchored at
-            // the live (DriveTpose'd) avatar root — identical to reading the live T-posed bone, but
-            // from captured data, and the SAME source ReprojectTrackerOffsetsForCurrentAvatar rebuilds
-            // from, so capture and reprojection agree exactly. Falls back to the live bone transform,
-            // then to the bone-sim pose, when the snapshot/avatar isn't resolvable.
+            // deltas. Prefer the fitted rest skeleton: body fit changes segment lengths before this
+            // capture, and using the raw authored snapshot here left trackers attached to the old-sized
+            // body. Reprojection uses this same fitted reference. Falls back to the raw snapshot, then
+            // the live bone transform, then the bone-sim pose when the fitted reference is unavailable.
             Vector3 referencePosition = bone.position;
             BasisLocalAvatarDriver avatarDriver = BasisLocalPlayer.Instance != null ? BasisLocalPlayer.Instance.LocalAvatarDriver : null;
             if (avatarDriver != null && TryGetRole(out BasisBoneTrackedRole role))
             {
                 BasisLocalBoneControl headControl = BasisLocalBoneDriver.HeadControl;
-                if (BasisLocalAvatarDriver.HasTposeBoneSnapshot
+                if (headControl != null
+                    && BasisAvatarIKStageCalibration.TryGetFittedTposePositions(role, out Vector3 fittedHeadTpose, out Vector3 fittedBoneTpose))
+                {
+                    var headWorld = headControl.OutgoingWorldData;
+                    BasisCalibrationMath.ComputeTposeAnchor(headWorld.position, headWorld.rotation, fittedHeadTpose, out Vector3 anchorPos, out Quaternion anchorRot);
+                    Vector3 world = anchorPos + anchorRot * fittedBoneTpose;
+                    referencePosition = BasisLocalPlayer.localToWorldMatrix.inverse.MultiplyPoint3x4(world);
+                    if (BasisCalibrationMath.IsFloorAnchoredRole(role))
+                    {
+                        referencePosition.y = BasisCalibrationMath.FloorAnchorY(BasisLocalPlayspaceMover.VerticalOffset, BasisHeightDriver.DeviceScale, OffsetCoords.position, OffsetCoords.rotation) + BasisAvatarIKStageCalibration.AuthoredFloorHeight(role, fittedBoneTpose.y);
+                    }
+                }
+                else if (BasisLocalAvatarDriver.HasTposeBoneSnapshot
                     && BasisLocalAvatarDriver.TposeBoneSnapshot.TryGetValue(role, out var bind)
                     && headControl != null)
                 {
@@ -449,6 +671,10 @@ namespace Basis.Scripts.Device_Management.Devices
                     if (float.IsNaN(avatarScale) || float.IsInfinity(avatarScale) || avatarScale <= 1e-6f) avatarScale = 1f;
                     Vector3 world = anchorPos + anchorRot * (bind.position * avatarScale);
                     referencePosition = BasisLocalPlayer.localToWorldMatrix.inverse.MultiplyPoint3x4(world);
+                    if (BasisCalibrationMath.IsFloorAnchoredRole(role))
+                    {
+                        referencePosition.y = BasisCalibrationMath.FloorAnchorY(BasisLocalPlayspaceMover.VerticalOffset, BasisHeightDriver.DeviceScale, OffsetCoords.position, OffsetCoords.rotation) + bind.position.y * avatarScale;
+                    }
                 }
                 else if (avatarDriver.StoredRolesTransforms != null
                     && avatarDriver.StoredRolesTransforms.TryGetValue(role, out Transform avatarBone)
@@ -469,8 +695,10 @@ namespace Basis.Scripts.Device_Management.Devices
             if (anchorHeadControl != null)
             {
                 BasisCalibrationMath.UnscaleDeviceCoord(tracker.position, tracker.rotation, BasisHeightDriver.DeviceScale, OffsetCoords.position, OffsetCoords.rotation, out CalibratedUnscaledPosition, out CalibratedUnscaledRotation);
+                CalibratedUnscaledLift = UnscaledVerticalLift();
                 BasisCalibratedCoords anchorHeadOut = anchorHeadControl.OutGoingData;
                 BasisCalibrationMath.UnscaleDeviceCoord(anchorHeadOut.position, anchorHeadOut.rotation, BasisHeightDriver.DeviceScale, OffsetCoords.position, OffsetCoords.rotation, out CalibratedUnscaledHeadPosition, out CalibratedUnscaledHeadRotation);
+                HasCalibratedHeadFromEye = BasisAvatarIKStageCalibration.TryGetUnscaledHeadFromEye(out CalibratedUnscaledHeadFromEye);
                 HasCalibratedOffsetSnapshot = true;
             }
             else
@@ -493,10 +721,7 @@ namespace Basis.Scripts.Device_Management.Devices
             }
             if (DeviceMatchSettings == null || DeviceMatchSettings.HasTrackedRole == false)
             {
-                hasRoleAssigned = false;
-                trackedRole = BasisBoneTrackedRole.CenterEye;
-                Control = null;
-                HasControl = false;
+                ForgetRole();
             }
         }
 
@@ -517,8 +742,7 @@ namespace Basis.Scripts.Device_Management.Devices
         /// </summary>
         public void ApplyFinalMovement()
         {
-            Vector3 localPosition = ScaledDeviceCoord.position;
-            Quaternion localRotation = ScaledDeviceCoord.rotation;
+            GetFinalScaledPose(out Vector3 localPosition, out Quaternion localRotation);
             // Tip the whole tracking rig (camera via the head device, controllers, trackers) to match the
             // avatar's play-space flip; no-op unless a flip is active. The character controller is untouched.
             BasisLocalPlayspaceMover.ApplyFlipToLocalPose(ref localPosition, ref localRotation);
@@ -691,6 +915,29 @@ namespace Basis.Scripts.Device_Management.Devices
         {
             LastUpdatePlayerControl();//stays here as late update is good for controller inputs not controller movement.
             LateDoPollData();
+            if (IgnoredParts != BasisDeviceIgnore.None)
+            {
+                ApplyIgnoreMask();
+            }
+        }
+        public void ApplyIgnoreMask()
+        {
+            if (IgnoresButtons)
+            {
+                CurrentInputState.ClearButtons();
+            }
+            if (IgnoresSticks)
+            {
+                CurrentInputState.ClearSticks();
+            }
+        }
+        private void HidePointer()
+        {
+            if (InteractionLineRenderer != null)
+            {
+                InteractionLineRenderer.enabled = false;
+            }
+            BasisUIRaycast?.ClearFrame();
         }
         /// <summary>
         /// Per-frame poll entry point: copies current state to last, then calls device-specific poll. On Render Pass
@@ -705,7 +952,11 @@ namespace Basis.Scripts.Device_Management.Devices
         /// </summary>
         public void UpdateInputEvents(bool HasPlayerControlSupport = true,bool hasPlayerRaycastSupport = true)
         {
-            if (HasPlayerControlSupport)
+            if (IgnoredParts != BasisDeviceIgnore.None)
+            {
+                ApplyIgnoreMask();
+            }
+            if (HasPlayerControlSupport && (hasRoleAssigned || HasRayCastOverrideSupport))
             {
                 // Roles that may have multiple holders (the hands) dispatch once per frame on the
                 // combined state of all holders, so a duplicate or coexisting device can't double-fire
@@ -719,11 +970,21 @@ namespace Basis.Scripts.Device_Management.Devices
                     BasisActionDriver.UpdatePlayerControl(trackedRole, ref CurrentInputState, ref LastInputState);
                 }
             }
-            if (hasPlayerRaycastSupport && HasRaycaster)
+            if (!hasPlayerRaycastSupport)
+            {
+                return;
+            }
+            bool pointerActive = PointerActive;
+            if (pointerActive)
             {
                 BasisPointRaycaster.UpdateRaycast();
                 BasisUIRaycast.HandleUIRaycast();
             }
+            else if (pointerWasActive)
+            {
+                HidePointer();
+            }
+            pointerWasActive = pointerActive;
         }
 
         /// <summary>
@@ -911,9 +1172,10 @@ namespace Basis.Scripts.Device_Management.Devices
         /// </summary>
         public void ControlOnlyAsDevice()
         {
-            if (hasRoleAssigned && Control.HasTracked != BasisHasTracked.HasNoTracker)
+            if (hasRoleAssigned && !IgnoresPose && Control.HasTracked != BasisHasTracked.HasNoTracker)
             {
-                Control.SetIncoming(ScaledDeviceCoord.position + ScaledControlPositionOffset, ScaledDeviceCoord.rotation);
+                GetFinalScaledPose(out Vector3 position, out Quaternion rotation);
+                Control.SetIncoming(position + ScaledControlPositionOffset, rotation);
             }
 
         }

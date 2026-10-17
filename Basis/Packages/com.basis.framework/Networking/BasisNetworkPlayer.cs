@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.Network.Core;
 using Basis.Scripts.BasisSdk;
 using Basis.Scripts.BasisSdk.Players;
@@ -24,8 +25,9 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
     /// <summary>
     /// the goal of this script is to be the glue of consistent data between remote and local
     /// </summary>
+    [AutoStaticsCleanup]
     [System.Serializable]
-    public abstract class BasisNetworkPlayer
+    public abstract partial class BasisNetworkPlayer
     {
         /// <summary>
         /// only changes when additional avatar data is in play!
@@ -246,7 +248,7 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
         /// are main-thread and sequential, and Peer.Send copies the bytes out — a fresh writer per
         /// message paid its backing buffer every send.
         /// </summary>
-        private static readonly NetDataWriter sAvatarSendWriter = new NetDataWriter();
+        [NoAutoStaticsCleanup] private static readonly NetDataWriter sAvatarSendWriter = new NetDataWriter();
 
         public void OnAvatarNetworkMessageSend(byte MessageIndex, byte[] buffer = null, DeliveryMethod DeliveryMethod = DeliveryMethod.Sequenced, ushort[] Recipients = null)
         {
@@ -272,8 +274,9 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
         {
             Basis.Scripts.Networking.NetworkedAvatar.BasisAdditionalDataDebugCapture.RecordSentAvatarChannel(MessageIndex, buffer);
             BasisP2PManager.PartitionRecipients(Recipients, out List<ushort> directIds, out List<ushort> relayIds);
+            bool relayBroadcast = allowServerFallback && BasisP2PManager.RelayAsBroadcast(Recipients, directIds, relayIds, buffer != null ? buffer.Length : 0);
 
-            if (directIds != null && directIds.Count > 0)
+            if (!relayBroadcast && directIds != null && directIds.Count > 0)
             {
                 NetDataWriter p2pWriter = sAvatarSendWriter;
                 p2pWriter.Reset();
@@ -296,7 +299,7 @@ namespace Basis.Scripts.Networking.NetworkedAvatar
                     PlayerIdMessage = new PlayerIdMessage() { playerID = playerId },
                     messageIndex = MessageIndex,
                     payload = buffer,
-                    recipients = relayIds.ToArray(),
+                    recipients = relayBroadcast ? null : relayIds.ToArray(),
                     AvatarLinkIndex = LastLinkedAvatarIndex,
                     recipientsSize = 0,
                 };

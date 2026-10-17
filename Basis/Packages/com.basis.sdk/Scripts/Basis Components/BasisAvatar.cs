@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace Basis.Scripts.BasisSdk
@@ -48,6 +49,15 @@ namespace Basis.Scripts.BasisSdk
         /// How attentive the avatar's gaze feels. Low values = avoidant and wandering, high values = direct and focused.
         /// </summary>
         public float EyeAttentiveness = 0.5f;
+
+        public const float MinEyeMaxLookAngle = 1f, MaxEyeMaxLookAngle = 45f, DefaultEyeMaxLookAngle = 25f;
+        public bool EyeMaxLookAngleEnabled;
+        public float EyeMaxLookAngle = DefaultEyeMaxLookAngle;
+        public static float ClampEyeMaxLookAngle(float degrees)
+        {
+            if (float.IsNaN(degrees) || float.IsInfinity(degrees) || degrees <= 0f) return DefaultEyeMaxLookAngle;
+            return Mathf.Clamp(degrees, MinEyeMaxLookAngle, MaxEyeMaxLookAngle);
+        }
 
         /// <summary>
         /// Blend shape indices for facial viseme movement; -1 entries indicate unused slots.
@@ -136,6 +146,52 @@ namespace Basis.Scripts.BasisSdk
         /// </summary>
         [SerializeField]
         public Renderer[] Renders;
+
+        // DX12/Vulkan content loading keeps the GameObject active so Awake/OnEnable and avatar
+        // calibration can run, but suppresses every renderer atomically until the first solved
+        // pose. forceRenderingOff preserves authored Renderer.enabled state and any setup-time
+        // changes to it, avoiding both a visible T-pose and partial clothing reveals.
+        [System.NonSerialized] private Renderer[] loadVisibilityRenderers;
+        [System.NonSerialized] private bool[] loadVisibilityPreviousForceOff;
+        public bool HasLoadVisibilityGate => loadVisibilityRenderers != null;
+
+        public void BeginLoadVisibilityGate(IList<Renderer> renderers)
+        {
+            if (loadVisibilityRenderers != null || renderers == null || renderers.Count == 0)
+            {
+                return;
+            }
+            loadVisibilityRenderers = new Renderer[renderers.Count];
+            loadVisibilityPreviousForceOff = new bool[renderers.Count];
+            for (int i = 0; i < renderers.Count; i++)
+            {
+                Renderer renderer = renderers[i];
+                loadVisibilityRenderers[i] = renderer;
+                if (renderer != null)
+                {
+                    loadVisibilityPreviousForceOff[i] = renderer.forceRenderingOff;
+                    renderer.forceRenderingOff = true;
+                }
+            }
+        }
+
+        public void CompleteLoadVisibilityGate()
+        {
+            if (loadVisibilityRenderers == null)
+            {
+                return;
+            }
+            for (int i = 0; i < loadVisibilityRenderers.Length; i++)
+            {
+                Renderer renderer = loadVisibilityRenderers[i];
+                if (renderer != null)
+                {
+                    renderer.forceRenderingOff = loadVisibilityPreviousForceOff[i];
+                }
+            }
+            loadVisibilityRenderers = null;
+            loadVisibilityPreviousForceOff = null;
+        }
 
         /// <summary>
         /// True when this avatar is a runtime-built far LOD proxy standing in for the real

@@ -1,7 +1,9 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.TransformBinders;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 
 namespace Basis.Scripts.Drivers
@@ -12,8 +14,9 @@ namespace Basis.Scripts.Drivers
     /// Off by default; toggled via the AvatarPreview setting.
     /// All objects are created at runtime and cleaned up on disable/destroy.
     /// </summary>
+    [AutoStaticsCleanup]
     [System.Serializable]
-    public class BasisLocalAvatarPreviewDriver
+    public partial class BasisLocalAvatarPreviewDriver
     {
         [Header("Render Texture")]
         public static int TextureWidth = 768;
@@ -219,6 +222,12 @@ namespace Basis.Scripts.Drivers
         {
             if (initialized) return;
             if (cachedDriver == null) return;
+            Shader displayShader = Shader.Find("Basis/UI/Main");
+            if (displayShader == null)
+            {
+                BasisDebug.LogWarning("Avatar preview unavailable: shader Basis/UI/Main is not in this build.");
+                return;
+            }
 
             // --- Render Texture ---
             var desc = new RenderTextureDescriptor(TextureWidth, TextureHeight, RenderTextureFormat.ARGB32, 16)
@@ -244,13 +253,17 @@ namespace Basis.Scripts.Drivers
             PreviewCamera.farClipPlane = 10f;
             PreviewCamera.allowHDR = false;
             PreviewCamera.allowMSAA = true;
+#pragma warning disable 618
             PreviewCamera.useOcclusionCulling = false;
+#pragma warning restore 618
 
             var urpData = cameraGO.GetComponent<UniversalAdditionalCameraData>();
             if (urpData != null)
             {
                 urpData.allowXRRendering = false;
             }
+            RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
+            RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
 
             parentOfUIGO = new GameObject("AvatarPreviewParentOfUI");
             parentOfUIGO.layer = LayerMask.NameToLayer("UI");
@@ -262,7 +275,7 @@ namespace Basis.Scripts.Drivers
             displayGO.transform.localRotation = Quaternion.identity;
 
             displaySpriteRenderer = displayGO.AddComponent<SpriteRenderer>();
-            displaySpriteRenderer.sharedMaterial = new Material(Shader.Find("Basis/UI/Main"));
+            displaySpriteRenderer.sharedMaterial = new Material(displayShader);
             displaySpriteRenderer.sharedMaterial.SetInt(CullModeId, (int)UnityEngine.Rendering.CullMode.Off);
 
             // Create a dummy sprite for mesh/UV generation (full 0-1 UVs)
@@ -293,6 +306,7 @@ namespace Basis.Scripts.Drivers
 
         private void DestroyObjects()
         {
+            RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
             initialized = false;
             active = false;
 
@@ -324,10 +338,13 @@ namespace Basis.Scripts.Drivers
             PreviewCamera = null;
         }
 
+        public void OnBeginCameraRendering(ScriptableRenderContext context, Camera renderingCamera)
+        {
+            if (ReferenceEquals(renderingCamera, PreviewCamera)) BasisLocalAvatarDriver.ScaleHeadToNormal();
+        }
+
         /// <summary>
         /// Positions the preview camera in front of the local avatar.
-        /// The avatar head remains at normal scale during this camera's render
-        /// because head-scaling is only applied to the main camera via entity ID checks.
         /// </summary>
         public void Simulate()
         {

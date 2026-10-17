@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Device_Management.Devices;
@@ -13,8 +14,9 @@ namespace Basis.Scripts.BasisSdk.Interactions
     /// Provides hover, interact, and influence event management for input devices.
     /// Requires a <see cref="Rigidbody"/> if using trigger-based hover spheres.
     /// </summary>
+    [AutoStaticsCleanup]
     [Serializable]
-    public abstract class BasisInteractableObject : MonoBehaviour
+    public abstract partial class BasisInteractableObject : MonoBehaviour
     {
         /// <summary>
         /// Collider references used for range checks and interaction.
@@ -114,11 +116,11 @@ namespace Basis.Scripts.BasisSdk.Interactions
             {
                 case BasisInputKey.Trigger:
                     // Fire when main trigger is fully pressed
-                    return state.Trigger >= 0.9f;
+                    return state.Trigger >= BasisTriggerPressure.InteractableObjectIsTriggered;
 
                 case BasisInputKey.SecondaryTrigger:
                     // Fire when secondary trigger is fully pressed
-                    return state.SecondaryTrigger >= 0.9f;
+                    return state.SecondaryTrigger >= BasisTriggerPressure.InteractableObjectIsSecondaryTriggered;
 
                 case BasisInputKey.Primary2DAxis:
                     // Axis has state if it's non-zero (already deadzoned in BasisInputState)
@@ -345,7 +347,11 @@ namespace Basis.Scripts.BasisSdk.Interactions
                 // not the player's: this is a world-space distance test, and SelectedScaledPlayerHeight is
                 // the real human's eye height, which does not move when the avatar is scaled — so on a
                 // 0.5x avatar the reach bonus was roughly its entire body height.
-                extraReach = BasisHeightDriver.SelectedScaledAvatarHeight / 2;
+                extraReach = BasisHeightDriver.ScaledAvatarEyeHeight / 2;
+            }
+            else
+            {
+                interactRange *= Mathf.Max(1f, BasisHeightDriver.AvatarToDefaultRatioScaledWithAvatarScale);
             }
             float limit = interactRange + extraReach;
             return limit >= 0f && (GetClosestPoint(source) - source).sqrMagnitude <= limit * limit;
@@ -568,7 +574,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
             return input.CurrentInputState.GripButton ||
                 input.TryGetRole(out var role) &&
                 role == Basis.Scripts.TransformBinders.BoneControl.BasisBoneTrackedRole.CenterEye &&
-                input.CurrentInputState.Trigger == 1;
+                input.CurrentInputState.Trigger >= BasisTriggerPressure.InteractableObject;
         }
 
         /// <summary>
@@ -753,6 +759,11 @@ namespace Basis.Scripts.BasisSdk.Interactions
         public virtual bool PointerClaimedByUI(BasisInput input)
         {
             return input.BasisUIRaycast != null && input.BasisUIRaycast.HadRaycastUITarget;
+        }
+
+        public virtual float RayReach(float defaultReach)
+        {
+            return defaultReach;
         }
 
         /// <summary>

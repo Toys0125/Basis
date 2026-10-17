@@ -1,6 +1,8 @@
+using Unity.Scripting.LifecycleManagement;
 using System.Collections.Generic;
 using UnityEditor;
 
+[NoAutoStaticsCleanup]
 public class BasisSDKConstants
 {
     // Common base paths
@@ -26,6 +28,7 @@ public class BasisSDKConstants
     public static readonly string BuildOptionsFields = "BuildFields";
     public static readonly string ContentTagsSection = "contenttags";
     public static readonly string ContentTagsFields = "ContentTagFields";
+    public static readonly string DescriptionSection = "description";
 
     #region Avatar
     public static readonly string AvataruxmlPath = $"{BasePath}{AvatarFile}";
@@ -39,6 +42,8 @@ public class BasisSDKConstants
     public static readonly string avatarMouthPositionField = "AvatarMouthPositionField";
     public static readonly string EyeLivelinessField = "EyeLivelinessField";
     public static readonly string EyeAttentivenessField = "EyeAttentivenessField";
+    public static readonly string EyeMaxLookAngleEnabledField = "EyeMaxLookAngleEnabledField";
+    public static readonly string EyeMaxLookAngleField = "EyeMaxLookAngleField";
     public static readonly string AvatarBuildBundle = "AvatarBuildBundle";
 
     public static readonly string animatorField = "AnimatorField";
@@ -93,6 +98,15 @@ public class BasisSDKConstants
         BuildTarget.StandaloneLinux64,
         BuildTarget.Android,
         BuildTarget.iOS,
+        BuildTarget.WebGL,
+    };
+    public static List<BuildTarget> defaultTargets = new List<BuildTarget>
+    {
+        BuildTarget.StandaloneWindows64,
+        BuildTarget.StandaloneOSX,
+        BuildTarget.StandaloneLinux64,
+        BuildTarget.Android,
+        BuildTarget.iOS,
     };
 
     public static Dictionary<BuildTarget, string> targetDisplayNames = new Dictionary<BuildTarget, string>
@@ -102,6 +116,7 @@ public class BasisSDKConstants
         { BuildTarget.StandaloneLinux64, "Linux" },
         { BuildTarget.Android, "Android" },
         { BuildTarget.iOS, "iOS" },
+        { BuildTarget.WebGL, "Web" },
     };
     public static List<BuildTarget> OcclusionCullingTargets = new List<BuildTarget>
     {
@@ -109,4 +124,8 @@ public class BasisSDKConstants
         BuildTarget.Android,
         BuildTarget.iOS,
     };
+    public static ScriptingImplementation ScriptingBackendFor(BuildTarget target)
+    {
+        return BuildPipeline.GetBuildTargetGroup(target) == BuildTargetGroup.Standalone ? ScriptingImplementation.CoreCLR : ScriptingImplementation.IL2CPP;
+    }
 }

@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.Scripts.BasisSdk.Players;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Device_Management.Devices;
@@ -12,7 +13,8 @@ using UnityEngine.ResourceManagement.AsyncOperations;
 
 namespace Basis.Scripts.BasisSdk.Interactions
 {
-    public class BasisPlayerInteract : MonoBehaviour
+    [AutoStaticsCleanup]
+    public partial class BasisPlayerInteract : MonoBehaviour
     {
         public static LayerMask IgnoreRaycasting;
         public static LayerMask playerLayer;
@@ -68,7 +70,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
             return origin + (delta / distance) * applied;
         }
 
-        private static readonly Collider[] _grabHitBuffer = new Collider[32];
+        [NoAutoStaticsCleanup] private static readonly Collider[] _grabHitBuffer = new Collider[32];
 
         [SerializeField]
         public BasisInteractInput[] InteractInputs = new BasisInteractInput[] { };
@@ -88,7 +90,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
 
         private BasisDirectTouch _directTouch;
 
-        private void Start()
+        private void Awake()
         {
             IgnoreRaycasting = LayerMask.NameToLayer("Ignore Raycast");
             playerLayer = LayerMask.NameToLayer("Player");
@@ -107,6 +109,13 @@ namespace Basis.Scripts.BasisSdk.Interactions
                    ~(1 << (int)IgnoredByInteractable) &
                    ~(1 << (int)LocalPlayerAvatar);
 
+            AsyncOperationHandle<Material> op = Addressables.LoadAssetAsync<Material>(LoadMaterialAddress);
+            LineMaterial = op.WaitForCompletion();
+            asyncOperationLineMaterial = op;
+        }
+
+        private void Start()
+        {
             Instance = this;
 
             _directTouch = new BasisDirectTouch();
@@ -123,10 +132,6 @@ namespace Basis.Scripts.BasisSdk.Interactions
                 BasisInput device = array[i];
                 OnInputChanged(device);
             }
-
-            AsyncOperationHandle<Material> op = Addressables.LoadAssetAsync<Material>(LoadMaterialAddress);
-            LineMaterial = op.WaitForCompletion();
-            asyncOperationLineMaterial = op;
         }
 
         private void OnDestroy()
@@ -177,6 +182,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
             // and when it is being removed (e.g., OpenXR eye tracking detected late).
             RemoveInput(input.UniqueDeviceIdentifier);
         }
+        // Ceiling on how much a larger target avatar may widen the pick radius.
 
         // Simulate after IK update
         [BurstCompile]
@@ -209,10 +215,21 @@ namespace Basis.Scripts.BasisSdk.Interactions
                 bool gripPressedAgain = gripDown && !interactInput.wasGripDown;
                 interactInput.wasGripDown = gripDown;
 
-                bool triggerDown = interactInput.input.CurrentInputState.Trigger >= BasisJiggleGrabDriver.GrabTriggerThreshold;
+                bool triggerDown = interactInput.input.CurrentInputState.Trigger >= BasisTriggerPressure.TriggerDownThreshold;
                 bool triggerPressedAgain = triggerDown && !interactInput.wasTriggerDown;
                 interactInput.wasTriggerDown = triggerDown;
                 bool desktopEye = IsDesktopCenterEye(interactInput.input);
+
+                if (BasisDeviceOffsetEditor.IsCapturing(interactInput.input) || !interactInput.input.PointerActive)
+                {
+                    interactInput.HasvalidRay = false;
+                    if (interactInput.lastTarget != null && interactInput.lastTarget.IsHoveredBy(interactInput.input))
+                    {
+                        interactInput.lastTarget.OnHoverEnd(interactInput.input, false);
+                    }
+                    InteractInputs[index] = interactInput;
+                    continue;
+                }
 
                 // After a grab-again drop, wait for grip release so the same press can't re-grab the pickup
                 if (interactInput.suppressGrabUntilRelease)
@@ -546,7 +563,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
             if (caster.FirstHit(out RaycastHit first, maxDistance) && first.collider != null)
             {
                 BasisInteractableObject owner = BasisInteractableObject.OwnerOfCollider(first.collider);
-                if (owner != null)
+                if (owner != null && first.distance <= owner.RayReach(maxDistance))
                 {
                     target = owner;
                     point = first.point;
@@ -571,7 +588,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
             {
                 RaycastHit hit = hits[index];
                 Collider collider = hit.collider;
-                if (collider == null || hit.distance > maxDistance)
+                if (collider == null)
                 {
                     continue;
                 }
@@ -579,7 +596,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
                 BasisInteractableObject owner = BasisInteractableObject.OwnerOfCollider(collider);
                 if (owner != null)
                 {
-                    if (hit.distance < targetDistance)
+                    if (hit.distance < targetDistance && hit.distance <= owner.RayReach(maxDistance))
                     {
                         targetDistance = hit.distance;
                         target = owner;
@@ -641,6 +658,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
                     if (hitInteractable.CanInteract(interactInput.input) &&
                         (!interactInput.lastTarget.IsInteractingWith(interactInput.input) || shouldHold))
                     {
+                        BasisUserActivation.Note(hitInteractable);
                         hitInteractable.OnInteractStart(interactInput.input);
                         interactInput.lastTarget = hitInteractable;
                     }
@@ -701,6 +719,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
                 {
                     if (!hitInteractable.IsInteractingWith(interactInput.input) || shouldHold)
                     {
+                        BasisUserActivation.Note(hitInteractable);
                         hitInteractable.OnInteractStart(interactInput.input);
                         interactInput.lastTarget = hitInteractable;
                     }
@@ -900,6 +919,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
             // End hover with willInteract=true (keeps state at Hovering for OnInteractStart)
             target.OnHoverEnd(input, true);
             // Transition: Hovering → Interacting
+            BasisUserActivation.Note(target);
             target.OnInteractStart(input);
 
             interactInput.lastTarget = target;
@@ -924,7 +944,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
         private static readonly Dictionary<BasisInput, HoverGizmo> _hoverGizmos = new Dictionary<BasisInput, HoverGizmo>();
         private static readonly HashSet<BasisInput> _hoverSeen = new HashSet<BasisInput>();
         private static readonly List<BasisInput> _hoverStale = new List<BasisInput>();
-        private static readonly Vector3[] _hoverRingBuf = new Vector3[HoverCircleSeg];
+        [NoAutoStaticsCleanup] private static readonly Vector3[] _hoverRingBuf = new Vector3[HoverCircleSeg];
         private static bool _hoverHooked;
 
         public static void UpdateHoverGizmos(bool show)
@@ -1159,6 +1179,7 @@ namespace Basis.Scripts.BasisSdk.Interactions
                     if (InteractInputs[i].IsInput(input))
                     {
                         BasisDebug.Log("Stole ownership, starting interact", BasisDebug.LogTag.Networking);
+                        BasisUserActivation.Note(interactableObject);
                         interactableObject.OnInteractStart(input);
                         InteractInputs[i].lastTarget = interactableObject;
                     }

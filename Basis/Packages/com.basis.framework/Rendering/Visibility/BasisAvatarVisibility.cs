@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System.Collections.Generic;
 using Basis.Scripts.BasisSdk.Players;
 using Unity.Mathematics;
@@ -5,7 +6,8 @@ using UnityEngine;
 
 namespace Basis.Scripts.Rendering
 {
-    public static class BasisAvatarVisibility
+    [AutoStaticsCleanup]
+    public static partial class BasisAvatarVisibility
     {
         public const float MinimumRadius = 0.6f;
         public const float RadiusPadding = 0.35f;
@@ -39,7 +41,7 @@ namespace Basis.Scripts.Rendering
                 BasisVisibilityFlags.Dynamic);
 
             Registered.Add(remote);
-            ApplyShadowEligibility(remote, remote.CurrentLodLevel);
+            ApplyShadowEligibility(remote, remote.CurrentMeshLodLevel);
         }
 
         public static void Unregister(BasisRemotePlayer remote)
@@ -83,7 +85,7 @@ namespace Basis.Scripts.Rendering
         /// </summary>
         public static void OnAvatarAlwaysLoadedChanged(BasisRemotePlayer remote)
         {
-            ApplyShadowEligibility(remote, remote != null ? remote.CurrentLodLevel : 0);
+            ApplyShadowEligibility(remote, remote != null ? remote.CurrentMeshLodLevel : 0);
         }
 
         private static float ReadMaxScale(Transform root)

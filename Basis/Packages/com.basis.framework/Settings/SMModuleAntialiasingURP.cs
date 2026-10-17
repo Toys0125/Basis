@@ -1,293 +1,417 @@
+using Unity.Scripting.LifecycleManagement;
+using System;
+using System.Text.RegularExpressions;
 using Basis.BasisUI;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Drivers;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
-
+[NoAutoStaticsCleanup]
 public class SMModuleAntialiasingURP : BasisSettingsBase
 {
-    private const string UpscalerAutomatic = "Automatic";
-    private const string UpscalerBilinear = "Bilinear";
-    private const string UpscalerNearest = "Nearest-Neighbor";
-    private const string UpscalerFsr1 = "FidelityFX Super Resolution 1.0";
-    private const string UpscalerFsr2 = BasisFsr2Upscaler.UpscalerName;
-
     public Camera Camera;
     public UniversalAdditionalCameraData Data;
     public int LowmsaaSampleCount = 2;
     public int MediumLowmsaaSampleCount = 4;
     public int HighmsaaSampleCount = 8;
-
+    public static readonly string[] TemporalUpscalerOptions = { "DLSS", "FSR 2", "FSR 3", "FSR 4" };
+    public static readonly string[] TemporalUpscalerLabelKeys = { "settings.graphics.aa.dlss", "settings.graphics.aa.fsr2", "settings.graphics.aa.fsr3", "settings.graphics.aa.fsr4" };
+    public static readonly string[] UpscalerQualityOptions = { "Native", "Quality", "Balanced", "Performance", "Ultra Performance" };
+    public static readonly string[] UpscalerQualityLabelKeys = { "settings.graphics.upscalerQuality.native", "settings.graphics.upscalerQuality.quality", "settings.graphics.upscalerQuality.balanced", "settings.graphics.upscalerQuality.performance", "settings.graphics.upscalerQuality.ultraPerformance" };
+    public static readonly string[] DlssModelOptions = { "Auto", "Default", "K", "M", "L" };
+    public static readonly string[] DlssModelLabelKeys = { "settings.graphics.dlssModel.auto", "settings.graphics.dlssModel.default", "settings.graphics.dlssModel.k", "settings.graphics.dlssModel.m", "settings.graphics.dlssModel.l" };
+    public static bool TemporalUpscalerActive { get; private set; }
+    public static event Action TemporalUpscalerChanged;
+    public static float UpscalerSharpness => Mathf.Clamp01(BasisSettingsDefaults.UpscalerSharpness.RawValue);
+    private const string Rtx40OrNewerPattern = @"\bRTX\s+(?:PRO\s+)?[4-9]0[5-9]0\b|\bAda\b|\bBlackwell\b";
+    private static string requestedUpscalerId = string.Empty;
+    private static string requestedQuality;
+    private static float cameraSharpening;
+#if ENABLE_UPSCALER_FRAMEWORK && ENABLE_NVIDIA && BASIS_HAS_NVIDIA
+    private static readonly UnityEngine.NVIDIA.DLSSQuality[] DlssQualityTiers = { UnityEngine.NVIDIA.DLSSQuality.DLAA, UnityEngine.NVIDIA.DLSSQuality.MaximumQuality, UnityEngine.NVIDIA.DLSSQuality.Balanced, UnityEngine.NVIDIA.DLSSQuality.MaximumPerformance, UnityEngine.NVIDIA.DLSSQuality.UltraPerformance };
+#endif
+#if ENABLE_UPSCALER_FRAMEWORK && ENABLE_AMD && BASIS_HAS_AMD
+    private static readonly UnityEngine.AMD.FSR2Quality[] Fsr2QualityTiers = { UnityEngine.AMD.FSR2Quality.Quality, UnityEngine.AMD.FSR2Quality.Quality, UnityEngine.AMD.FSR2Quality.Balanced, UnityEngine.AMD.FSR2Quality.Performance, UnityEngine.AMD.FSR2Quality.UltraPerformance };
+    private static readonly UnityEngine.AMD.FSR3Quality[] Fsr3QualityTiers = { UnityEngine.AMD.FSR3Quality.NativeAA, UnityEngine.AMD.FSR3Quality.Quality, UnityEngine.AMD.FSR3Quality.Balanced, UnityEngine.AMD.FSR3Quality.Performance, UnityEngine.AMD.FSR3Quality.UltraPerformance };
+    private static readonly UnityEngine.AMD.FSR4Quality[] Fsr4QualityTiers = { UnityEngine.AMD.FSR4Quality.NativeAA, UnityEngine.AMD.FSR4Quality.Quality, UnityEngine.AMD.FSR4Quality.Balanced, UnityEngine.AMD.FSR4Quality.Performance, UnityEngine.AMD.FSR4Quality.UltraPerformance };
+#endif
+    public static string TemporalUpscalerId(string option)
+    {
+        switch (option?.ToLowerInvariant())
+        {
+            case "dlss":
+#if ENABLE_NVIDIA && BASIS_HAS_NVIDIA
+                // The stock DLSS provider is used on desktop. XR uses the same
+                // Core RP implementation with Basis's per-eye context adapter.
+                return BasisDeviceManagement.IsCurrentModeVR()
+                    ? BasisDlssXrUpscaler.UpscalerId
+                    : "nvidia.dlss4";
+#else
+                return "nvidia.dlss4";
+#endif
+            case "fsr 2":
+                return "amd.fsr2";
+            case "fsr 3":
+                return "amd.fsr3";
+            case "fsr 4":
+                return "amd.fsr4";
+            default:
+                return null;
+        }
+    }
+    public static bool IsTemporalUpscalerOption(string option) => TemporalUpscalerId(option) != null;
+    public static bool IsDlssOption(string option) => string.Equals(option, "DLSS", StringComparison.OrdinalIgnoreCase);
+    public static bool IsRtx40OrNewer(string deviceName) => !string.IsNullOrEmpty(deviceName) && Regex.IsMatch(deviceName, Rtx40OrNewerPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    public static bool IsUpscalerSupported(string option)
+    {
+#if ENABLE_UPSCALER_FRAMEWORK
+        string upscalerId = TemporalUpscalerId(option);
+        return upscalerId != null && RenderPipelineManager.currentPipeline is UniversalRenderPipeline pipeline && pipeline.GetUpscaler(upscalerId) is IUpscaler upscaler && upscaler.isSupportedOnDevice;
+#else
+        return false;
+#endif
+    }
+#if ENABLE_UPSCALER_FRAMEWORK
+#if UNITY_EDITOR
+    [UnityEditor.InitializeOnLoadMethod]
+#endif
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void SkipUnavailableUpscalers()
+    {
+        UniversalRenderPipeline.skipUpscaler = IsUpscalerUnavailable;
+    }
+    public static bool IsUpscalerUnavailable(string upscalerId)
+    {
+#if ENABLE_AMD && BASIS_HAS_AMD
+        UnityEngine.AMD.GraphicsDeviceFeature feature;
+        if (upscalerId == FSR3IUpscaler.registeredId)
+        {
+            feature = UnityEngine.AMD.GraphicsDeviceFeature.FSRUpscale3;
+        }
+        else if (upscalerId == FSR4IUpscaler.registeredId)
+        {
+            feature = UnityEngine.AMD.GraphicsDeviceFeature.FSRUpscale4;
+        }
+        else
+        {
+            return false;
+        }
+        if (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Direct3D12 || !UnityEngine.AMD.AMDUnityPlugin.IsLoaded())
+        {
+            return true;
+        }
+        UnityEngine.AMD.GraphicsDevice device = UnityEngine.AMD.GraphicsDevice.device ?? UnityEngine.AMD.GraphicsDevice.CreateGraphicsDevice();
+        return device == null || !device.IsFeatureAvailable(feature);
+#else
+        return false;
+#endif
+    }
+#endif
+    private void OnEnable()
+    {
+        UniversalRenderPipeline.BasisTemporalMotionVectorEdgeRepair =
+            BasisSettingsDefaults.TemporalMotionVectorEdgeRepair.RawValue;
+        RenderPipelineManager.activeRenderPipelineCreated += OnRenderPipelineCreated;
+        BasisDeviceManagement.OnBootModeChanged += OnBootModeChanged;
+        BasisLocalCameraDriver.InstanceExists += ApplyCameraSharpening;
+    }
+    private void OnDisable()
+    {
+        RenderPipelineManager.activeRenderPipelineCreated -= OnRenderPipelineCreated;
+        BasisDeviceManagement.OnBootModeChanged -= OnBootModeChanged;
+        BasisLocalCameraDriver.InstanceExists -= ApplyCameraSharpening;
+    }
+    private void OnRenderPipelineCreated()
+    {
+        ApplyAntialiasing(BasisSettingsDefaults.Antialiasing.RawValue, false);
+    }
+    private void OnBootModeChanged(string mode)
+    {
+        // Resolve the DLSS ID again: desktop and XR use different registered
+        // providers, and the boot mode can change without a settings change.
+        ApplyAntialiasing(BasisSettingsDefaults.Antialiasing.RawValue, false);
+    }
     public override void ValidSettingsChange(string matchedSettingName, string optionValue)
     {
-        bool antialiasingChanged = matchedSettingName == BasisSettingsDefaults.Antialiasing.BindingKey;
-        bool upscalingChanged = matchedSettingName == BasisSettingsDefaults.Upscaling.BindingKey;
-        bool upscalingQualityChanged = matchedSettingName == BasisSettingsDefaults.UpscalingQuality.BindingKey;
-        bool motionVectorEdgeRepairChanged = matchedSettingName == BasisSettingsDefaults.TemporalMotionVectorEdgeRepair.BindingKey;
-        if (!antialiasingChanged && !upscalingChanged && !upscalingQualityChanged && !motionVectorEdgeRepairChanged)
-            return;
-
-        if (motionVectorEdgeRepairChanged)
+        if (matchedSettingName == BasisSettingsDefaults.TemporalMotionVectorEdgeRepair.BindingKey)
         {
             if (bool.TryParse(optionValue, out bool enabled))
-            {
                 UniversalRenderPipeline.BasisTemporalMotionVectorEdgeRepair = enabled;
-                BasisDebug.Log($"Temporal motion-vector edge repair {(enabled ? "enabled" : "disabled")}", BasisDebug.LogTag.Local);
+            return;
+        }
+        if (matchedSettingName == BasisSettingsDefaults.UpscalerQuality.BindingKey)
+        {
+            requestedQuality = optionValue;
+            ApplyUpscaler(requestedUpscalerId);
+            return;
+        }
+        if (matchedSettingName == BasisSettingsDefaults.UpscalerSharpness.BindingKey || matchedSettingName == BasisSettingsDefaults.DlssModel.BindingKey)
+        {
+            ApplyUpscaler(requestedUpscalerId);
+            return;
+        }
+        if (matchedSettingName != BasisSettingsDefaults.Antialiasing.BindingKey)
+        {
+            return;
+        }
+        ApplyAntialiasing(optionValue, true);
+    }
+    private void ApplyAntialiasing(string optionValue, bool reportMissing)
+    {
+        UniversalRenderPipelineAsset Asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
+        if (Asset == null)
+        {
+            if (reportMissing)
+            {
+                BasisDebug.LogError("Missing Asset Pipeline!");
             }
             return;
         }
-
-        UniversalRenderPipelineAsset asset = QualitySettings.renderPipeline as UniversalRenderPipelineAsset;
-        if (asset == null)
+        optionValue = optionValue == null ? string.Empty : optionValue.ToLowerInvariant();
+        if (IsTemporalUpscalerOption(optionValue) && !IsUpscalerSupported(optionValue))
         {
-            BasisDebug.LogError("Missing Asset Pipeline!");
-            return;
+            string fallback = BasisSettingsDefaults.Antialiasing.DefaultValue.GetDefault().ToLowerInvariant();
+            if (RenderPipelineManager.currentPipeline != null)
+            {
+                BasisDebug.LogWarning($"Antialiasing {optionValue} is not supported on this device, using {fallback}", BasisDebug.LogTag.Local);
+            }
+            optionValue = fallback;
         }
-
-        if (upscalingQualityChanged)
-        {
-            ApplyUpscalingQuality(asset, optionValue);
-            return;
-        }
-
-        if (upscalingChanged)
-        {
-            ApplyUpscaling(asset, optionValue);
-            ApplyUpscalingQuality(asset, BasisSettingsDefaults.UpscalingQuality.RawValue);
-            return;
-        }
-
-        if (!TryResolveCamera())
-        {
-            BasisDebug.LogError("Missing Camera Or Data!");
-            return;
-        }
-
-        BasisDebug.Log($"Antialiasing Changed to {optionValue}", BasisDebug.LogTag.Local);
+        int sampleCount = 1;
+        string upscalerId = string.Empty;
         switch (optionValue)
         {
             case "off":
             case "msaa off":
-                ApplyMsaa(asset, 1, false);
                 break;
             case "msaa 2x":
-                DisableTemporalUpscalerForMsaa(asset);
-                ApplyMsaa(asset, LowmsaaSampleCount, true);
+                sampleCount = LowmsaaSampleCount;
                 break;
             case "msaa 4x":
-                DisableTemporalUpscalerForMsaa(asset);
-                ApplyMsaa(asset, MediumLowmsaaSampleCount, true);
+                sampleCount = MediumLowmsaaSampleCount;
                 break;
             case "msaa 8x":
-                DisableTemporalUpscalerForMsaa(asset);
-                ApplyMsaa(asset, HighmsaaSampleCount, true);
+                sampleCount = HighmsaaSampleCount;
                 break;
-
-            // Compatibility with values saved before upscaling became a separate setting.
             case "linear":
-                MigrateLegacyUpscalerSetting(asset, "Bilinear");
+                upscalerId = "unity.bilinear";
                 break;
             case "point":
-                MigrateLegacyUpscalerSetting(asset, "Nearest-Neighbor");
+                upscalerId = "unity.point";
                 break;
             case "fsr":
-                MigrateLegacyUpscalerSetting(asset, "FSR 1.0");
+                upscalerId = "amd.fsr1";
                 break;
             case "stp":
-                ApplyMsaa(asset, 1, false);
-#if ENABLE_UPSCALER_FRAMEWORK
-                BasisDlssXrState.SetActive(false);
-                asset.upscalerName = "Spatial-Temporal Post-Processing";
-#else
-                asset.upscalingFilter = UpscalingFilterSelection.STP;
-#endif
+                upscalerId = "unity.stp";
+                break;
+            default:
+                upscalerId = TemporalUpscalerId(optionValue);
+                if (upscalerId == null)
+                {
+                    return;
+                }
                 break;
         }
-    }
-
-    private bool TryResolveCamera()
-    {
-        if (Camera != null && Data != null)
-            return true;
-
-        if (BasisLocalCameraDriver.Instance != null)
-        {
-            Camera = BasisLocalCameraDriver.Instance.Camera;
-            Data = BasisLocalCameraDriver.Instance.CameraData;
-        }
-
+        Asset.msaaSampleCount = sampleCount;
+#if ENABLE_UPSCALER_FRAMEWORK
+        ApplyUpscaler(upscalerId);
+#else
+        Asset.upscalingFilter = LegacyUpscalingFilter(upscalerId);
+#endif
         if (Camera == null)
-            Camera = Camera.main;
-
-        if (Camera != null && Data == null)
-            Camera.TryGetComponent(out Data);
-
-        return Camera != null && Data != null;
-    }
-
-    private void ApplyMsaa(UniversalRenderPipelineAsset asset, int sampleCount, bool enabled)
-    {
-        asset.msaaSampleCount = sampleCount;
-        Camera.allowMSAA = enabled;
+        {
+            if (BasisLocalCameraDriver.Instance != null)
+            {
+                Camera = BasisLocalCameraDriver.Instance.Camera;
+                Data = BasisLocalCameraDriver.Instance.CameraData;
+            }
+            if (Camera == null)
+            {
+                Camera = Camera.main;
+#if UNITY_SERVER
+                if (Camera != null)
+                {
+                    Camera.TryGetComponent<UniversalAdditionalCameraData>(out Data);
+                }
+#endif
+            }
+        }
+        if (Camera == null || Data == null)
+        {
+            if (reportMissing)
+            {
+                BasisDebug.LogError("Missing Camera Or Data!");
+            }
+            return;
+        }
+        BasisDebug.Log($"Antialiasing Changed to {optionValue}", BasisDebug.LogTag.Local);
+        Camera.allowMSAA = sampleCount > 1;
         Data.antialiasing = AntialiasingMode.None;
         Data.antialiasingQuality = AntialiasingQuality.Low;
     }
-
-    private void MigrateLegacyUpscalerSetting(UniversalRenderPipelineAsset asset, string upscalingValue)
+    private static void ApplyUpscaler(string upscalerId)
     {
-        BasisSettingsDefaults.Antialiasing.SetValue("Off");
-        BasisSettingsDefaults.Upscaling.SetValue(upscalingValue);
-        ApplyMsaa(asset, 1, false);
-        ApplyUpscaling(asset, upscalingValue.ToLowerInvariant());
-    }
-
-    private static void DisableTemporalUpscalerForMsaa(UniversalRenderPipelineAsset asset)
-    {
+        string previousUpscalerId = requestedUpscalerId;
+        requestedUpscalerId = upscalerId ?? string.Empty;
+        bool temporal = false;
+        bool sharpenOnCamera = false;
 #if ENABLE_UPSCALER_FRAMEWORK
-        if (asset.upscalerName == UpscalerFsr2 || asset.upscalerName == BasisDlssXrState.UpscalerName)
+        if (RenderPipelineManager.currentPipeline is UniversalRenderPipeline pipeline)
         {
-            BasisDlssXrState.SetActive(false);
-            BasisSettingsDefaults.Upscaling.SetValue("Automatic");
-            asset.upscalerName = UpscalerAutomatic;
-            BasisDebug.LogWarning("MSAA is incompatible with temporal upscaling. Upscaling was reset to Automatic.");
-        }
-#endif
-    }
+            IUpscaler upscaler = string.IsNullOrEmpty(requestedUpscalerId) ? null : pipeline.GetUpscaler(requestedUpscalerId);
+            if (upscaler != null && !upscaler.isSupportedOnDevice)
+                upscaler = null;
 
-    private static void ApplyUpscaling(UniversalRenderPipelineAsset asset, string optionValue)
-    {
-        string requestedName = optionValue switch
-        {
-            "bilinear" => UpscalerBilinear,
-            "nearest-neighbor" => UpscalerNearest,
-            "point" => UpscalerNearest,
-            "fsr" => UpscalerFsr1,
-            "fsr 1.0" => UpscalerFsr1,
-            "fsr1" => UpscalerFsr1,
-            "fsr 2" => UpscalerFsr2,
-            "fsr2" => UpscalerFsr2,
-            "dlss" => BasisDlssXrState.UpscalerName,
-            _ => UpscalerAutomatic,
-        };
-
-        bool dlssRequested = requestedName == BasisDlssXrState.UpscalerName;
-        bool fsr2Requested = requestedName == UpscalerFsr2;
-
-        if (fsr2Requested && BasisDeviceManagement.IsCurrentModeVR())
-        {
-            BasisDebug.LogWarning("Unity's FSR 2 provider is not XR-enabled. Falling back to Automatic in VR.");
-            requestedName = UpscalerAutomatic;
-            fsr2Requested = false;
-        }
-
-#if !(ENABLE_UPSCALER_FRAMEWORK && (UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN))
-        if (dlssRequested || fsr2Requested)
-        {
-            BasisDebug.LogWarning("The selected temporal vendor upscaler is unavailable on this platform. Falling back to Automatic.");
-            requestedName = UpscalerAutomatic;
-            dlssRequested = false;
-            fsr2Requested = false;
-        }
-#else
-        if (fsr2Requested && !BasisFsr2Upscaler.IsRuntimeSupported())
-        {
-            BasisDebug.LogWarning("FSR2 is unavailable on this GPU, driver, or graphics API. Falling back to Automatic.");
-            requestedName = UpscalerAutomatic;
-            fsr2Requested = false;
-        }
-
-        if (dlssRequested && !BasisDlssXrUpscaler.IsRuntimeSupported())
-        {
-            BasisDebug.LogWarning("DLSS is unavailable on this NVIDIA GPU, driver, or graphics API. Falling back to Automatic.");
-            requestedName = UpscalerAutomatic;
-            dlssRequested = false;
-        }
-#endif
-
-        if (dlssRequested && BasisDeviceManagement.IsCurrentModeVR())
-        {
-            BasisDlssXrState.SetActive(true);
-            if (!BasisDlssXrState.EnsureCompatibleTextureLayout())
+#if ENABLE_NVIDIA && BASIS_HAS_NVIDIA
+            bool dlssXrRequested = upscaler != null
+                && requestedUpscalerId == BasisDlssXrUpscaler.UpscalerId
+                && BasisDeviceManagement.IsCurrentModeVR();
+            BasisDlssXrState.SetActive(dlssXrRequested);
+            if (dlssXrRequested && !BasisDlssXrState.EnsureCompatibleTextureLayout())
             {
-                BasisDebug.LogWarning("The active XR runtime cannot provide separate eye textures required by Basis DLSS VR. Falling back to Automatic.");
                 BasisDlssXrState.SetActive(false);
-                requestedName = UpscalerAutomatic;
-                dlssRequested = false;
+                upscaler = null;
+                BasisDebug.LogWarning("The XR runtime does not support separate eye textures required by DLSS XR.");
+            }
+#else
+            BasisDlssXrState.SetActive(false);
+#endif
+            pipeline.SetUpscaler(upscaler != null ? requestedUpscalerId : string.Empty);
+            if (upscaler != null)
+            {
+                ApplyUpscalerOptions(pipeline.GetUpscalerOptions(requestedUpscalerId), requestedQuality ?? BasisSettingsDefaults.UpscalerQuality.RawValue);
+            }
+            temporal = upscaler != null && upscaler.isTemporal;
+            sharpenOnCamera = temporal && !upscaler.supportsSharpening;
+        }
+#endif
+        cameraSharpening = sharpenOnCamera ? UpscalerSharpness : 0f;
+        ApplyCameraSharpening();
+        bool changed = temporal != TemporalUpscalerActive || previousUpscalerId != requestedUpscalerId;
+        TemporalUpscalerActive = temporal;
+        if (changed)
+            TemporalUpscalerChanged?.Invoke();
+    }
+    private static void ApplyCameraSharpening()
+    {
+        if (BasisLocalCameraDriver.HasInstance && BasisLocalCameraDriver.Instance != null && BasisLocalCameraDriver.Instance.CameraData != null)
+        {
+            BasisLocalCameraDriver.Instance.CameraData.taaSettings.contrastAdaptiveSharpening = cameraSharpening;
+        }
+    }
+#if ENABLE_UPSCALER_FRAMEWORK
+    private static void ApplyUpscalerOptions(UpscalerOptions options, string quality)
+    {
+        if (options == null)
+        {
+            return;
+        }
+        int tier = 0;
+        for (int index = 0; index < UpscalerQualityOptions.Length; index++)
+        {
+            if (string.Equals(UpscalerQualityOptions[index], quality, StringComparison.OrdinalIgnoreCase))
+            {
+                tier = index;
+                break;
             }
         }
-        else
+        if (BasisDeviceManagement.IsCurrentModeVR())
         {
-            BasisDlssXrState.SetActive(false);
+            // In VR the eye-target resolution stays owned by the compositor.
+            // The separate input-resolution slider controls the XR DLSS source.
+            tier = BasisDlssXrState.IsActive ? 1 : 0;
         }
-
-        bool temporalVendorUpscaler = dlssRequested || fsr2Requested;
-        if (temporalVendorUpscaler)
+        float sharpness = UpscalerSharpness;
+        options.resolutionMode = BasisDlssXrState.IsActive
+            ? UpscalerResolutionMode.CustomScaling
+            : UpscalerResolutionMode.QualityMode;
+#if ENABLE_NVIDIA && BASIS_HAS_NVIDIA
+        if (options is DLSSOptions dlss)
         {
-            asset.msaaSampleCount = 1;
-            BasisSettingsDefaults.Antialiasing.SetValue("Off");
+            dlss.dlssQualityMode = DlssQualityTiers[tier];
+            ApplyDlssModel(dlss, BasisSettingsDefaults.DlssModel.RawValue);
+            return;
         }
-
-#if ENABLE_UPSCALER_FRAMEWORK
-        if (!IsRegisteredUpscaler(requestedName))
+#endif
+#if ENABLE_AMD && BASIS_HAS_AMD
+        if (options is FSR2Options fsr2)
         {
-            BasisDebug.LogWarning($"Upscaler '{requestedName}' is unavailable on this platform. Falling back to Automatic.");
-            BasisDlssXrState.SetActive(false);
-            requestedName = UpscalerAutomatic;
+            fsr2.fsr2QualityMode = Fsr2QualityTiers[tier];
+            fsr2.enableSharpening = sharpness > 0f;
+            fsr2.sharpness = sharpness;
+            if (tier == 0)
+            {
+                options.resolutionMode = UpscalerResolutionMode.CustomScaling;
+            }
+            return;
         }
-
-        asset.upscalerName = requestedName;
+        if (options is FSR3Options fsr3)
+        {
+            fsr3.fsr3QualityMode = Fsr3QualityTiers[tier];
+            fsr3.enableSharpening = sharpness > 0f;
+            fsr3.sharpness = sharpness;
+            return;
+        }
+        if (options is FSR4Options fsr4)
+        {
+            fsr4.fsr4QualityMode = Fsr4QualityTiers[tier];
+            fsr4.enableSharpening = sharpness > 0f;
+            fsr4.sharpness = sharpness;
+        }
+#endif
+    }
+#if ENABLE_NVIDIA && BASIS_HAS_NVIDIA
+    private static void ApplyDlssModel(DLSSOptions dlss, string model)
+    {
+        UnityEngine.NVIDIA.DLSSPreset preset = UnityEngine.NVIDIA.DLSSPreset.Preset_Default;
+        UnityEngine.NVIDIA.DLSSPreset ultraPerformancePreset = UnityEngine.NVIDIA.DLSSPreset.Preset_Default;
+        switch (model?.ToLowerInvariant())
+        {
+            case "default":
+                break;
+            case "k":
+                preset = ultraPerformancePreset = UnityEngine.NVIDIA.DLSSPreset.Preset_K;
+                break;
+            case "m":
+                preset = ultraPerformancePreset = UnityEngine.NVIDIA.DLSSPreset.Preset_M;
+                break;
+            case "l":
+                preset = ultraPerformancePreset = UnityEngine.NVIDIA.DLSSPreset.Preset_L;
+                break;
+            default:
+                if (IsRtx40OrNewer(SystemInfo.graphicsDeviceName))
+                {
+                    preset = ultraPerformancePreset = UnityEngine.NVIDIA.DLSSPreset.Preset_L;
+                }
+                break;
+        }
+        dlss.dlssRenderPresetDLAA = preset;
+        dlss.dlssRenderPresetQuality = preset;
+        dlss.dlssRenderPresetBalanced = preset;
+        dlss.dlssRenderPresetPerformance = preset;
+        dlss.dlssRenderPresetUltraPerformance = ultraPerformancePreset;
+    }
+#endif
 #else
-        asset.upscalingFilter = requestedName switch
-        {
-            UpscalerBilinear => UpscalingFilterSelection.Linear,
-            UpscalerNearest => UpscalingFilterSelection.Point,
-            UpscalerFsr1 => UpscalingFilterSelection.FSR,
-            _ => UpscalingFilterSelection.Auto,
-        };
-#endif
-
-        // Changing the upscaler changes the meaning of URP's renderScale. Spatial/non-temporal
-        // paths use the normal Render Resolution setting, while FSR2/DLSS use the dedicated
-        // source-resolution percentage.
-        SMModuleRenderResolutionURP.ApplyPipelineRenderScale(asset, BasisSettingsDefaults.RenderResolution.RawValue);
-
-        BasisDebug.Log($"Upscaling Changed to {requestedName}", BasisDebug.LogTag.Local);
-    }
-
-    private static void ApplyUpscalingQuality(UniversalRenderPipelineAsset asset, string optionValue)
+    private static UpscalingFilterSelection LegacyUpscalingFilter(string upscalerId)
     {
-        string quality = string.IsNullOrWhiteSpace(optionValue)
-            ? "automatic"
-            : optionValue.Trim().ToLowerInvariant();
-
-#if ENABLE_UPSCALER_FRAMEWORK
-        BasisFsr2Upscaler.SetQualityMode(quality);
-        BasisDlssXrUpscaler.SetQualityMode(quality);
-#endif
-
-        BasisDebug.Log($"Upscaling Quality Changed to {quality}", BasisDebug.LogTag.Local);
-    }
-
-#if ENABLE_UPSCALER_FRAMEWORK
-    private static bool IsRegisteredUpscaler(string requestedName)
-    {
-        if (RenderPipelineManager.currentPipeline is not UniversalRenderPipeline pipeline)
+        switch (upscalerId)
         {
-            // Settings can be loaded before URP constructs its runtime registry.
-            return true;
+            case "unity.bilinear":
+                return UpscalingFilterSelection.Linear;
+            case "unity.point":
+                return UpscalingFilterSelection.Point;
+            case "amd.fsr1":
+                return UpscalingFilterSelection.FSR;
+            case "unity.stp":
+                return UpscalingFilterSelection.STP;
+            default:
+                return UpscalingFilterSelection.Auto;
         }
-
-        foreach (string availableName in pipeline.availableUpscalerNames)
-        {
-            if (string.Equals(availableName, requestedName, System.StringComparison.Ordinal))
-                return true;
-        }
-
-        return false;
     }
 #endif
-
     public override void ChangedSettings()
     {
     }

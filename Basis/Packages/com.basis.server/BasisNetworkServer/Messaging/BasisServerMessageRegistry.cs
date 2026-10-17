@@ -288,7 +288,7 @@ public static class BasisServerMessageRegistry
                 BasisServerHandleEvents.LoadResource(reader, peer, LRuuid);
                 return;
             }
-            BNL.LogError($"User UUID not found for peer: {peer}");
+            BNL.LogError($"User UUID not found for peer: {peer.Id}");
             reader.Recycle();
         });
 
@@ -303,6 +303,9 @@ public static class BasisServerMessageRegistry
 
         RegisterCore(BasisNetworkCommons.AdminChannel, (peer, reader, channel, dm) =>
             BasisPlayerModeration.OnAdminMessage(peer, reader)); // recycles inside
+
+        RegisterCore(BasisNetworkCommons.StorageChannel, (peer, reader, channel, dm) =>
+            BasisNetworkServer.Storage.BasisServerStorage.HandleRequest(reader, peer));
 
         RegisterCore(BasisNetworkCommons.ContentShareChannel, (peer, reader, channel, dm) =>
         {
@@ -391,7 +394,7 @@ public static class BasisServerMessageRegistry
     {
         if (!NetworkServer.AuthIdentity.NetIDToUUID(peer, out uuid))
         {
-            BNL.LogError($"User UUID not found for peer: {peer}");
+            BNL.LogError($"User UUID not found for peer: {peer.Id}");
             reader.Recycle();
             return false;
         }

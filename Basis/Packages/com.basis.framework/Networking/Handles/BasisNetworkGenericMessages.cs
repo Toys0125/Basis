@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.Network.Core;
 using Basis.Scripts.Networking;
 using Basis.Scripts.Networking.NetworkedAvatar;
@@ -10,7 +11,8 @@ using System.Threading.Tasks;
 using static BasisNetworkCore.Serializable.SerializableBasis;
 using static DarkRift.Basis_Common.Serializable.SerializableBasis;
 using static SerializableBasis;
-public static class BasisNetworkGenericMessages
+[AutoStaticsCleanup]
+public static partial class BasisNetworkGenericMessages
 {
     public class DeferredMessage
     {
@@ -35,7 +37,7 @@ public static class BasisNetworkGenericMessages
     public delegate void OnNetworkMessageReceiveOwnershipTransfer(string UniqueEntityID, ushort NetIdNewOwner, bool IsOwner);
     public delegate void OnNetworkMessageReceiveOwnershipRemoved(string UniqueEntityID);
     // Sending message with different conditions
-    private static readonly ThreadLocal<NetDataWriter> threadLocalWriter = new ThreadLocal<NetDataWriter>(() => new NetDataWriter());
+    [NoAutoStaticsCleanup] private static readonly ThreadLocal<NetDataWriter> threadLocalWriter = new ThreadLocal<NetDataWriter>(() => new NetDataWriter());
     public static void RegisterHandler(ushort messageIndex, Action<ushort, byte[], DeliveryMethod> handler)
     {
         _handlers[messageIndex] = handler;
@@ -390,8 +392,9 @@ public static class BasisNetworkGenericMessages
     public static void OnNetworkMessageSendDirect(ushort messageIndex, byte[] buffer = null, DeliveryMethod deliveryMethod = DeliveryMethod.Unreliable, ushort[] recipients = null, bool allowServerFallback = true)
     {
         BasisP2PManager.PartitionRecipients(recipients, out List<ushort> directIds, out List<ushort> relayIds);
+        bool relayBroadcast = allowServerFallback && BasisP2PManager.RelayAsBroadcast(recipients, directIds, relayIds, buffer != null ? buffer.Length : 0);
 
-        if (directIds != null && directIds.Count > 0)
+        if (!relayBroadcast && directIds != null && directIds.Count > 0)
         {
             NetDataWriter p2pWriter = threadLocalWriter.Value;
             p2pWriter.Reset();
@@ -414,7 +417,7 @@ public static class BasisNetworkGenericMessages
             {
                 messageIndex = messageIndex,
                 payload = buffer,
-                recipients = relayIds.ToArray()
+                recipients = relayBroadcast ? null : relayIds.ToArray()
             };
             sceneDataMessage.Serialize(netDataWriter);
             BasisNetworkConnection.LocalPlayerPeer.Send(netDataWriter, BasisNetworkCommons.DirectSceneServerChannel, deliveryMethod);
@@ -474,7 +477,7 @@ public static class BasisNetworkGenericMessages
         }
         catch (OperationCanceledException)
         {
-            BasisDebug.Log($"Load cancelled for {LocalLoadResource.LoadedNetID} (disconnected)", BasisDebug.LogTag.Networking);
+            BasisDebug.Log($"Load cancelled for {LocalLoadResource.LoadedNetID}", BasisDebug.LogTag.Networking);
         }
     }
 

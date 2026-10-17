@@ -199,36 +199,39 @@ namespace UnityEngine.Rendering.Universal
 
         internal static Matrix4x4 CalculateJitterMatrix(UniversalCameraData cameraData, JitterFunc jitterFunc)
         {
-            Matrix4x4 jitterMat = Matrix4x4.identity;
             cameraData.subpixelJitter = Vector2.zero;
+            if (!cameraData.IsTemporalAAEnabled())
+                return Matrix4x4.identity;
 
-            bool isJitter = cameraData.IsTemporalAAEnabled();
-            if (isJitter)
-            {
-                int taaFrameIndex = CalculateTaaFrameIndex(ref cameraData.taaSettings);
 
-                float actualWidth = cameraData.cameraTargetDescriptor.width;
-                float actualHeight = cameraData.cameraTargetDescriptor.height;
-                float jitterScale = cameraData.taaSettings.jitterScale;
+            int taaFrameIndex = CalculateTaaFrameIndex(ref cameraData.taaSettings);
+            float jitterScale = cameraData.taaSettings.jitterScale;
 
-                Vector2 jitter;
-                bool allowScaling;
-                jitterFunc(taaFrameIndex, out jitter, out allowScaling);
+            jitterFunc(taaFrameIndex, out Vector2 jitter, out bool allowScaling);
 
-                if (allowScaling)
-                    jitter *= jitterScale;
+            if (allowScaling)
+                jitter *= jitterScale;
 
-                // Keep the exact pixel-space offset used to jitter the projection. FSR2/DLSS
-                // need this value to undo the current sample offset when reprojecting history.
-                cameraData.subpixelJitter = jitter;
+            return CalculateJitterMatrix(cameraData, jitter);
+        }
 
-                float offsetX = jitter.x * (2.0f / actualWidth);
-                float offsetY = jitter.y * (2.0f / actualHeight);
+        /// <summary>
+        /// Builds a jitter matrix from a pre-computed sub-pixel jitter offset.
+        /// Used by upscalers that compute jitter with resolution-dependent parameters.
+        /// </summary>
+        /// <param name="cameraData">Camera data containing render target dimensions.</param>
+        /// <param name="subpixelJitter">Sub-pixel jitter offset, typically in range [-0.5, 0.5].</param>
+        internal static Matrix4x4 CalculateJitterMatrix(UniversalCameraData cameraData, Vector2 subpixelJitter)
+        {
+            cameraData.subpixelJitter = subpixelJitter;
+            float actualWidth = cameraData.cameraTargetDescriptor.width;
+            float actualHeight = cameraData.cameraTargetDescriptor.height;
 
-                jitterMat = Matrix4x4.Translate(new Vector3(offsetX, offsetY, 0.0f));
-            }
 
-            return jitterMat;
+            float offsetX = subpixelJitter.x * (2.0f / actualWidth);
+            float offsetY = subpixelJitter.y * (2.0f / actualHeight);
+
+            return Matrix4x4.Translate(new Vector3(offsetX, offsetY, 0.0f));
         }
 
         internal static void CalculateJitter(int frameIndex, out Vector2 jitter, out bool allowScaling)
@@ -296,7 +299,7 @@ namespace UnityEngine.Rendering.Universal
             return taaFilterWeights;
         }
 
-        internal static GraphicsFormat[] AccumulationFormatList = new GraphicsFormat[]
+        internal static readonly GraphicsFormat[] AccumulationFormatList = new GraphicsFormat[]
         {
             GraphicsFormat.R16G16B16A16_SFloat,
             GraphicsFormat.B10G11R11_UFloatPack32,
@@ -340,9 +343,7 @@ namespace UnityEngine.Rendering.Universal
             return taaDesc;
         }
 
-        static uint s_warnCounter = 0;
-
-        internal static string ValidateAndWarn(UniversalCameraData cameraData, bool isSTPRequested = false)
+        internal static string ValidateAndWarn(UniversalCameraData cameraData, ref uint warnCounter, bool isSTPRequested = false)
         {
             string reasonWarning = null;
 
@@ -380,9 +381,13 @@ namespace UnityEngine.Rendering.Universal
             if (reasonWarning != null)
             {
                 const int warningThrottleFrames = 60 * 1; // 60 FPS * 1 sec
-                if (s_warnCounter % warningThrottleFrames == 0)
+                if (warnCounter % warningThrottleFrames == 0)
                     Debug.LogWarning("Disabling TAA " + (isSTPRequested ? "and STP " : "") + reasonWarning);
-                s_warnCounter++;
+
+                unchecked
+                {
+                    warnCounter++;
+                }
             }
 
             return reasonWarning;
@@ -441,7 +446,7 @@ namespace UnityEngine.Rendering.Universal
             // Frame #2: MotionVectors.Update: #2, Taa.Execute: #2 prev #2   (Ooops! Incorrect history for frame #2!)
             TextureHandle activeMotionVectors = isNewFrame ? srcMotionVectors : renderGraph.defaultResources.blackTexture;
 
-            using (var builder = renderGraph.AddRasterRenderPass<TaaPassData>("Temporal Anti-aliasing", out var passData, ProfilingSampler.Get(URPProfileId.RG_TAA)))
+            using (var builder = renderGraph.AddRasterRenderPass<TaaPassData>("Temporal Anti-aliasing", out var passData, URPProfilingSamplers.TAA))
             {
                 passData.dstTex = dstColor;
                 builder.SetRenderAttachment(dstColor, 0, AccessFlags.Write);
@@ -456,8 +461,8 @@ namespace UnityEngine.Rendering.Universal
 
                 if (cameraData.xr.enabled)
                 {
-                    // Apply MultiviewRenderRegionsCompatible flag only for the first pass in multipass
-                    if (cameraData.xr.multipassId == 0)
+                    // Multiview render regions are incompatible with the inner (foveal) pass in Quad View
+                    if (!cameraData.xr.isQuadViewInnerPass)
                     {
                         builder.SetExtendedFeatureFlags(ExtendedFeatureFlags.MultiviewRenderRegionsCompatible);
                     }
@@ -509,7 +514,7 @@ namespace UnityEngine.Rendering.Universal
             if (isNewFrame)
             {
                 int kHistoryCopyPass = taaMaterial.shader.passCount - 1;
-                using (var builder = renderGraph.AddRasterRenderPass<TaaPassData>("Temporal Anti-aliasing Copy History", out var passData, ProfilingSampler.Get(URPProfileId.RG_TAACopyHistory)))
+                using (var builder = renderGraph.AddRasterRenderPass<TaaPassData>("Temporal Anti-aliasing Copy History", out var passData, URPProfilingSamplers.TAACopyHistory))
                 {
                     passData.dstTex = srcAccumulation;
                     builder.SetRenderAttachment(srcAccumulation, 0, AccessFlags.Write);
@@ -518,8 +523,8 @@ namespace UnityEngine.Rendering.Universal
 
                     if (cameraData.xr.enabled)
                     {
-                        // Apply MultiviewRenderRegionsCompatible flag only to the peripheral view in Quad Views
-                        if (cameraData.xr.multipassId == 0)
+                        // Multiview render regions are incompatible with the inner (foveal) pass in Quad View
+                        if (!cameraData.xr.isQuadViewInnerPass)
                         {
                             builder.SetExtendedFeatureFlags(ExtendedFeatureFlags.MultiviewRenderRegionsCompatible);
                         }
@@ -534,5 +539,13 @@ namespace UnityEngine.Rendering.Universal
                 cameraData.taaHistory.SetAccumulationVersion(multipassId, Time.frameCount);
             }
         }
+
+#if UNITY_EDITOR
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStaticsOnLoad()
+        {
+            s_JitterFunc = CalculateJitter;
+        }
+#endif
     }
 }

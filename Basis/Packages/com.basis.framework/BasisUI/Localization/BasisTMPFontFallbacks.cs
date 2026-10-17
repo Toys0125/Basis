@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using System.Collections.Generic;
 using TMPro;
@@ -16,7 +17,8 @@ namespace Basis.BasisUI
     /// Runs once before the first scene loads. Define
     /// <c>BASIS_DISABLE_TMP_FALLBACKS</c> to opt out.
     /// </summary>
-    public static class BasisTMPFontFallbacks
+    [AutoStaticsCleanup]
+    public static partial class BasisTMPFontFallbacks
     {
         private const int DefaultSamplingPointSize = 90;
         private const string JaJpLabel = "Basis Fallback - ja-JP";
@@ -24,11 +26,14 @@ namespace Basis.BasisUI
         private const string ZhHansLabel = "Basis Fallback - zh-Hans";
         private const string ZhHantLabel = "Basis Fallback - zh-Hant";
         private const string ShippedJapaneseFontAddress = "Packages/com.basis.sdk/Fonts/NotoSansJP-Regular.ttf";
+        private const string EmojiLabel = "Basis Fallback - Emoji";
+        private const string ShippedEmojiFontAddress = "Packages/com.basis.sdk/Fonts/NotoEmoji-Regular.ttf";
 
-        private static readonly string[] CjkLabels = { JaJpLabel, KoKrLabel, ZhHansLabel, ZhHantLabel };
+        [NoAutoStaticsCleanup] private static readonly string[] CjkLabels = { JaJpLabel, KoKrLabel, ZhHansLabel, ZhHantLabel };
 
         private static bool _installed;
         private static TMP_FontAsset _shippedJapaneseFallback;
+        private static TMP_FontAsset _shippedEmojiFallback;
 
 #if UNITY_SERVER
         private static readonly bool IsServerBuild = true;
@@ -45,7 +50,7 @@ namespace Basis.BasisUI
         /// intentionally overlaps Windows / macOS / Linux / Android so a
         /// single array serves every platform.
         /// </summary>
-        private static readonly (string Label, string[] Candidates)[] FallbackGroups = new[]
+        [NoAutoStaticsCleanup] private static readonly (string Label, string[] Candidates)[] FallbackGroups = new[]
         {
             ("Basis Fallback - zh-Hant", new[]
             {
@@ -246,12 +251,19 @@ namespace Basis.BasisUI
                 "Roboto",
                 "Droid Sans",
             }),
+            ("Basis Fallback - Emoji", new[]
+            {
+                "Segoe UI Emoji",
+                "Noto Emoji",
+                "Symbola",
+            }),
         };
 
 #if !BASIS_DISABLE_TMP_FALLBACKS
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        private static void AutoInstall()
+        private static async void AutoInstall()
         {
+            await Basis.Scripts.Platform.BasisWebAddressables.WhenReady();
             InstallFallbacks();
         }
 #endif
@@ -290,15 +302,18 @@ namespace Basis.BasisUI
                     continue;
                 }
 
-                TMP_FontAsset tmpFont = group.Label == JaJpLabel
-                    ? (GetShippedJapaneseFallback() ?? TryCreateDynamicOSFallback(group.Label, group.Candidates))
-                    : TryCreateDynamicOSFallback(group.Label, group.Candidates);
+                TMP_FontAsset shipped = group.Label == JaJpLabel ? GetShippedJapaneseFallback() : group.Label == EmojiLabel ? GetShippedEmojiFallback() : null;
+                TMP_FontAsset tmpFont = shipped ?? (Application.platform == RuntimePlatform.WebGLPlayer ? null : TryCreateDynamicOSFallback(group.Label, group.Candidates));
                 if (tmpFont != null)
                 {
                     fallbacks.Add(tmpFont);
+                    if (group.Label == EmojiLabel)
+                    {
+                        RegisterEmojiFallback(tmpFont);
+                    }
                     BasisDebug.Log($"[BasisTMPFontFallbacks] Installed {group.Label} using OS font family '{tmpFont.faceInfo.familyName}'.");
                 }
-                else
+                else if (Application.platform != RuntimePlatform.WebGLPlayer)
                 {
                     BasisDebug.LogError($"[BasisTMPFontFallbacks] None of the candidates for {group.Label} could be resolved on this OS. Candidates tried: {string.Join(", ", group.Candidates)}");
                 }
@@ -318,11 +333,24 @@ namespace Basis.BasisUI
         /// </summary>
         public static TMP_FontAsset GetShippedJapaneseFallback()
         {
-            if (_shippedJapaneseFallback != null)
+            if (_shippedJapaneseFallback == null)
             {
-                return _shippedJapaneseFallback;
+                _shippedJapaneseFallback = LoadShippedFallback(ShippedJapaneseFontAddress, JaJpLabel);
             }
+            return _shippedJapaneseFallback;
+        }
 
+        public static TMP_FontAsset GetShippedEmojiFallback()
+        {
+            if (_shippedEmojiFallback == null)
+            {
+                _shippedEmojiFallback = LoadShippedFallback(ShippedEmojiFontAddress, EmojiLabel);
+            }
+            return _shippedEmojiFallback;
+        }
+
+        private static TMP_FontAsset LoadShippedFallback(string address, string label)
+        {
             if (IsServerBuild)
             {
                 return null;
@@ -331,17 +359,17 @@ namespace Basis.BasisUI
             Font font;
             try
             {
-                font = Addressables.LoadAssetAsync<Font>(ShippedJapaneseFontAddress).WaitForCompletion();
+                font = Addressables.LoadAssetAsync<Font>(address).WaitForCompletion();
             }
             catch (Exception e)
             {
-                BasisDebug.LogError($"[BasisTMPFontFallbacks] Failed to load embedded Japanese font '{ShippedJapaneseFontAddress}': {e.Message}");
+                BasisDebug.LogError($"[BasisTMPFontFallbacks] Failed to load embedded font '{address}': {e.Message}");
                 return null;
             }
 
             if (font == null)
             {
-                BasisDebug.LogError($"[BasisTMPFontFallbacks] Embedded Japanese font not found at '{ShippedJapaneseFontAddress}'.");
+                BasisDebug.LogError($"[BasisTMPFontFallbacks] Embedded font not found at '{address}'.");
                 return null;
             }
 
@@ -352,19 +380,59 @@ namespace Basis.BasisUI
             }
             catch (Exception e)
             {
-                BasisDebug.LogError($"[BasisTMPFontFallbacks] CreateFontAsset threw for the embedded Japanese font: {e.Message}");
+                BasisDebug.LogError($"[BasisTMPFontFallbacks] CreateFontAsset threw for the embedded font '{address}': {e.Message}");
                 return null;
             }
 
             if (tmpFont == null)
             {
-                BasisDebug.LogError("[BasisTMPFontFallbacks] CreateFontAsset returned null for the embedded Japanese font.");
+                BasisDebug.LogError($"[BasisTMPFontFallbacks] CreateFontAsset returned null for the embedded font '{address}'.");
                 return null;
             }
 
-            tmpFont.name = JaJpLabel;
-            _shippedJapaneseFallback = tmpFont;
+            tmpFont.name = label;
             return tmpFont;
+        }
+
+        private static void RegisterEmojiFallback(TMP_FontAsset font)
+        {
+            List<TMP_Asset> emoji = TMP_Settings.emojiFallbackTextAssets;
+            if (emoji == null)
+            {
+                emoji = new List<TMP_Asset>();
+                TMP_Settings.emojiFallbackTextAssets = emoji;
+            }
+            for (int i = emoji.Count - 1; i >= 0; i--)
+            {
+                if (emoji[i] == null || emoji[i].name == EmojiLabel)
+                {
+                    emoji.RemoveAt(i);
+                }
+            }
+            TMP_SpriteAsset sprites = TMP_Settings.defaultSpriteAsset;
+            if (sprites != null && !emoji.Contains(sprites))
+            {
+                emoji.Insert(0, sprites);
+            }
+            emoji.Add(font);
+        }
+
+        private static bool SwapInShipped(List<TMP_FontAsset> fallbacks, string label, TMP_FontAsset shipped)
+        {
+            if (shipped == null)
+            {
+                return false;
+            }
+            int index = IndexOfByName(fallbacks, label);
+            if (index >= 0)
+            {
+                fallbacks[index] = shipped;
+            }
+            else
+            {
+                fallbacks.Add(shipped);
+            }
+            return true;
         }
 
         /// <summary>
@@ -384,21 +452,49 @@ namespace Basis.BasisUI
                 return;
             }
 
-            TMP_FontAsset shipped = GetShippedJapaneseFallback();
-            if (shipped != null)
+            SwapInShipped(fallbacks, JaJpLabel, GetShippedJapaneseFallback());
+            TMP_FontAsset shippedEmoji = GetShippedEmojiFallback();
+            if (SwapInShipped(fallbacks, EmojiLabel, shippedEmoji))
             {
-                int ja = IndexOfByName(fallbacks, JaJpLabel);
-                if (ja >= 0)
-                {
-                    fallbacks[ja] = shipped;
-                }
-                else
-                {
-                    fallbacks.Add(shipped);
-                }
+                RegisterEmojiFallback(shippedEmoji);
             }
 
             ApplyCjkPriority(CjkLabelForLanguage(BasisLocalization.CurrentLanguage));
+            InvalidateLoadedTextMeshes();
+        }
+
+        /// <summary>
+        /// TextMeshPro keeps the fallback font chosen for an already-generated label in its
+        /// text info. Reordering the global CJK fallback list is therefore not enough when a
+        /// translation contains the same Unicode characters in both languages (for example
+        /// Japanese and Chinese labels containing 「切替」 or 「言語」). Mark every
+        /// loaded label dirty so its glyphs are resolved against the new fallback order.
+        /// </summary>
+        private static void InvalidateLoadedTextMeshes()
+        {
+            TMP_Text[] labels = UnityEngine.Object.FindObjectsByType<TMP_Text>(FindObjectsInactive.Include);
+            InvalidateTextMeshes(labels);
+        }
+
+        internal static int InvalidateTextMeshes(IEnumerable<TMP_Text> labels)
+        {
+            if (labels == null)
+            {
+                return 0;
+            }
+
+            int invalidated = 0;
+            foreach (TMP_Text label in labels)
+            {
+                if (label == null)
+                {
+                    continue;
+                }
+
+                label.havePropertiesChanged = true;
+                invalidated++;
+            }
+            return invalidated;
         }
 
         /// <summary>

@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using System.Threading.Tasks;
 using Basis.Scripts.BasisSdk.Players;
@@ -11,7 +12,8 @@ namespace Basis.BasisUI
     /// <summary>
     /// Used by the LibraryProvider.cs when a item is desired to spawn with a raycast placement
     /// </summary>
-    public static class PlacementManager
+    [AutoStaticsCleanup]
+    public static partial class PlacementManager
     {
 
         #region CalculateLocalRenderBounds, TransformBoundsAABB
@@ -181,8 +183,6 @@ namespace Basis.BasisUI
         }
 
         #region PLACEMENT
-        private const float triggerDownThreshold = 0.75f;
-        private const float triggerUpThreshold = 0.20f;
 
         public static BasisInput PlacementInput;
         private static GameObject PlacementCube;
@@ -298,9 +298,9 @@ namespace Basis.BasisUI
             {
                 if (PlacementInput?.CurrentInputState == null || _tcs == null) return;
 
-                float t = PlacementInput.CurrentInputState.Trigger;
+                float TriggerValue = PlacementInput.CurrentInputState.Trigger;
 
-                if (!_wasDown && t >= triggerDownThreshold)
+                if (!_wasDown && TriggerValue >= BasisTriggerPressure.TriggerDownThreshold)
                 {
                     _wasDown = true;
 
@@ -336,7 +336,7 @@ namespace Basis.BasisUI
                     return;
                 }
 
-                if (_wasDown && t <= triggerUpThreshold)
+                if (_wasDown && TriggerValue <= BasisTriggerPressure.TriggerUpThreshold)
                     _wasDown = false;
             }
             catch (Exception ex)

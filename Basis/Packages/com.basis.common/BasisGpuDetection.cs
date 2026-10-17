@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using System;
 using UnityEngine;
 
@@ -57,6 +58,7 @@ namespace Basis.Scripts.Common
     /// the priming from another thread answers desktop and leaves the probe unrun, so the next
     /// main-thread read still gets the real hardware rather than a cached guess.</para>
     /// </summary>
+    [NoAutoStaticsCleanup]
     public static class BasisGpuDetection
     {
         private const int IdNvidia = 0x10DE;
@@ -141,7 +143,7 @@ namespace Basis.Scripts.Common
             }
 
             summary = $"{(deviceName.Length == 0 ? "unnamed GPU" : deviceName)} [{vendor}, id 0x{vendorId:X4}, {api}, shader level {shaderLevel}, {graphicsMemory} MB] on {facts.ProcessorType} -> {(mobileGpu ? "mobile" : "desktop")} class{(forced ? " (forced)" : string.Empty)}";
-            BasisDebug.Log($"Graphics hardware: {summary}", BasisDebug.LogTag.Rendering);
+           // BasisDebug.Log($"Graphics hardware: {summary}", BasisDebug.LogTag.Rendering);
         }
 
         /// <summary>

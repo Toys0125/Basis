@@ -1,3 +1,4 @@
+using Unity.Scripting.LifecycleManagement;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Device_Management.Devices;
 using Basis.Scripts.Device_Management.Devices.Pairing;
@@ -13,7 +14,8 @@ namespace Basis.Scripts.Avatar
     /// instances so that exactly one virtual exists per pair whose both partners
     /// are currently connected.
     /// </summary>
-    public static class BasisTrackerPairingService
+    [AutoStaticsCleanup]
+    public static partial class BasisTrackerPairingService
     {
         // Key: ordinal-sorted "idA|idB". Value: the live virtual driving that pair.
         private static readonly Dictionary<string, BasisVirtualMidpointInput> _virtuals = new();
@@ -31,6 +33,7 @@ namespace Basis.Scripts.Avatar
             if (_initialized) return;
             _initialized = true;
             BasisTrackerPairing.OnPairingsChanged += Reconcile;
+            BasisDeviceOverrides.OnChanged += Reconcile;
             BasisDeviceManagement.OnInitializationCompleted += BindDeviceListEvent;
 
             // BasisDeviceManagement may already be initialized when we attach
@@ -114,6 +117,7 @@ namespace Basis.Scripts.Avatar
                 BasisInput input = devices[i];
                 if (input == null) continue;
                 if (input is BasisVirtualMidpointInput) continue;
+                if (input.IgnoresPose) continue;
                 if (input.UniqueDeviceIdentifier == id) return input;
             }
             return null;

@@ -32,8 +32,11 @@ namespace Basis.Network
         {
             UseLogging = config.HasFileSupport;
             LogDirectory = logDirectory;
+            BNL.LogOutput -= Log;
             BNL.LogOutput += Log;
+            BNL.LogWarningOutput -= LogWarning;
             BNL.LogWarningOutput += LogWarning;
+            BNL.LogErrorOutput -= LogError;
             BNL.LogErrorOutput += LogError;
 
             if (UseLogging)
@@ -75,7 +78,7 @@ namespace Basis.Network
                             {
                                 batch.Append(queued).Append(Environment.NewLine);
                             }
-                            await WriteToFileAsync(batch.ToString(), cancellationToken).ConfigureAwait(false);
+                            await WriteToFileAsync(batch.ToString(), CancellationToken.None).ConfigureAwait(false);
                         }
                     }
                 }
@@ -207,7 +210,7 @@ namespace Basis.Network
             message = Sanitize(message);
             MinuteStamp stamp = CurrentStamp();
 
-            WriteScreenLine(stamp.Bracketed, consoleLabel, levelColor, message);
+            if (WriteToScreen) WriteScreenLine(stamp.Bracketed, consoleLabel, levelColor, message);
 
             if (UseLogging)
             {
