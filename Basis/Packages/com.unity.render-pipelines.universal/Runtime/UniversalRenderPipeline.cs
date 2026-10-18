@@ -2156,7 +2156,7 @@ namespace UnityEngine.Rendering.Universal
 #if ENABLE_UPSCALER_FRAMEWORK
             // The VR-specific DLSS provider renders a smaller source image without
             // changing the XR compositor's native backbuffer dimensions.
-            if (activeUpscaler != null && activeUpscaler.supportsXR)
+            if (activeUpscaler != null && activeUpscaler.upscalerId == BasisDlssXrUpscaler.UpscalerId)
             {
                 renderScaleXR = 1.0f;
                 preserveExternalXrBackbufferScale = activeUpscaler.upscalerId == BasisDlssXrUpscaler.UpscalerId;
