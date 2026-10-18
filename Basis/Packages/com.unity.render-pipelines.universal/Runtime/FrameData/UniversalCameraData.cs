@@ -644,7 +644,6 @@ namespace UnityEngine.Rendering.Universal
 
         // Sub-pixel jitter applied to the projection matrix this frame.
         // Computed once during camera setup, read by upscalers during post-process.
-        internal Vector2 subpixelJitter;
 
         // Post-process history reset has been triggered for this camera.
         internal bool resetHistory
