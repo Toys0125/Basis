@@ -12,14 +12,18 @@ namespace UnityEngine.Rendering.Universal
     /// context and its lifecycle; Basis only opts into multipass XR and keeps each
     /// eye's history separate through the per-eye camera ID in UpscalerPostProcessPass.
     /// </summary>
-    public sealed class BasisDlssXrUpscaler : DLSSIUpscaler
+    public sealed class BasisDlssXrUpscaler : DLSSIUpscaler, IUpscaler
     {
         public const string UpscalerId = "basis.nvidia.dlss.xr";
         public const string UpscalerName = "Basis NVIDIA DLSS 4 XR";
 
         public override string upscalerId => UpscalerId;
         public override string name => UpscalerName;
-        public override bool supportsXR => true;
+        // The Core RP package exposes XR support through the IUpscaler interface,
+        // but the DLSS base-class implementation cannot be overridden here.
+        // Reimplement the interface to advertise XR support for Basis's
+        // independent-eye DLSS path.
+        bool IUpscaler.supportsXR => true;
     }
 
 #if UNITY_EDITOR
