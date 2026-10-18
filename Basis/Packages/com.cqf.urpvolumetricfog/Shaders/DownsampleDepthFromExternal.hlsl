@@ -23,15 +23,20 @@ float Frag(Varyings input) : SV_Target
     // in g (see _BasisGITracedDepth in BasisGlobalIlluminationCommon.hlsl) - g would blow up the inverse
     // above, so the far raw plane is used directly instead of running it through the formula.
     bool isSky = closestFurthest.g <= 0.0;
+#if defined(UNITY_REVERSED_Z)
+    const bool reversedZ = true;
+#else
+    const bool reversedZ = false;
+#endif
     float closestRaw = RawDepthFromLinearEyeDepth(closestFurthest.r);
-    float furthestRaw = isSky ? (UNITY_REVERSED_Z ? 0.0 : 1.0) : RawDepthFromLinearEyeDepth(closestFurthest.g);
+    float furthestRaw = isSky ? (reversedZ ? 0.0 : 1.0) : RawDepthFromLinearEyeDepth(closestFurthest.g);
 
     // Raw depth inverts the ordering linear eye depth has: under reversed-Z the nearer surface (closest,
     // the smaller eye depth) is the LARGER raw value, so it is what Min3/Max3 over raw samples in the
     // ordinary pass would have called "max" - and the reverse under a standard [0,1] buffer. Matching that
     // parity is what makes this pass's output interchangeable with the ordinary one to every reader.
-    float minRaw = UNITY_REVERSED_Z ? furthestRaw : closestRaw;
-    float maxRaw = UNITY_REVERSED_Z ? closestRaw : furthestRaw;
+    float minRaw = reversedZ ? furthestRaw : closestRaw;
+    float maxRaw = reversedZ ? closestRaw : furthestRaw;
 
     return (uint(input.positionCS.x + input.positionCS.y) & 1) > 0 ? minRaw : maxRaw;
 }
