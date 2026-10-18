@@ -71,7 +71,7 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
             && RenderPipelineManager.currentPipeline is UniversalRenderPipeline pipeline
             && pipeline.GetUpscaler(upscalerId) is IUpscaler upscaler
             && upscaler.isSupportedOnDevice
-            && (!BasisDeviceManagement.IsCurrentModeVR() || upscaler.supportsXR);
+            && (!BasisDeviceManagement.IsCurrentModeVR() || upscaler.upscalerId == BasisDlssXrUpscaler.UpscalerId);
 #else
         return false;
 #endif
@@ -266,7 +266,7 @@ public class SMModuleAntialiasingURP : BasisSettingsBase
         {
             IUpscaler upscaler = string.IsNullOrEmpty(requestedUpscalerId) ? null : pipeline.GetUpscaler(requestedUpscalerId);
             if (upscaler != null && (!upscaler.isSupportedOnDevice
-                || (BasisDeviceManagement.IsCurrentModeVR() && !upscaler.supportsXR)))
+                || (BasisDeviceManagement.IsCurrentModeVR() && upscaler.upscalerId != BasisDlssXrUpscaler.UpscalerId)))
                 upscaler = null;
 
 #if ENABLE_NVIDIA && BASIS_HAS_NVIDIA
