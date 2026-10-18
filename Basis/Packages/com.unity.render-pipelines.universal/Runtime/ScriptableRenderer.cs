@@ -195,6 +195,7 @@ namespace UnityEngine.Rendering.Universal
                 }
 
                 return;
+            }
 #endif
             cmd.SetGlobalVector(ShaderPropertyId.worldSpaceCameraPos, cameraData.worldSpaceCameraPos);
 
