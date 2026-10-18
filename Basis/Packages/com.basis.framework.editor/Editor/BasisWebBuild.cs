@@ -105,6 +105,9 @@ public static class BasisWebBuild
             BuildReport report = BuildPipeline.BuildPlayer(new BuildPlayerOptions { scenes = EditorBuildSettings.scenes.Where(scene => scene.enabled).Select(scene => scene.path).ToArray(), locationPathName = buildPath, target = BuildTarget.WebGL, targetGroup = BuildTargetGroup.WebGL, options = BuildOptions.None });
             Debug.Log($"[BasisWebBuild] Build result={report.summary.result} output={report.summary.outputPath} errors={report.summary.totalErrors} warnings={report.summary.totalWarnings} size={report.summary.totalSize}");
             if (report.summary.result != BuildResult.Succeeded) throw new BuildFailedException($"Player build failed: {report.summary.result}");
+            // game-ci/cli v0.1.72 recognizes this exact success marker from its usual
+            // build reporter. Our custom WebGL build method must emit it itself.
+            Debug.Log("Build succeeded!");
         }
         finally
         {
