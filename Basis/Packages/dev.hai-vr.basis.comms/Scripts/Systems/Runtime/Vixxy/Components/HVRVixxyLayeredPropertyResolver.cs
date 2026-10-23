@@ -199,7 +199,7 @@ namespace HVR.Vixxy
             _orderedContributions.Sort((a, b) =>
             {
                 var byPriority = a.Owner.layerPriority.CompareTo(b.Owner.layerPriority);
-                return byPriority != 0 ? byPriority : a.Owner.GetInstanceID().CompareTo(b.Owner.GetInstanceID());
+                return byPriority != 0 ? byPriority : a.Owner.GetEntityId().GetHashCode().CompareTo(b.Owner.GetEntityId().GetHashCode());
             });
             foreach (var c in _orderedContributions)
             {
