@@ -217,6 +217,7 @@ namespace HVR.Vixxy
         private void OnDestroy()
         {
             if (!IsInitialized) return;
+            orchestrator.Layered.ReleaseControl(this);
 
             if (_registeredActuator != null && AlsoExecutesWhenDisabled)
             {
@@ -255,7 +256,9 @@ namespace HVR.Vixxy
                 }
             }
 
+            if (IsInitialized) orchestrator.Layered.ReleaseControl(this);
             BakeControlSubjectsAndActivationsForRuntime();
+            if (IsInitialized && _registeredActuator != null) Actuate();
         }
 
         private void BakeControlSubjectsAndActivationsForRuntime()
@@ -278,6 +281,8 @@ namespace HVR.Vixxy
                 {
                     Array.Resize(ref activation.choices, ActualNumberOfChoices);
                 }
+                if (activation.passthroughChoices != null && activation.passthroughChoices.Length != ActualNumberOfChoices)
+                    Array.Resize(ref activation.passthroughChoices, ActualNumberOfChoices);
                 if (activation.component == null)
                 {
                     activation.IsApplicable = false;
@@ -327,7 +332,6 @@ namespace HVR.Vixxy
                 }
 
                 var isAnyPropertyApplicable = false;
-                var isAnyPropertyDependentOnMaterialPropertyBlock = false;
 
                 for (var index = 0; index < subject.properties.Count; index++)
                 {
@@ -348,18 +352,6 @@ namespace HVR.Vixxy
                     property.BakeResult = bakeResult;
 
                     isAnyPropertyApplicable |= isApplicable;
-                    if (isApplicable && property.KindMarker == HVRKindMarker.AffectsMaterialPropertyBlock)
-                    {
-                        isAnyPropertyDependentOnMaterialPropertyBlock = true;
-                    }
-                }
-
-                if (isAnyPropertyDependentOnMaterialPropertyBlock)
-                {
-                    foreach (var bakedObject in subject.BakedObjects)
-                    {
-                        orchestrator.RequireMaterialPropertyBlock(bakedObject);
-                    }
                 }
 
                 subject.IsApplicable = isAnyPropertyApplicable;
@@ -566,7 +558,8 @@ namespace HVR.Vixxy
 
             if (IsInitialized)
             {
-                orchestrator.UnregisterActuator(_registeredActuator);
+                orchestrator.Layered.ReleaseControl(this);
+                if (_registeredActuator != null) orchestrator.UnregisterActuator(_registeredActuator);
             }
             _registeredActuator = null;
         }
@@ -644,6 +637,7 @@ namespace HVR.Vixxy
 
         public void Actuate()
         {
+            orchestrator.Layered.BeginControl(this);
             if (!HasMoreThanTwoChoices)
             {
                 // FIXME: We really need to figure out how actuators sample values from their dependents.
@@ -713,75 +707,65 @@ namespace HVR.Vixxy
             }
         }
 
+        private static bool ActivationPassthrough(HVRVixxyActivation activation, int from, int to, float amount)
+        {
+            if (Mathf.Approximately(amount, 0f)) return activation.IsPassthrough(from);
+            if (Mathf.Approximately(amount, 1f)) return activation.IsPassthrough(to);
+            // A discrete activation claims the property during transitions if either side overrides it.
+            return activation.IsPassthrough(from) && activation.IsPassthrough(to);
+        }
+
         private void ActuateActivations(float active01)
         {
-            // TODO: Bake activations in Awake, so that we may remove components that were destroyed without affecting the serialized state of the control.
             foreach (var activation in activations)
             {
-                if (!activation.IsApplicable) continue;
-
-                // Defensive check in case of external destruction.
-                if (null != activation.component)
+                if (!activation.IsApplicable || activation.component == null) continue;
+                var target = activation.choices[HVRVixxyPropertyBase.ActiveIndex] ? 1f : 0f;
+                var state = activation.threshold switch
                 {
-                    var target = activation.choices[HVRVixxyPropertyBase.ActiveIndex] ? 1f : 0f;
-                    switch (activation.threshold)
-                    {
-                        case ActivationThreshold.Blended:
-                            HVR_VixxyUtil.SetToggleState(activation.component, Mathf.Abs(target - active01) < 1f);
-                            break;
-                        case ActivationThreshold.Strict:
-                            HVR_VixxyUtil.SetToggleState(activation.component, Mathf.Approximately(target, active01));
-                            break;
-                        default:
-                            throw new ArgumentOutOfRangeException();
-                    }
-                }
+                    ActivationThreshold.Blended => Mathf.Abs(target - active01) < 1f,
+                    ActivationThreshold.Strict => Mathf.Approximately(target, active01),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+                orchestrator.Layered.SubmitActivation(this, activation.component, state,
+                    ActivationPassthrough(activation, 0, 1, active01));
             }
         }
 
         private void ActuateActivationsBasedOnChoices(float active01, int inactive, int active)
         {
-            // TODO: Bake activations in Awake, so that we may remove components that were destroyed without affecting the serialized state of the control.
             foreach (var activation in activations)
             {
-                // Defensive check in case of external destruction.
-                if (null != activation.component)
+                if (!activation.IsApplicable || activation.component == null) continue;
+                var inactivity = activation.choices[inactive];
+                var activity = activation.choices[active];
+                bool state;
+                if (inactivity == activity)
                 {
-                    var inactivity = activation.choices[inactive];
-                    var activity = activation.choices[active];
-                    if (inactivity == activity)
-                    {
-                        HVR_VixxyUtil.SetToggleState(activation.component, inactivity);
-                    }
-                    else
-                    {
-                        var target = activity ? 1f : 0f;
-                        switch (activation.threshold)
-                        {
-                            case ActivationThreshold.Blended:
-                                HVR_VixxyUtil.SetToggleState(activation.component, Mathf.Abs(target - active01) < 1f);
-                                break;
-                            case ActivationThreshold.Strict:
-                                HVR_VixxyUtil.SetToggleState(activation.component, Mathf.Approximately(target, active01));
-                                break;
-                            default:
-                                throw new ArgumentOutOfRangeException();
-                        }
-                    }
+                    state = inactivity;
                 }
+                else
+                {
+                    var target = activity ? 1f : 0f;
+                    state = activation.threshold switch
+                    {
+                        ActivationThreshold.Blended => Mathf.Abs(target - active01) < 1f,
+                        ActivationThreshold.Strict => Mathf.Approximately(target, active01),
+                        _ => throw new ArgumentOutOfRangeException()
+                    };
+                }
+                orchestrator.Layered.SubmitActivation(this, activation.component, state,
+                    ActivationPassthrough(activation, inactive, active, active01));
             }
         }
 
         private void SetActivation(int choice)
         {
-            // TODO: Bake activations in Awake, so that we may remove components that were destroyed without affecting the serialized state of the control.
             foreach (var activation in activations)
             {
-                // Defensive check in case of external destruction.
-                if (null != activation.component)
-                {
-                    HVR_VixxyUtil.SetToggleState(activation.component, activation.choices[choice]);
-                }
+                if (!activation.IsApplicable || activation.component == null) continue;
+                orchestrator.Layered.SubmitActivation(this, activation.component,
+                    activation.choices[choice], activation.IsPassthrough(choice));
             }
         }
 
@@ -797,8 +781,7 @@ namespace HVR.Vixxy
                     // TODO: Rather than do that check every time, bake the applicable properties into an internal field.
                     if (!property.IsApplicable) continue;
 
-                    var lerpValue = property.CalculateLerpValue(active01, inactiveIndex, activeIndex, _actuatedValue);
-                    Apply(property, lerpValue, out var propertyNeedsCleanup);
+                    Apply(property, inactiveIndex, activeIndex, active01, out var propertyNeedsCleanup);
 
                     if (propertyNeedsCleanup)
                     {
@@ -825,8 +808,7 @@ namespace HVR.Vixxy
                     // TODO: Rather than do that check every time, bake the applicable properties into an internal field.
                     if (!property.IsApplicable) continue;
 
-                    object value = property.GetValueForChoice(choice);
-                    Apply(property, value, out var propertyNeedsCleanup);
+                    Apply(property, choice, choice, 0f, out var propertyNeedsCleanup);
 
                     if (propertyNeedsCleanup)
                     {
@@ -841,57 +823,17 @@ namespace HVR.Vixxy
             }
         }
 
-        private void Apply(HVRVixxyPropertyBase property, object resolvedValue, out bool propertyNeedsCleanup)
+        private void Apply(HVRVixxyPropertyBase property, int from, int to, float amount, out bool propertyNeedsCleanup)
         {
             propertyNeedsCleanup = false;
             foreach (var component in property.FoundComponents)
             {
-                // Defensive check in case of external destruction.
-                if (null != component)
-                {
-                    switch (property.KindMarker)
-                    {
-                        case HVRKindMarker.AffectsMaterialPropertyBlock:
-                        {
-                            var bakedObject = component.gameObject;
-                            var materialPropertyBlock = orchestrator.GetMaterialPropertyBlockForBakedObject(bakedObject);
-                            property.ApplyMaterialProperty(materialPropertyBlock, resolvedValue);
-                            orchestrator.StagePropertyBlock(bakedObject);
-                            break;
-                        }
-                        case HVRKindMarker.BlendShape:
-                        {
-                            if (resolvedValue is float lerpFloatValue)
-                            {
-                                var smr = (SkinnedMeshRenderer)component;
-                                var blendShapeIndex = property.SmrToBlendshapeIndex[smr];
-                                smr.SetBlendShapeWeight(blendShapeIndex, lerpFloatValue);
-                            }
-                            break;
-                        }
-                        case HVRKindMarker.FieldAccess:
-                        {
-                            var fieldInfo = property.FieldIfMarkedAsFieldAccess;
-                            fieldInfo.SetValue(component, resolvedValue);
-                            break;
-                        }
-                        case HVRKindMarker.PropertyAccess:
-                        {
-                            var propertyInfo = property.TPropertyIfMarkedAsTPropertyAccess;
-                            propertyInfo.SetValue(component, resolvedValue);
-                            break;
-                        }
-                        case HVRKindMarker.Undefined:
-                        default:
-                            throw new ArgumentException("We tried to access an Undefined property, but Undefined properties are not supposed" +
-                                                        " to be valid if the property IsApplicable. This may be a programming error, did we" +
-                                                        " properly check that the property IsApplicable?");
-                    }
-                }
-                else
+                if (component == null)
                 {
                     propertyNeedsCleanup = true;
+                    continue;
                 }
+                orchestrator.Layered.SubmitProperty(this, property, component, from, to, amount, _actuatedValue);
             }
         }
 

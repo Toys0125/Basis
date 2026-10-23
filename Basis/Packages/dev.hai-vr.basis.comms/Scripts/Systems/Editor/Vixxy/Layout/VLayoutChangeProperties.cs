@@ -321,6 +321,9 @@ namespace HVR.Vixxy.Editor
             if (inheritsFromVixxyProperty)
             {
                 var choicesSp = propertySp.FindPropertyRelative(nameof(HVRVixxyProperty<object>.choices));
+                var passthroughSp = propertySp.FindPropertyRelative(nameof(HVRVixxyPropertyBase.passthroughChoices));
+                if (passthroughSp.arraySize < my.NumberOfChoices)
+                    passthroughSp.arraySize = my.NumberOfChoices;
 
                 var choices = my.choices;
                 if (choicesSp.arraySize < my.NumberOfChoices)
@@ -358,6 +361,8 @@ namespace HVR.Vixxy.Editor
                             }
                         }
                     }
+                    EditorGUILayout.PropertyField(passthroughSp.GetArrayElementAtIndex(choiceIndex),
+                        new GUIContent("Pass", "When checked, this choice releases this property to lower-priority controls."), GUILayout.Width(58));
                     EditorGUILayout.EndHorizontal();
                 }
             }

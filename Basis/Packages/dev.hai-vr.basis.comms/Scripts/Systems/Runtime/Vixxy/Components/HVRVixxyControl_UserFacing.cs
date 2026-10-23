@@ -33,6 +33,9 @@ namespace HVR.Vixxy
         };
         [SerializeField] public float defaultValue = 0f;
 
+        /// Higher priorities override lower ones on a per-property basis. Equal priorities use a stable instance-ID tie-breaker.
+        [SerializeField] public int layerPriority;
+
         [SerializeField] internal HVRVixxyActivation[] activations = Array.Empty<HVRVixxyActivation>();
         [SerializeField] internal HVRVixxySubject[] subjects = Array.Empty<HVRVixxySubject>();
         [SerializeReference] internal List<HVRVixxyFilterBase> filters = new();
@@ -85,6 +88,11 @@ namespace HVR.Vixxy
         public Component component; // To toggle a GameObject, provide the Transform instead. It makes things easier as GameObject is not a component.
         public ActivationThreshold threshold;
         public bool[] choices;
+        /// Per-choice opt-out. False means an explicit On/Off state, even when the value is false.
+        public bool[] passthroughChoices;
+
+        public bool IsPassthrough(int choice) => passthroughChoices != null && choice >= 0
+            && choice < passthroughChoices.Length && passthroughChoices[choice];
 
         [NonSerialized] internal bool IsApplicable;
         [NonSerialized] internal HVRVixxyActivationBakeResult BakeResult = HVRVixxyActivationBakeResult.WasNotEvaluated;
@@ -164,6 +172,7 @@ namespace HVR.Vixxy
 
         public override void PruneArrays(int actualNumberOfChoices)
         {
+            base.PruneArrays(actualNumberOfChoices);
             var newChoices = new T[actualNumberOfChoices];
             for (var i = 0; i < actualNumberOfChoices; i++)
             {
@@ -186,6 +195,7 @@ namespace HVR.Vixxy
 
         public override void RemoveChoiceAtIndex(int choiceIndex)
         {
+            base.RemoveChoiceAtIndex(choiceIndex);
             choices = choices.Where((_, i) => i != choiceIndex).ToArray();
         }
 
@@ -196,6 +206,7 @@ namespace HVR.Vixxy
                 return;
             }
 
+            base.SwapChoiceIndices(indexA, indexB);
             (choices[indexA], choices[indexB]) = (choices[indexB], choices[indexA]);
         }
 
@@ -237,6 +248,12 @@ namespace HVR.Vixxy
         public HVRVixxyPropertyVariant variant;
         public string propertyName;
 
+        /// True releases this property for the given choice, allowing lower-priority controls through.
+        /// Empty/missing arrays preserve the legacy explicit-write behavior of existing avatars.
+        public bool[] passthroughChoices;
+        public bool IsPassthrough(int choice) => passthroughChoices != null && choice >= 0
+            && choice < passthroughChoices.Length && passthroughChoices[choice];
+
         // Runtime only
         [NonSerialized] internal bool IsApplicable;
         [NonSerialized] internal HVRVixxyPropertyBakeResult BakeResult = HVRVixxyPropertyBakeResult.WasNotEvaluated;
@@ -249,9 +266,20 @@ namespace HVR.Vixxy
         [NonSerialized] internal Dictionary<SkinnedMeshRenderer, int> SmrToBlendshapeIndex; // null if HVRKindMarker is not BlendShape
 
         public virtual bool ValidateBasedOnNumberOfChoices(int actualNumberOfChoices) => true;
-        public virtual void PruneArrays(int actualNumberOfChoices) {}
-        public virtual void RemoveChoiceAtIndex(int choiceIndex) {}
-        public virtual void SwapChoiceIndices(int indexA, int indexB) {}
+        public virtual void PruneArrays(int actualNumberOfChoices)
+        {
+            if (passthroughChoices != null) Array.Resize(ref passthroughChoices, actualNumberOfChoices);
+        }
+        public virtual void RemoveChoiceAtIndex(int choiceIndex)
+        {
+            if (passthroughChoices != null) passthroughChoices = passthroughChoices.Where((_, i) => i != choiceIndex).ToArray();
+        }
+        public virtual void SwapChoiceIndices(int indexA, int indexB)
+        {
+            if (passthroughChoices != null && indexA >= 0 && indexB >= 0
+                && indexA < passthroughChoices.Length && indexB < passthroughChoices.Length)
+                (passthroughChoices[indexA], passthroughChoices[indexB]) = (passthroughChoices[indexB], passthroughChoices[indexA]);
+        }
         public virtual object CalculateLerpValue(float active01, int inactiveIndex, int activeIndex, float absoluteValue) { throw new NotImplementedException(); }
         public virtual object GetValueForChoice(int choice) { throw new NotImplementedException(); }
         public virtual void ApplyMaterialProperty(MaterialPropertyBlock materialPropertyBlock, object resolvedValue)

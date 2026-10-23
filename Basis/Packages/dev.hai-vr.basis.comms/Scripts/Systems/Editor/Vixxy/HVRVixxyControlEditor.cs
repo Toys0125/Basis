@@ -1,4 +1,5 @@
 ﻿using Unity.Scripting.LifecycleManagement;
+using System;
 using System.Linq;
 using HVR.Basis.Comms;
 using HVR.Basis.Comms.Editor;
@@ -152,6 +153,8 @@ namespace HVR.Vixxy.Editor
             {
                 var last = activation.choices.Last();
                 activation.choices = activation.choices.Concat(new[] { last }).ToArray();
+                if (activation.passthroughChoices != null)
+                    Array.Resize(ref activation.passthroughChoices, newNumberOfChoices);
             }
             foreach (var subject in my.subjects)
             {
@@ -171,6 +174,8 @@ namespace HVR.Vixxy.Editor
             foreach (var activation in my.activations)
             {
                 activation.choices = activation.choices.Where((_, i) => i != choiceIndex).ToArray();
+                if (activation.passthroughChoices != null)
+                    activation.passthroughChoices = activation.passthroughChoices.Where((_, i) => i != choiceIndex).ToArray();
             }
             foreach (var subject in my.subjects)
             {
@@ -207,6 +212,10 @@ namespace HVR.Vixxy.Editor
             foreach (var activation in my.activations)
             {
                 (activation.choices[fromIndex], activation.choices[toIndex]) = (activation.choices[toIndex], activation.choices[fromIndex]);
+                if (activation.passthroughChoices != null
+                    && fromIndex < activation.passthroughChoices.Length && toIndex < activation.passthroughChoices.Length)
+                    (activation.passthroughChoices[fromIndex], activation.passthroughChoices[toIndex]) =
+                        (activation.passthroughChoices[toIndex], activation.passthroughChoices[fromIndex]);
             }
             foreach (var subject in my.subjects)
             {

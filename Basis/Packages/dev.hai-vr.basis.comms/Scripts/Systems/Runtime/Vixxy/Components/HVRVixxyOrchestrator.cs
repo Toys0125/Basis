@@ -34,6 +34,8 @@ namespace HVR.Vixxy
         private readonly Dictionary<GameObject, Renderer> _objectToRenderer_mayContainNullObjects = new();
         private readonly HashSet<GameObject> _stagedBlocks = new(); // FIXME: We should really just be binding tuples into _objectToMaterialPropertyBlock
 
+        internal readonly HVRVixxyLayeredPropertyResolver Layered = new();
+
         private readonly HashSet<IHVRVixxyAggregator> _workAggregators = new();
 
         private readonly List<HVRVixxyToBeNetworked> _toBeNetworked = new();
@@ -246,6 +248,8 @@ namespace HVR.Vixxy
                 _actuatorsToUpdateThisTick.Clear();
             }
 
+            Layered.Apply();
+
             if (_stagedBlocks.Count > 0)
             {
                 foreach (var stagedBlock in _stagedBlocks)
@@ -296,6 +300,11 @@ namespace HVR.Vixxy
 
         public void UnregisterActuator(HVRActuatorRegistrationToken actuatorRegistrationToken)
         {
+            if (actuatorRegistrationToken == null) return;
+            if (actuatorRegistrationToken.registeredActuator is HVRVixxyControl control)
+                Layered.ReleaseControl(control);
+            _actuatorsToUpdateThisTick.Remove(actuatorRegistrationToken.registeredActuator);
+            _actuatorsWithFiltersToCheckThisTick.Remove(actuatorRegistrationToken.registeredActuator);
             if (_addressIdToActuators.TryGetValue(actuatorRegistrationToken.registeredAddressId, out var existingActuator))
             {
                 existingActuator.Remove(actuatorRegistrationToken.registeredActuator);

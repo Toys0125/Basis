@@ -129,6 +129,15 @@ namespace HVR.Vixxy.Editor
 
                 EditorGUILayout.EndHorizontal();
 
+                var passSp = activationSp.FindPropertyRelative(nameof(HVRVixxyActivation.passthroughChoices));
+                if (passSp.arraySize < choicesSp.arraySize) passSp.arraySize = choicesSp.arraySize;
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField("Passthrough choices (let lower layers control this object):", GUILayout.MinWidth(250));
+                for (var choiceIndex = 0; choiceIndex < choicesSp.arraySize; choiceIndex++)
+                    EditorGUILayout.PropertyField(passSp.GetArrayElementAtIndex(choiceIndex), GUIContent.none,
+                        GUILayout.Width(EditorGUIUtility.singleLineHeight));
+                EditorGUILayout.EndHorizontal();
+
                 if (componentSp.objectReferenceValue != null && !HVR_VixxyPermitted.IsPermitted(componentSp.objectReferenceValue.GetType().FullName))
                 {
                     EditorGUILayout.HelpBox($"The type of the component {componentSp.objectReferenceValue.GetType().Name} is not in the list of allowed types, so it cannot be toggled.", MessageType.Error);

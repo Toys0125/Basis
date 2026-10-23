@@ -40,6 +40,8 @@ namespace HVR.Vixxy.Editor
 
         public bool LayoutSettings()
         {
+            EditorGUILayout.PropertyField(serializedObject.FindProperty(nameof(HVRVixxyControl.layerPriority)),
+                new GUIContent("Layer priority", "Higher priority controls override lower ones. A choice marked Passthrough releases that individual property."));
             EditorGUILayout.PropertyField(serializedObject.FindProperty(nameof(HVRVixxyControl.transition)));
             if (my.transition == HVRVixxyTransitionMode.Simplified)
             {
