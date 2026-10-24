@@ -397,10 +397,15 @@ public class CrowdScaleTests
     // ─────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public void Broadcast_AtCrowdScale_ReachesEveryoneButTheSender()
+    public void ChatTyping_AtCrowdScale_ReachesOnlyVoiceRecipients()
     {
         using Crowd crowd = new Crowd(CrowdSize, 64);
         FakeNetPeer sender = crowd.Peers[0];
+        List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+        lock (recipients)
+        {
+            for (int i = 1; i <= 10; i++) recipients.Add(crowd.Peers[i]);
+        }
 
         BasisNetworkHandleChatTyping.HandleEvent(
             NetPacketReader.Create(new byte[] { 1 }, 0, 1, () => { }),
@@ -418,8 +423,8 @@ public class CrowdScaleTests
             if (peer.Sent.Count > 0) reached++;
         }
 
-        Assert.Equal(CrowdSize - 1, reached);
-        Assert.Single(crowd.Joiner.Sent);
+        Assert.Equal(10, reached);
+        Assert.Empty(crowd.Joiner.Sent);
     }
 
     [Fact]
@@ -549,6 +554,12 @@ public class CrowdScaleTests
         NetworkServer.RebuildPeerSnapshot();
         try
         {
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients)
+            {
+                recipients.Add(stalled);
+                recipients.Add(crowd.Peers[1]);
+            }
             BasisNetworkHandleChatTyping.HandleEvent(
                 NetPacketReader.Create(new byte[] { 1 }, 0, 1, () => { }),
                 sender,
@@ -642,6 +653,8 @@ public class CrowdScaleTests
         NetworkServer.RebuildPeerSnapshot();
         try
         {
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients) recipients.Add(listener);
             BasisNetworkHandleChatTyping.HandleEvent(
                 NetPacketReader.Create(new byte[] { 1 }, 0, 1, () => { }),
                 sender, BasisNetworkCommons.EventType_PlayerChatTyping);
@@ -655,6 +668,8 @@ public class CrowdScaleTests
         {
             NetworkServer.AuthenticatedPeers.TryRemove(sender.Id, out _);
             NetworkServer.AuthenticatedPeers.TryRemove(listener.Id, out _);
+            BasisSavedState.RemovePlayer(sender.Id);
+            BasisSavedState.RemovePlayer(listener.Id);
             NetworkServer.RebuildPeerSnapshot();
         }
     }

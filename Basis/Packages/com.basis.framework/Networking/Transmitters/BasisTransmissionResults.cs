@@ -67,6 +67,7 @@ public partial class BasisTransmissionResults
     // Recipients / excluded
     public List<ushort> TalkingPoints = new List<ushort>(128);
     public List<ushort> ExcludedPoints = new List<ushort>(128);
+    private readonly List<ushort> chatProximityPoints = new List<ushort>(128);
     private byte[] bitfieldBuffer = new byte[128];
 
     // Capacity / length
@@ -995,6 +996,7 @@ public partial class BasisTransmissionResults
 
         TalkingPoints.Clear();
         ExcludedPoints.Clear();
+        chatProximityPoints.Clear();
         ushort maxId = 0;
 
         BasisTalkMode talkMode = BasisTalkModeManager.CurrentMode;
@@ -1011,6 +1013,11 @@ public partial class BasisTransmissionResults
                 {
                     maxId = id;
                 }
+
+                // Chat always uses the speaking distance, not voice's Direct/Private
+                // modes or P2P offload status. The server caches this list alongside
+                // the ordinary voice recipients (no extra update packets).
+                if (pMicRange[i]) chatProximityPoints.Add(id);
 
                 bool include;
                 if (restricted)
@@ -1050,14 +1057,11 @@ public partial class BasisTransmissionResults
         }
         else
         {
-            // micRangeCount captured BEFORE the P2P strip so HasReasonToSendAudio
-            // (which gates EncodeAndSend upstream) reflects "anyone in mic range",
-            // not "anyone the server still relays to".
+            // Keep voice's P2P routing unchanged. Chat uses chatProximityPoints,
+            // which includes P2P peers and is independent of the voice talk mode.
             int micRangeCount = TalkingPoints.Count;
-
             Basis.Scripts.Networking.BasisP2PManager.StripP2PConnectedFromRecipients(TalkingPoints);
             Basis.Scripts.Networking.BasisP2PManager.AddP2PConnectedToExcluded(ExcludedPoints);
-
             BasisNetworkTransmitter.HasReasonToSendAudio = micRangeCount != 0;
         }
 
@@ -1128,6 +1132,15 @@ public partial class BasisTransmissionResults
             {
                 VRMWriter.Put(TalkingPoints[i]);
             }
+        }
+
+        // Optional trailer: independent proximity-chat recipients. Older servers
+        // ignore these trailing bytes; newer servers use them for chat and typing.
+        // This preserves the voice recipient formats and voice mode behavior.
+        VRMWriter.Put((ushort)chatProximityPoints.Count);
+        for (int i = 0; i < chatProximityPoints.Count; i++)
+        {
+            VRMWriter.Put(chatProximityPoints[i]);
         }
 
         BasisNetworkConnection.LocalPlayerPeer.Send(

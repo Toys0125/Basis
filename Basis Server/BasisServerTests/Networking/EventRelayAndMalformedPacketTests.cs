@@ -1,7 +1,9 @@
 using Basis.Network.Core;
+using Basis.Network.Server.Generic;
 using BasisNetworkServer;
 using BasisNetworkServer.BasisNetworking;
 using BasisNetworkServer.Security;
+using BasisServerHandle;
 using Xunit;
 
 namespace BasisServerTests;
@@ -46,6 +48,7 @@ public class EventRelayAndMalformedPacketTests
         foreach (FakeNetPeer peer in peers)
         {
             NetworkServer.AuthenticatedPeers.TryRemove(peer.Id, out _);
+            BasisSavedState.RemovePlayer(peer.Id);
         }
         NetworkServer.RebuildPeerSnapshot();
     }
@@ -249,11 +252,175 @@ public class EventRelayAndMalformedPacketTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Chat typing: a broadcast, gated by the mute/lock gate and the rate limiter
+    // Proximity chat and typing: recipient-limited, gated by mute/lock and rate limits
     // ─────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public void ChatTyping_BroadcastsToEveryoneButTheSender()
+    public void ChatMessage_OnlyReachesVoiceRecipients_AndKeepsWireFormat()
+    {
+        FakeNetPeer sender = NewAuthenticatedPeer();
+        FakeNetPeer nearby = NewAuthenticatedPeer();
+        FakeNetPeer farAway = NewAuthenticatedPeer();
+        NetworkServer.RebuildPeerSnapshot();
+        try
+        {
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients)
+            {
+                recipients.Add(nearby);
+                recipients.Add(sender); // Bad/stale recipient lists cannot echo chat to the sender.
+            }
+
+            BasisNetworkChat.HandleChatMessage(Packet(w =>
+                new SerializableBasis.ChatMessage { payload = System.Text.Encoding.UTF8.GetBytes("hello"), playNotificationSound = false }.Serialize(w)), sender);
+
+            Assert.Empty(sender.Sent);
+            Assert.Single(nearby.Sent);
+            Assert.Empty(farAway.Sent);
+            Assert.Equal(BasisNetworkCommons.ChatChannel, nearby.Sent[0].Channel);
+            Assert.Equal(DeliveryMethod.ReliableOrdered, nearby.Sent[0].Method);
+            SerializableBasis.ServerChatMessage forwarded = new SerializableBasis.ServerChatMessage();
+            forwarded.Deserialize(new NetDataReader(nearby.Sent[0].Data));
+            Assert.Equal((ushort)sender.Id, forwarded.playerIdMessage.playerID);
+            Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(forwarded.chatMessage.payload!));
+            Assert.False(forwarded.chatMessage.playNotificationSound);
+        }
+        finally
+        {
+            Remove(sender, nearby, farAway);
+        }
+    }
+
+    [Fact]
+    public void ChatMessage_WithoutVoiceRecipients_DoesNotBroadcast()
+    {
+        FakeNetPeer sender = NewAuthenticatedPeer();
+        FakeNetPeer other = NewAuthenticatedPeer();
+        NetworkServer.RebuildPeerSnapshot();
+        try
+        {
+            BasisNetworkChat.HandleChatMessage(Packet(w =>
+                new SerializableBasis.ChatMessage { payload = System.Text.Encoding.UTF8.GetBytes("hello"), playNotificationSound = true }.Serialize(w)), sender);
+            Assert.Empty(other.Sent);
+
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients) recipients.Clear();
+            BasisNetworkChat.HandleChatMessage(Packet(w =>
+                new SerializableBasis.ChatMessage { payload = System.Text.Encoding.UTF8.GetBytes("hello again"), playNotificationSound = true }.Serialize(w)), sender);
+            Assert.Empty(other.Sent);
+        }
+        finally
+        {
+            Remove(sender, other);
+        }
+    }
+
+    [Fact]
+    public void ChatProximityTrailer_OverridesVoiceModeRecipientList()
+    {
+        FakeNetPeer sender = NewAuthenticatedPeer();
+        FakeNetPeer voiceRecipient = NewAuthenticatedPeer();
+        FakeNetPeer nearby = NewAuthenticatedPeer();
+        FakeNetPeer farAway = NewAuthenticatedPeer();
+        NetworkServer.RebuildPeerSnapshot();
+        try
+        {
+            // Voice/private recipient is not the chat recipient: chat follows
+            // microphone range, not the current talk mode's override.
+            BasisServerHandleEvents.UpdateVoiceReceivers(Packet(
+                w => w.Put((byte)1),
+                w => w.Put((ushort)voiceRecipient.Id),
+                w => w.Put((ushort)1),
+                w => w.Put((ushort)nearby.Id)), sender, false);
+
+            BasisNetworkChat.HandleChatMessage(Packet(w =>
+                new SerializableBasis.ChatMessage { payload = System.Text.Encoding.UTF8.GetBytes("nearby"), playNotificationSound = true }.Serialize(w)), sender);
+            Assert.Single(nearby.Sent);
+            Assert.Empty(voiceRecipient.Sent);
+            Assert.Empty(farAway.Sent);
+
+            nearby.Sent.Clear();
+            // A valid empty chat trailer overrides nonempty voice recipients.
+            BasisServerHandleEvents.UpdateVoiceReceivers(Packet(
+                w => w.Put((byte)1),
+                w => w.Put((ushort)voiceRecipient.Id),
+                w => w.Put((ushort)0)), sender, false);
+            BasisNetworkHandleChatTyping.HandleEvent(Packet(w => w.Put(true)), sender, BasisNetworkCommons.EventType_PlayerChatTyping);
+            Assert.Empty(nearby.Sent);
+            Assert.Empty(voiceRecipient.Sent);
+        }
+        finally
+        {
+            Remove(sender, voiceRecipient, nearby, farAway);
+        }
+    }
+
+    [Fact]
+    public void ChatProximityTrailer_InvertedAndBitfieldVoiceFormats()
+    {
+        FakeNetPeer sender = NewAuthenticatedPeer();
+        FakeNetPeer nearby = NewAuthenticatedPeer();
+        FakeNetPeer other = NewAuthenticatedPeer();
+        NetworkServer.RebuildPeerSnapshot();
+        try
+        {
+            // Inverted voice list: exclude nearby for voice but include for chat.
+            BasisServerHandleEvents.UpdateVoiceReceiversInverted(Packet(
+                w => w.Put((byte)1),
+                w => w.Put((ushort)nearby.Id),
+                w => w.Put((ushort)1),
+                w => w.Put((ushort)nearby.Id)), sender, false);
+            Assert.True(BasisSavedState.GetResolvedChatPeers(sender, out List<NetPeer> inverted));
+            Assert.Single(inverted);
+            Assert.Same(nearby, inverted[0]);
+
+            // Bitfield voice list: zero bits; the following chat list still applies.
+            BasisServerHandleEvents.UpdateVoiceReceiversBitfield(Packet(
+                w => w.Put((ushort)1),
+                w => w.Put((byte)0),
+                w => w.Put((ushort)1),
+                w => w.Put((ushort)other.Id)), sender);
+            Assert.True(BasisSavedState.GetResolvedChatPeers(sender, out List<NetPeer> bitfield));
+            Assert.Single(bitfield);
+            Assert.Same(other, bitfield[0]);
+        }
+        finally
+        {
+            Remove(sender, nearby, other);
+        }
+    }
+
+    [Fact]
+    public void ChatProximityTrailer_MalformedLengthFailsClosed()
+    {
+        FakeNetPeer sender = NewAuthenticatedPeer();
+        FakeNetPeer listener = NewAuthenticatedPeer();
+        NetworkServer.RebuildPeerSnapshot();
+        try
+        {
+            BasisServerHandleEvents.UpdateVoiceReceivers(Packet(
+                w => w.Put((byte)0),
+                w => w.Put((ushort)1),
+                w => w.Put((ushort)listener.Id)), sender, false);
+            Assert.True(BasisSavedState.GetResolvedChatPeers(sender, out List<NetPeer> initially));
+            Assert.Single(initially);
+
+            // Declared two recipients but only one ID was included.
+            BasisServerHandleEvents.UpdateVoiceReceivers(Packet(
+                w => w.Put((byte)0),
+                w => w.Put((ushort)2),
+                w => w.Put((ushort)listener.Id)), sender, false);
+            Assert.True(BasisSavedState.GetResolvedChatPeers(sender, out List<NetPeer> afterMalformed));
+            Assert.Empty(afterMalformed);
+        }
+        finally
+        {
+            Remove(sender, listener);
+        }
+    }
+
+    [Fact]
+    public void ChatTyping_OnlyReachesVoiceRecipients()
     {
         FakeNetPeer sender = NewAuthenticatedPeer();
         FakeNetPeer a = NewAuthenticatedPeer();
@@ -261,6 +428,9 @@ public class EventRelayAndMalformedPacketTests
         NetworkServer.RebuildPeerSnapshot();
         try
         {
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients) recipients.Add(a);
+
             BasisNetworkHandleChatTyping.HandleEvent(
                 Packet(w => w.Put(true)),
                 sender,
@@ -268,7 +438,7 @@ public class EventRelayAndMalformedPacketTests
 
             Assert.Empty(sender.Sent);
             Assert.Single(a.Sent);
-            Assert.Single(b.Sent);
+            Assert.Empty(b.Sent);
 
             NetDataReader r = new NetDataReader(a.Sent[0].Data);
             Assert.Equal(BasisNetworkCommons.EventType_PlayerChatTyping, r.GetByte());
@@ -290,6 +460,9 @@ public class EventRelayAndMalformedPacketTests
         NetworkServer.RebuildPeerSnapshot();
         try
         {
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients) recipients.Add(listener);
+
             for (int i = 0; i < 200; i++)
             {
                 BasisNetworkHandleChatTyping.HandleEvent(

@@ -1210,6 +1210,7 @@ namespace BasisServerHandle
         {
             VoiceReceiversMessage VoiceReceiversMessage = new VoiceReceiversMessage();
             VoiceReceiversMessage.Deserialize(Reader, largeCount);
+            BasisSavedState.UpdateChatRecipients(Peer, Reader);
             Reader.Recycle();
             BasisSavedState.AddLastData(Peer, VoiceReceiversMessage);
         }
@@ -1221,6 +1222,7 @@ namespace BasisServerHandle
         {
             VoiceReceiversMessage excluded = new VoiceReceiversMessage();
             excluded.Deserialize(Reader, largeCount);
+            BasisSavedState.UpdateChatRecipients(Peer, Reader);
             Reader.Recycle();
 
             int senderId = Peer.Id;
@@ -1308,6 +1310,7 @@ namespace BasisServerHandle
                 }
             }
 
+            BasisSavedState.UpdateChatRecipients(Peer, Reader);
             Reader.Recycle();
         }
         #endregion

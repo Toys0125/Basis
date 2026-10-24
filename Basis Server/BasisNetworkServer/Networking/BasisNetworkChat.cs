@@ -1,7 +1,9 @@
 using Basis.Network.Core;
+using Basis.Network.Server.Generic;
 using BasisPermissions;
 using BasisNetworkServer.Security;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -12,7 +14,7 @@ namespace BasisNetworkServer.BasisNetworking
 {
     /// <summary>
     /// Server-side handler for chat messages. Deserializes incoming chat,
-    /// applies word filtering, and broadcasts to all other authenticated peers.
+    /// applies word filtering, and relays to the sender's voice recipients.
     /// </summary>
     public static class BasisNetworkChat
     {
@@ -21,7 +23,7 @@ namespace BasisNetworkServer.BasisNetworking
         private static readonly string WordFilterFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Configuration.ConfigFolderName, "chat_word_filter.txt");
 
         /// <summary>
-        /// Every accepted message is an N-1 reliable fan-out, so cap the send rate well above
+        /// Every accepted message can fan out to many peers, so cap the send rate well above
         /// human typing (burst absorbs pastes and quick corrections) and drop the rest silently.
         /// </summary>
         private static readonly BasisPeerRateLimiter MessageLimiter = new BasisPeerRateLimiter(tokensPerSecond: 2f, tokenBurst: 6f);
@@ -178,8 +180,43 @@ namespace BasisNetworkServer.BasisNetworking
         }
 
         /// <summary>
+        /// Sends chat text and typing events to the sender's spatial microphone audience.
+        /// New clients supply it alongside voice recipients, independent of voice talk modes
+        /// and P2P offload; older clients fall back to voice recipients.
+        /// Missing or empty lists fail closed; never fall back to global broadcast.
+        /// </summary>
+        public static void SendToNearbyPeers(NetDataWriter writer, byte channel, NetPeer sender, DeliveryMethod deliveryMethod)
+        {
+            if (!BasisSavedState.GetResolvedChatPeers(sender, out List<NetPeer> recipients) || recipients == null)
+            {
+                return;
+            }
+
+            // Voice recipient updates and disconnect purges mutate the cached list in place.
+            // Snapshot under its lock; don't hold the lock during network sends.
+            NetPeer[] snapshot;
+            int count;
+            lock (recipients)
+            {
+                count = recipients.Count;
+                if (count == 0) return;
+                snapshot = ArrayPool<NetPeer>.Shared.Rent(count);
+                recipients.CopyTo(0, snapshot, 0, count);
+            }
+
+            try
+            {
+                NetworkServer.BroadcastMessageToClients(writer, channel, sender, snapshot.AsSpan(0, count), deliveryMethod);
+            }
+            finally
+            {
+                ArrayPool<NetPeer>.Shared.Return(snapshot, clearArray: true);
+            }
+        }
+
+        /// <summary>
         /// Handles an incoming chat message from a client peer.
-        /// Deserializes, filters, re-serializes, and broadcasts to all other peers.
+        /// Deserializes, filters, re-serializes, and relays to nearby listeners.
         /// </summary>
         public static void HandleChatMessage(NetPacketReader reader, NetPeer sender)
         {
@@ -227,11 +264,16 @@ namespace BasisNetworkServer.BasisNetworking
                 chatMessage = chatMessage
             };
 
-            // Serialize and broadcast to all except sender
             NetDataWriter writer = NetworkServer.RentWriter();
-            serverChatMessage.Serialize(writer);
-            NetworkServer.BroadcastMessageToClients(writer, BasisNetworkCommons.ChatChannel, sender, NetworkServer.PeerSnapshot, DeliveryMethod.ReliableOrdered);
-            NetworkServer.ReturnWriter(writer);
+            try
+            {
+                serverChatMessage.Serialize(writer);
+                SendToNearbyPeers(writer, BasisNetworkCommons.ChatChannel, sender, DeliveryMethod.ReliableOrdered);
+            }
+            finally
+            {
+                NetworkServer.ReturnWriter(writer);
+            }
         }
     }
 }

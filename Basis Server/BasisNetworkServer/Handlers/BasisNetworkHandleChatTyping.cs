@@ -47,7 +47,7 @@ namespace BasisNetworkServer
                 writer.Put((ushort)peer.Id);
                 writer.Put(isTyping);
 
-                NetworkServer.BroadcastMessageToClients(writer, BasisNetworkCommons.EventsChannel, peer, NetworkServer.PeerSnapshot, DeliveryMethod.Sequenced);
+                BasisNetworkChat.SendToNearbyPeers(writer, BasisNetworkCommons.EventsChannel, peer, DeliveryMethod.Sequenced);
             }
             finally
             {

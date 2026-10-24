@@ -14,6 +14,7 @@ namespace Basis.Network.Server.Generic
         private static readonly ConcurrentDictionary<int, ClientAvatarChangeMessage> avatarChangeStates = new();
         private static readonly ConcurrentDictionary<int, ClientMetaDataMessage> playerMetaDataMessages = new();
         private static readonly ConcurrentDictionary<int, List<NetPeer>> resolvedVoicePeers = new();
+        private static readonly ConcurrentDictionary<int, List<NetPeer>> resolvedChatPeers = new();
         private static readonly ConcurrentDictionary<int, bool> announceModeStates = new();
         private static readonly ConcurrentDictionary<int, bool> shoutModeStates = new();
 
@@ -29,6 +30,7 @@ namespace Basis.Network.Server.Generic
             avatarChangeStates.TryRemove(id, out _);
             playerMetaDataMessages.TryRemove(id, out _);
             resolvedVoicePeers.TryRemove(id, out _);
+            resolvedChatPeers.TryRemove(id, out _);
             announceModeStates.TryRemove(id, out _);
             shoutModeStates.TryRemove(id, out _);
 
@@ -54,23 +56,8 @@ namespace Basis.Network.Server.Generic
                         while (pendingVoicePurges.TryDequeue(out int pending)) ids.Add(pending);
                         if (ids.Count == 0) break;
 
-                        foreach (var kvp in resolvedVoicePeers)
-                        {
-                            List<NetPeer> peers = kvp.Value;
-                            if (peers == null) continue;
-
-                            lock (peers)
-                            {
-                                for (int i = peers.Count - 1; i >= 0; i--)
-                                {
-                                    NetPeer p = peers[i];
-                                    if (p != null && ids.Contains(p.Id))
-                                    {
-                                        peers.RemoveAt(i);
-                                    }
-                                }
-                            }
-                        }
+                        foreach (var kvp in resolvedVoicePeers) PurgeDisconnected(kvp.Value, ids);
+                        foreach (var kvp in resolvedChatPeers) PurgeDisconnected(kvp.Value, ids);
                     }
                 }
                 finally
@@ -80,6 +67,19 @@ namespace Basis.Network.Server.Generic
                 // An id enqueued between the inner drain and the flag release would otherwise
                 // sit until the next disconnect; re-check so it is swept now.
                 if (pendingVoicePurges.IsEmpty) return;
+            }
+        }
+
+        private static void PurgeDisconnected(List<NetPeer> peers, HashSet<int> ids)
+        {
+            if (peers == null) return;
+            lock (peers)
+            {
+                for (int i = peers.Count - 1; i >= 0; i--)
+                {
+                    NetPeer peer = peers[i];
+                    if (peer != null && ids.Contains(peer.Id)) peers.RemoveAt(i);
+                }
             }
         }
 
@@ -189,6 +189,65 @@ namespace Basis.Network.Server.Generic
         public static bool GetResolvedVoicePeers(NetPeer client, out List<NetPeer> peers)
         {
             return resolvedVoicePeers.TryGetValue(client.Id, out peers);
+        }
+
+        /// <summary>
+        /// Reads the optional proximity-chat audience following a voice-recipient update.
+        /// An absent trailer means an older client and retains the voice-list fallback;
+        /// a present zero count explicitly clears the chat audience.
+        /// Malformed trailers must never widen the recipient list.
+        /// </summary>
+        public static void UpdateChatRecipients(NetPeer sender, NetDataReader reader)
+        {
+            if (reader.AvailableBytes == 0)
+            {
+                // An older client did not send a chat trailer. Use voice recipients.
+                resolvedChatPeers.TryRemove(sender.Id, out _);
+                return;
+            }
+
+            if (reader.AvailableBytes < sizeof(ushort))
+            {
+                ClearChatRecipients(sender.Id);
+                return;
+            }
+
+            int count = reader.GetUShort();
+            if (reader.AvailableBytes < count * sizeof(ushort))
+            {
+                ClearChatRecipients(sender.Id);
+                return;
+            }
+
+            List<NetPeer> peers = resolvedChatPeers.GetOrAdd(sender.Id, _ => new List<NetPeer>(64));
+            lock (peers)
+            {
+                peers.Clear();
+                for (int i = 0; i < count; i++)
+                {
+                    int id = reader.GetUShort();
+                    if (id != sender.Id && NetworkServer.AuthenticatedPeers.TryGetValue(id, out NetPeer found))
+                    {
+                        peers.Add(found);
+                    }
+                }
+            }
+        }
+
+        private static void ClearChatRecipients(int senderId)
+        {
+            List<NetPeer> peers = resolvedChatPeers.GetOrAdd(senderId, _ => new List<NetPeer>(0));
+            lock (peers) peers.Clear();
+        }
+
+        /// <summary>
+        /// Returns independent chat recipients when the client supplied them, or the
+        /// historical voice recipients for older clients that have no chat trailer.
+        /// </summary>
+        public static bool GetResolvedChatPeers(NetPeer sender, out List<NetPeer> peers)
+        {
+            if (resolvedChatPeers.TryGetValue(sender.Id, out peers)) return true;
+            return resolvedVoicePeers.TryGetValue(sender.Id, out peers);
         }
 
         /// <summary>
