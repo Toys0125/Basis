@@ -453,6 +453,39 @@ public class EventRelayAndMalformedPacketTests
     }
 
     [Fact]
+    public void ChatTyping_StopClearsIndicatorsAfterRecipientsMoveOutOfRange()
+    {
+        FakeNetPeer sender = NewAuthenticatedPeer();
+        FakeNetPeer oldListener = NewAuthenticatedPeer();
+        FakeNetPeer newListener = NewAuthenticatedPeer();
+        NetworkServer.RebuildPeerSnapshot();
+        try
+        {
+            List<NetPeer> recipients = BasisSavedState.GetOrCreateResolvedList(sender.Id);
+            lock (recipients) recipients.Add(oldListener);
+            BasisNetworkHandleChatTyping.HandleEvent(Packet(w => w.Put(true)), sender, BasisNetworkCommons.EventType_PlayerChatTyping);
+            Assert.Single(oldListener.Sent);
+            Assert.Empty(newListener.Sent);
+
+            lock (recipients)
+            {
+                recipients.Clear();
+                recipients.Add(newListener);
+            }
+            BasisNetworkHandleChatTyping.HandleEvent(Packet(w => w.Put(false)), sender, BasisNetworkCommons.EventType_PlayerChatTyping);
+            Assert.Equal(2, oldListener.Sent.Count);
+            NetDataReader read = new NetDataReader(oldListener.Sent[1].Data);
+            Assert.Equal(BasisNetworkCommons.EventType_PlayerChatTyping, read.GetByte());
+            Assert.Equal((ushort)sender.Id, read.GetUShort());
+            Assert.False(read.GetBool());
+        }
+        finally
+        {
+            Remove(sender, oldListener, newListener);
+        }
+    }
+
+    [Fact]
     public void ChatTyping_IsRateLimited_SoOnePeerCannotHoldTheBroadcastPathOpen()
     {
         FakeNetPeer sender = NewAuthenticatedPeer();

@@ -47,7 +47,17 @@ namespace BasisNetworkServer
                 writer.Put((ushort)peer.Id);
                 writer.Put(isTyping);
 
-                BasisNetworkChat.SendToNearbyPeers(writer, BasisNetworkCommons.EventsChannel, peer, DeliveryMethod.Sequenced);
+                if (isTyping)
+                {
+                    BasisNetworkChat.SendToNearbyPeers(writer, BasisNetworkCommons.EventsChannel, peer, DeliveryMethod.Sequenced);
+                }
+                else
+                {
+                    // A listener may have moved out of range since the typing-start
+                    // event. Clear all prior indicators even if the old listener is no
+                    // longer in this sender's proximity list. No message text is sent.
+                    NetworkServer.BroadcastMessageToClients(writer, BasisNetworkCommons.EventsChannel, peer, NetworkServer.PeerSnapshot, DeliveryMethod.Sequenced);
+                }
             }
             finally
             {
