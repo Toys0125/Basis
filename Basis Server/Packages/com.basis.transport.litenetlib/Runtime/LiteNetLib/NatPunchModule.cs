@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
@@ -198,12 +199,12 @@ namespace LiteNetLib
 
         public void SendNatIntroduceRequest(IPEndPoint masterServerEndPoint, string additionalInfo)
         {
-            //prepare outgoing data
-            string networkIp = NetUtils.GetLocalIp(LocalAddrType.IPv4);
-            if (string.IsNullOrEmpty(networkIp) || masterServerEndPoint.AddressFamily == AddressFamily.InterNetworkV6)
-            {
-                networkIp = NetUtils.GetLocalIp(LocalAddrType.IPv6);
-            }
+            if (masterServerEndPoint.Address.IsIPv4MappedToIPv6)
+                masterServerEndPoint = new IPEndPoint(masterServerEndPoint.Address.MapToIPv4(), masterServerEndPoint.Port);
+            var family = masterServerEndPoint.AddressFamily;
+            string networkIp = NetUtils.GetLocalIp(family == AddressFamily.InterNetwork ? LocalAddrType.IPv4 : LocalAddrType.IPv6);
+            if (string.IsNullOrEmpty(networkIp))
+                throw new InvalidOperationException("No local address for NAT discovery family " + family);
 
             Send(
                 new NatIntroduceRequestPacket

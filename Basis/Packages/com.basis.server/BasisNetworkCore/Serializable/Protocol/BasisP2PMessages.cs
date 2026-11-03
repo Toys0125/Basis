@@ -14,6 +14,10 @@ public static partial class SerializableBasis
         /// peers can derive a per-pair key and always encrypt the direct (P2P) link.
         /// </summary>
         public byte[] ephemeralPublicKey;
+        // Optional trailing extension. Absence means the legacy single-address protocol.
+        public byte discoveryVersion;
+        public string discoveryCredential;
+        public string discoveryIPv4Host;
 
         public void Deserialize(NetDataReader reader)
         {
@@ -29,6 +33,18 @@ public static partial class SerializableBasis
             {
                 ephemeralPublicKey = null;
             }
+            discoveryVersion = 0;
+            discoveryCredential = null;
+            discoveryIPv4Host = null;
+            if (reader.AvailableBytes > 0)
+            {
+                discoveryVersion = reader.GetByte();
+                if (discoveryVersion == 2)
+                {
+                    discoveryCredential = reader.GetString(MaxTokenLength);
+                    discoveryIPv4Host = reader.GetString(255);
+                }
+            }
         }
 
         public void Serialize(NetDataWriter writer)
@@ -43,6 +59,12 @@ public static partial class SerializableBasis
             else
             {
                 writer.Put((byte)0);
+            }
+            if (discoveryVersion == 2)
+            {
+                writer.Put(discoveryVersion);
+                writer.Put(discoveryCredential ?? string.Empty, MaxTokenLength);
+                writer.Put(discoveryIPv4Host ?? string.Empty, 255);
             }
         }
     }

@@ -511,6 +511,8 @@ namespace LiteNetLib.Utils
         /// </remarks>
         public void Put(IPEndPoint endPoint)
         {
+            if (endPoint.Address.IsIPv4MappedToIPv6)
+                endPoint = new IPEndPoint(endPoint.Address.MapToIPv4(), endPoint.Port);
             if (endPoint.AddressFamily == AddressFamily.InterNetwork)
             {
                 Put((byte)0);

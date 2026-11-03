@@ -673,4 +673,20 @@ public class CryptoLayerTests
         foreach (byte[] wire in wires)
             Assert.Equal(template, Open(server, ClientAddress, wire));
     }
+    [Fact]
+    public void MappedIPv4SharesCryptoAssociationButNativeIPv6DoesNot()
+    {
+        var (client, server) = NewFixedKeyPair();
+        var mappedServer = new IPEndPoint(ServerAddress.Address.MapToIPv6(), ServerAddress.Port);
+        var mappedClient = new IPEndPoint(ClientAddress.Address.MapToIPv6(), ClientAddress.Port);
+        byte[] packet = BuildPacket(HeaderUnreliable, 80);
+        byte[] wire = Seal(client, mappedServer, packet);
+        Assert.Equal(packet.Length + BasisCryptoLayer.Overhead, wire.Length);
+        Assert.Equal(packet, Open(server, mappedClient, wire));
+        Assert.True(client.HasEndpoint(mappedServer));
+        Assert.False(client.HasEndpoint(new IPEndPoint(IPAddress.Parse("2001:db8::1"), ServerAddress.Port)));
+        client.RemoveEndpoint(mappedServer);
+        Assert.False(client.HasEndpoint(ServerAddress));
+    }
+
 }

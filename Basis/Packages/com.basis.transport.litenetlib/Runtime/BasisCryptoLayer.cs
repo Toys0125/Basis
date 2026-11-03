@@ -63,13 +63,13 @@ namespace Basis.Network.Core
 			{
 				if (ReferenceEquals(x, y)) return true;
 				if (x is null || y is null) return false;
-				return x.Port == y.Port && x.Address.Equals(y.Address);
+				return x.Port == y.Port && BasisP2PEndpoints.Canonical(x).Address.Equals(BasisP2PEndpoints.Canonical(y).Address);
 			}
 
 			public int GetHashCode(IPEndPoint ep)
 			{
 				if (ep is null) return 0;
-				unchecked { return (ep.Address.GetHashCode() * 397) ^ ep.Port; }
+				unchecked { return (BasisP2PEndpoints.Canonical(ep).Address.GetHashCode() * 397) ^ ep.Port; }
 			}
 		}
 

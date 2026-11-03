@@ -1,6 +1,9 @@
-﻿using Basis.Network.Core;
+using Basis.Network.Core;
 using System.Collections.Concurrent;
 using System.Net;
+using System;
+using System.Collections.Generic;
+using System.Net.Sockets;
 using System.Threading;
 using static BasisNetworkCore.Serializable.SerializableBasis;
 using static SerializableBasis;
@@ -17,17 +20,39 @@ namespace BasisNetworkServer
             public int InitiatorPeerId;
             public int TargetPeerId;
             public SessionState State;
+            public bool Closed;
+            public AddressFamily? SelectedFamily;
 
-            public IPEndPoint EndpointA_Internal;
-            public IPEndPoint EndpointA_External;
-            public IPEndPoint EndpointB_Internal;
-            public IPEndPoint EndpointB_External;
-            public bool HasA;
-            public bool HasB;
+            public readonly Participant A = new();
+            public readonly Participant B = new();
 
             public bool InitiatorLinkUp;
             public bool TargetLinkUp;
         }
+
+        internal sealed class Participant
+        {
+            public string Credential;
+            public readonly Dictionary<AddressFamily, (IPEndPoint Local, IPEndPoint External)> Candidates = new();
+
+            public bool Add(IPEndPoint local, IPEndPoint external)
+            {
+                local = Canonical(local);
+                external = Canonical(external);
+                if (local == null || external == null || local.Port == 0 || external.Port == 0 ||
+                    local.AddressFamily != external.AddressFamily) return false;
+                // A credential identifies one participant, never the opposite slot. Pin each
+                // family for the punch cycle; retries cannot replace it with an unrelated endpoint.
+                if (Candidates.TryGetValue(external.AddressFamily, out var prior))
+                    return prior.Local.Equals(local) && prior.External.Equals(external);
+                Candidates.Add(external.AddressFamily, (local, external));
+                return true;
+            }
+        }
+
+        private static IPEndPoint Canonical(IPEndPoint ep) => BasisP2PEndpoints.Canonical(ep);
+
+        private static readonly ConcurrentDictionary<string, (Session Session, Participant Participant)> _credentials = new();
 
         private static readonly ConcurrentDictionary<string, Session> _sessions = new();
         private static readonly ConcurrentDictionary<int, ConcurrentDictionary<string, byte>> _peerSessions = new();
@@ -96,6 +121,7 @@ namespace BasisNetworkServer
         {
             _introducer?.Shutdown();
             _introducer = null;
+            _credentials.Clear();
             _sessions.Clear();
             _peerSessions.Clear();
             _offloadedPairs.Clear();
@@ -145,31 +171,44 @@ namespace BasisNetworkServer
         {
             if (!_sessions.TryGetValue(sessionToken, out Session s)) return;
 
-            if (senderId == s.InitiatorPeerId) s.InitiatorLinkUp = true;
-            else if (senderId == s.TargetPeerId) s.TargetLinkUp = true;
-            else return;
-
-            BNL.Log($"[P2P] LinkUp from peer {senderId} (token {Preview(s.Token)}); flags InitiatorUp={s.InitiatorLinkUp} TargetUp={s.TargetLinkUp}.");
-            if (s.InitiatorLinkUp && s.TargetLinkUp)
+            lock (s)
             {
-                if (_offloadedPairs.TryAdd(PackPair(s.InitiatorPeerId, s.TargetPeerId), 0))
-                {
-                    Interlocked.Increment(ref _offloadedPairCount);
-                }
-                BNL.Log($"[P2P] OFFLOADED pair ({s.InitiatorPeerId},{s.TargetPeerId}) — server will skip relaying voice + avatar between them.");
+                // Late reports from an earlier cycle must not offload a pair while it is
+                // gathering new candidates (or has no compatible family).
+                if (s.Closed || s.State != SessionState.Punched) return;
+                if (senderId == s.InitiatorPeerId) s.InitiatorLinkUp = true;
+                else if (senderId == s.TargetPeerId) s.TargetLinkUp = true;
+                else return;
 
-                // Positive confirmation to BOTH peers that the pair is fully direct now. A
-                // client that reached Connected but never sees this treats its link as partial
-                // and falls back to the server relay (see BasisP2PManager confirm-timeout).
-                if (NetworkServer.AuthenticatedPeers.TryGetValue(s.InitiatorPeerId, out NetPeer initiatorPeer))
-                    SendSub(initiatorPeer, BasisNetworkCommons.P2PSub_Offloaded, s.Token, (ushort)s.TargetPeerId);
-                if (NetworkServer.AuthenticatedPeers.TryGetValue(s.TargetPeerId, out NetPeer targetPeer))
-                    SendSub(targetPeer, BasisNetworkCommons.P2PSub_Offloaded, s.Token, (ushort)s.InitiatorPeerId);
+                BNL.Log($"[P2P] LinkUp from peer {senderId} (token {Preview(s.Token)}); flags InitiatorUp={s.InitiatorLinkUp} TargetUp={s.TargetLinkUp}.");
+                if (s.InitiatorLinkUp && s.TargetLinkUp)
+                {
+                    if (_offloadedPairs.TryAdd(PackPair(s.InitiatorPeerId, s.TargetPeerId), 0))
+                    {
+                        Interlocked.Increment(ref _offloadedPairCount);
+                    }
+                    BNL.Log($"[P2P] OFFLOADED pair ({s.InitiatorPeerId},{s.TargetPeerId}) — server will skip relaying voice + avatar between them.");
+
+                    // Positive confirmation to BOTH peers that the pair is fully direct now. A
+                    // client that reached Connected but never sees this treats its link as partial
+                    // and falls back to the server relay (see BasisP2PManager confirm-timeout).
+                    if (NetworkServer.AuthenticatedPeers.TryGetValue(s.InitiatorPeerId, out NetPeer initiatorPeer))
+                        SendSub(initiatorPeer, BasisNetworkCommons.P2PSub_Offloaded, s.Token, (ushort)s.TargetPeerId);
+                    if (NetworkServer.AuthenticatedPeers.TryGetValue(s.TargetPeerId, out NetPeer targetPeer))
+                        SendSub(targetPeer, BasisNetworkCommons.P2PSub_Offloaded, s.Token, (ushort)s.InitiatorPeerId);
+                }
             }
         }
 
         private static void HandleRequest(NetPeer sender, BasisP2PSignalMessage msg)
         {
+            if (!SupportsDiscovery(msg.discoveryVersion))
+            {
+                // Legacy NAT requests have only a shared token: they cannot prove which
+                // authenticated participant sent them. Keep these peers on the relay.
+                SendSub(sender, BasisNetworkCommons.P2PSub_Cancel, msg.sessionToken, msg.otherPlayerId);
+                return;
+            }
             if (string.IsNullOrEmpty(msg.sessionToken))
             {
                 BNL.LogError($"[P2P] Empty session token from peer {sender.Id}, dropping Request.");
@@ -201,8 +240,7 @@ namespace BasisNetworkServer
                 return;
             }
 
-            // Reuse of an existing token by the same peer just refreshes that session below; only a
-            // genuinely new token grows the set, so cap on distinct outstanding sessions per peer.
+            // Cap distinct outstanding sessions. Existing tokens cannot overwrite a pair.
             if (_peerSessions.TryGetValue(sender.Id, out var openSessions)
                 && openSessions.Count >= MaxSessionsPerPeer
                 && !openSessions.ContainsKey(msg.sessionToken))
@@ -219,15 +257,18 @@ namespace BasisNetworkServer
                 TargetPeerId = msg.otherPlayerId,
                 State = SessionState.Awaiting,
             };
-            _sessions[msg.sessionToken] = session;
+            // A caller must not overwrite another pair's session or reset a live session.
+            if (!_sessions.TryAdd(msg.sessionToken, session)) return;
+            ArmParticipant(session, session.A);
+            ArmParticipant(session, session.B);
             TrackPeerSession(sender.Id, msg.sessionToken);
             TrackPeerSession(msg.otherPlayerId, msg.sessionToken);
 
             BNL.Log($"[P2P] Forwarding Request from peer {sender.Id} to peer {msg.otherPlayerId} (token {Preview(msg.sessionToken)}).");
-            SendSub(target, BasisNetworkCommons.P2PSub_Request, msg.sessionToken, (ushort)sender.Id, msg.ephemeralPublicKey);
+            SendSub(target, BasisNetworkCommons.P2PSub_Request, msg.sessionToken, (ushort)sender.Id, msg.ephemeralPublicKey, credential: session.B.Credential);
 
             // ServerArmed confirms registration before either side starts punching, avoiding a race.
-            SendSub(sender, BasisNetworkCommons.P2PSub_ServerArmed, msg.sessionToken, msg.otherPlayerId);
+            SendSub(sender, BasisNetworkCommons.P2PSub_ServerArmed, msg.sessionToken, msg.otherPlayerId, credential: session.A.Credential);
         }
 
         private static void HandleAccept(NetPeer sender, BasisP2PSignalMessage msg)
@@ -243,7 +284,15 @@ namespace BasisNetworkServer
                 return;
             }
 
+            if (!SupportsDiscovery(msg.discoveryVersion))
+            {
+                ForwardAndDrop(sender, msg, BasisNetworkCommons.P2PSub_Cancel);
+                SendSub(sender, BasisNetworkCommons.P2PSub_Cancel, s.Token, (ushort)s.InitiatorPeerId);
+                return;
+            }
+            if (s.State != SessionState.Awaiting) return;
             s.State = SessionState.ReadyForPunch;
+            SendSub(sender, BasisNetworkCommons.P2PSub_ServerArmed, s.Token, (ushort)s.InitiatorPeerId, credential: s.B.Credential);
 
             if (NetworkServer.AuthenticatedPeers.TryGetValue(s.InitiatorPeerId, out NetPeer initiator))
             {
@@ -268,18 +317,26 @@ namespace BasisNetworkServer
             // Re-arm session + clear offload so relay resumes during re-punch window.
             if (_sessions.TryGetValue(sessionToken, out Session s))
             {
+                if (!MatchesPair(s, senderId, otherPlayerId)) return;
                 bool wasOffloaded = _offloadedPairs.ContainsKey(PackPair(s.InitiatorPeerId, s.TargetPeerId));
-                s.HasA = false;
-                s.HasB = false;
-                s.InitiatorLinkUp = false;
-                s.TargetLinkUp = false;
-                s.State = SessionState.ReadyForPunch;
-                if (_offloadedPairs.TryRemove(PackPair(s.InitiatorPeerId, s.TargetPeerId), out _))
+                lock (s)
                 {
-                    Interlocked.Decrement(ref _offloadedPairCount);
+                    // An authenticated LinkLost starts a new collection cycle, allowing NAT
+                    // mappings to change without permitting replacements within a cycle.
+                    s.A.Candidates.Clear();
+                    s.B.Candidates.Clear();
+                    s.SelectedFamily = null;
+                    s.InitiatorLinkUp = false;
+                    s.TargetLinkUp = false;
+                    s.State = SessionState.ReadyForPunch;
+                    if (_offloadedPairs.TryRemove(PackPair(s.InitiatorPeerId, s.TargetPeerId), out _))
+                    {
+                        Interlocked.Decrement(ref _offloadedPairCount);
+                    }
                 }
                 BNL.Log($"[P2P] LinkLost from peer {senderId} (token {Preview(s.Token)}); re-armed for punch, offload {(wasOffloaded ? "cleared (relay resumed)" : "already cleared")}.");
             }
+            else return;
             // Forward to the other peer (guarded) without dropping the session (re-armed above).
             if (NetworkServer.AuthenticatedPeers.TryGetValue(otherPlayerId, out NetPeer other))
                 SendSub(other, BasisNetworkCommons.P2PSub_LinkLost, sessionToken, (ushort)senderId);
@@ -287,6 +344,8 @@ namespace BasisNetworkServer
 
         private static void ForwardAndDrop(NetPeer sender, BasisP2PSignalMessage msg, byte sub, bool dropSession = true)
         {
+            if (!_sessions.TryGetValue(msg.sessionToken, out Session session) ||
+                !MatchesPair(session, sender.Id, msg.otherPlayerId)) return;
             if (NetworkServer.AuthenticatedPeers.TryGetValue(msg.otherPlayerId, out NetPeer other))
             {
                 SendSub(other, sub, msg.sessionToken, (ushort)sender.Id);
@@ -297,81 +356,55 @@ namespace BasisNetworkServer
             }
         }
 
+        private static bool MatchesPair(Session s, int sender, int other) =>
+            (sender == s.InitiatorPeerId && other == s.TargetPeerId) ||
+            (sender == s.TargetPeerId && other == s.InitiatorPeerId);
+
+        private static void ArmParticipant(Session s, Participant p)
+        {
+            p.Credential = Guid.NewGuid().ToString("N");
+            _credentials[p.Credential] = (s, p);
+        }
+
         private static void OnNatIntroductionRequest(IPEndPoint localEndPoint, IPEndPoint remoteEndPoint, string token)
         {
-            if (string.IsNullOrEmpty(token)) return;
-            if (!_sessions.TryGetValue(token, out Session s))
-            {
-                BNL.LogWarning($"[P2P] NatIntroduceRequest with unknown token {Preview(token)} — dropping.");
-                return;
-            }
-            if (s.State < SessionState.ReadyForPunch)
-            {
-                BNL.LogWarning($"[P2P] NatIntroduceRequest for token {Preview(token)} in state {s.State} — not ready, dropping.");
-                return;
-            }
-            BNL.Log($"[P2P] NatIntroduceRequest token={Preview(token)}; HasA={s.HasA} HasB={s.HasB}.");
+            CollectCandidate(localEndPoint, remoteEndPoint, token, _introducer);
+        }
 
-            // Arrival order labels the slots; NatIntroduce is symmetric so it doesn't matter which is which.
+        internal static bool CollectCandidate(IPEndPoint local, IPEndPoint remote, string token, IPeerIntroducer introducer)
+        {
+            if (string.IsNullOrEmpty(token)) return false;
+            if (!_credentials.TryGetValue(token, out var binding)) return false;
+            var s = binding.Session;
+            var p = binding.Participant;
+            remote = Canonical(remote);
             lock (s)
             {
-                if (!s.HasA)
+                if (s.Closed || s.State < SessionState.ReadyForPunch || !p.Add(local, remote)) return false;
+                // Select the first common family for this punch cycle. Both participants
+                // must open the same family: independent IPv4/IPv6 races can otherwise leave
+                // each side holding a different connection. Retries repeat prediction too.
+                foreach (var entry in s.A.Candidates)
                 {
-                    s.EndpointA_Internal = localEndPoint;
-                    s.EndpointA_External = remoteEndPoint;
-                    s.HasA = true;
-                }
-                else if (!s.HasB)
-                {
-                    s.EndpointB_Internal = localEndPoint;
-                    s.EndpointB_External = remoteEndPoint;
-                    s.HasB = true;
-                }
-
-                if (s.HasA && s.HasB)
-                {
-                    bool firstFire = s.State != SessionState.Punched;
-                    bool sameNat = s.EndpointA_External != null &&
-                                   s.EndpointB_External != null &&
-                                   s.EndpointA_External.Address.Equals(s.EndpointB_External.Address);
-                    string lanTag = sameNat ? " [SAME-NETWORK]" : "";
-
-                    // Spray predicted ports on both sides (A/B are arrival-ordered, not
-                    // mapped to a specific peer), except on a same-network pair where the
-                    // internal punch already handles it.
-                    bool predictPorts = firstFire && !sameNat;
-
-                    // Two clients on the SAME host advertise the SAME internal (LAN) IP.
-                    // Punching/connecting to a machine's own external-facing LAN IP is often
-                    // dropped by the OS/NIC (weak-host-model / firewall), so two same-PC clients
-                    // never establish a direct link even though their internal endpoints look
-                    // correct. Loopback (127.0.0.1) always routes locally, so rewrite the
-                    // internal endpoints to it for a same-host pair. Gated on the same external
-                    // IP too, so two different machines that merely share a private IP behind
-                    // separate NATs are never rewritten (they keep the real internal punch).
-                    IPEndPoint aInternal = s.EndpointA_Internal;
-                    IPEndPoint bInternal = s.EndpointB_Internal;
-                    bool sameHost = sameNat && aInternal != null && bInternal != null &&
-                                    aInternal.Address.Equals(bInternal.Address);
-                    if (sameHost)
+                    if (s.SelectedFamily.HasValue && s.SelectedFamily.Value != entry.Key) continue;
+                    if (!s.B.Candidates.TryGetValue(entry.Key, out var other)) continue;
+                    var first = entry.Value;
+                    if (first.External.Equals(other.External)) continue;
+                    bool sameNat = first.External.Address.Equals(other.External.Address);
+                    var aLocal = first.Local;
+                    var bLocal = other.Local;
+                    if (sameNat && aLocal.Address.Equals(bLocal.Address))
                     {
-                        aInternal = new IPEndPoint(IPAddress.Loopback, aInternal.Port);
-                        bInternal = new IPEndPoint(IPAddress.Loopback, bInternal.Port);
-                        BNL.Log($"[P2P] SAME-HOST pair for token {Preview(token)} — rewriting internal endpoints to loopback so the local punch lands.");
+                        var loopback = entry.Key == AddressFamily.InterNetwork ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+                        aLocal = new IPEndPoint(loopback, aLocal.Port);
+                        bLocal = new IPEndPoint(loopback, bLocal.Port);
                     }
-
-                    BNL.Log($"[P2P] Both NAT endpoints collected for token {Preview(token)}. Firing NatIntroduce (port prediction {(predictPorts ? "on" : "off")}).{lanTag}");
-                    IPeerIntroducer introducer = _introducer;
-                    if (introducer == null) return;
-                    introducer.Introduce(
-                        aInternal,
-                        s.EndpointA_External,
-                        bInternal,
-                        s.EndpointB_External,
-                        predictPorts,
-                        token);
+                    s.SelectedFamily = entry.Key;
+                    introducer?.Introduce(aLocal, first.External, bLocal, other.External, !sameNat, s.Token);
                     s.State = SessionState.Punched;
+                    break;
                 }
+                return true;
             }
         }
 
@@ -402,11 +435,17 @@ namespace BasisNetworkServer
         private static void RemoveSession(string token)
         {
             if (!_sessions.TryRemove(token, out Session s)) return;
-            UntrackPeerSession(s.InitiatorPeerId, token);
-            UntrackPeerSession(s.TargetPeerId, token);
-            if (_offloadedPairs.TryRemove(PackPair(s.InitiatorPeerId, s.TargetPeerId), out _))
+            lock (s)
             {
-                Interlocked.Decrement(ref _offloadedPairCount);
+                s.Closed = true;
+                if (s.A.Credential != null) _credentials.TryRemove(s.A.Credential, out _);
+                if (s.B.Credential != null) _credentials.TryRemove(s.B.Credential, out _);
+                UntrackPeerSession(s.InitiatorPeerId, token);
+                UntrackPeerSession(s.TargetPeerId, token);
+                if (_offloadedPairs.TryRemove(PackPair(s.InitiatorPeerId, s.TargetPeerId), out _))
+                {
+                    Interlocked.Decrement(ref _offloadedPairCount);
+                }
             }
         }
 
@@ -424,7 +463,7 @@ namespace BasisNetworkServer
             }
         }
 
-        private static void SendSub(NetPeer to, byte sub, string token, ushort otherPlayerId, byte[] ephemeralPublicKey = null)
+        private static void SendSub(NetPeer to, byte sub, string token, ushort otherPlayerId, byte[] ephemeralPublicKey = null, string credential = null)
         {
             NetDataWriter writer = NetworkServer.RentWriter();
             writer.Put(sub);
@@ -433,6 +472,9 @@ namespace BasisNetworkServer
                 otherPlayerId = otherPlayerId,
                 sessionToken = token ?? string.Empty,
                 ephemeralPublicKey = ephemeralPublicKey,
+                discoveryVersion = (byte)(credential != null ? 2 : 0),
+                discoveryCredential = credential,
+                discoveryIPv4Host = Environment.GetEnvironmentVariable("BASIS_P2P_IPV4_HOST"),
             };
             body.Serialize(writer);
             NetworkServer.TrySend(to, writer, BasisNetworkCommons.P2PChannel, DeliveryMethod.ReliableOrdered);
@@ -449,6 +491,7 @@ namespace BasisNetworkServer
         // static and otherwise persist across tests in the same run).
         internal static void ResetForTests()
         {
+            _credentials.Clear();
             _sessions.Clear();
             _peerSessions.Clear();
             _offloadedPairs.Clear();
@@ -456,23 +499,36 @@ namespace BasisNetworkServer
         }
 
         // Registers a session the way HandleRequest would (session record + per-peer tracking),
-        // without needing NetPeers. State starts past Awaiting (as it would be after Accept).
-        internal static void RegisterSessionForTests(string token, int initiatorId, int targetId)
+        // without needing NetPeers. Offload-only tests start introduced; discovery tests opt
+        // into ReadyForPunch (the post-Accept state).
+        internal static void RegisterSessionForTests(string token, int initiatorId, int targetId, bool readyForPunch = false)
         {
             var session = new Session
             {
                 Token = token,
                 InitiatorPeerId = initiatorId,
                 TargetPeerId = targetId,
-                State = SessionState.ReadyForPunch,
+                State = readyForPunch ? SessionState.ReadyForPunch : SessionState.Punched,
             };
             _sessions[token] = session;
             TrackPeerSession(initiatorId, token);
             TrackPeerSession(targetId, token);
         }
 
-        // True if the broker currently holds a session under this token (used by tests to assert
-        // that disconnect/cancel fully tore the session down, not just the offload flag).
+        internal static bool SupportsDiscovery(byte version) => version == 2;
+
+        internal static void ArmForTests(string token, string a, string b)
+        {
+            var s = _sessions[token];
+            if (s.A.Credential != null) _credentials.TryRemove(s.A.Credential, out _);
+            if (s.B.Credential != null) _credentials.TryRemove(s.B.Credential, out _);
+            s.A.Credential = a;
+            s.B.Credential = b;
+            if (a != null) _credentials[a] = (s, s.A);
+            if (b != null) _credentials[b] = (s, s.B);
+        }
+
+        // True if disconnect/cancel has not fully torn the session down.
         internal static bool HasSessionForTests(string token) => _sessions.ContainsKey(token);
     }
 }

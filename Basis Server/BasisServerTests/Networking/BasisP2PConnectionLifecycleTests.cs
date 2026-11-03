@@ -32,11 +32,11 @@ public class BasisP2PConnectionLifecycleTests
     private static string NewToken() => $"tok-{Guid.NewGuid():N}";
 
     /// <summary>Feed a P2P signal frame (sub-type byte + serialized body) through the real routing switch.</summary>
-    private static void Inject(NetPeer from, byte sub, ushort otherPlayerId, string token, byte[] key = null)
+    private static void Inject(NetPeer from, byte sub, ushort otherPlayerId, string token, byte[] key = null, byte version = 2)
     {
         NetDataWriter w = new NetDataWriter(true, 96);
         w.Put(sub);
-        new BasisP2PSignalMessage { otherPlayerId = otherPlayerId, sessionToken = token, ephemeralPublicKey = key }.Serialize(w);
+        new BasisP2PSignalMessage { otherPlayerId = otherPlayerId, sessionToken = token, ephemeralPublicKey = key, discoveryVersion = version }.Serialize(w);
         NetPacketReader reader = NetPacketReader.Create(w.CopyData(), 0, w.Length, () => { });
         BasisServerP2PBroker.HandleP2PMessage(reader, from);
     }
@@ -59,6 +59,20 @@ public class BasisP2PConnectionLifecycleTests
 
     private static bool Received(FakeNetPeer peer, byte sub, ushort other, string token)
         => Signals(peer).Any(s => s.Sub == sub && s.Other == other && s.Token == token);
+
+    private static void Introduce(FakeNetPeer a, FakeNetPeer b)
+    {
+        string Credential(FakeNetPeer peer)
+        {
+            var frame = peer.Sent.Last(s => s.Channel == BasisNetworkCommons.P2PChannel && s.Data[0] == BasisNetworkCommons.P2PSub_ServerArmed);
+            var reader = new NetDataReader(frame.Data); reader.GetByte();
+            BasisP2PSignalMessage msg = default; msg.Deserialize(reader); return msg.discoveryCredential;
+        }
+        var ae = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("192.0.2.1"), 40001);
+        var be = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("198.51.100.2"), 40002);
+        Assert.True(BasisServerP2PBroker.CollectCandidate(ae, ae, Credential(a), null));
+        Assert.True(BasisServerP2PBroker.CollectCandidate(be, be, Credential(b), null));
+    }
 
     // ── Request ──────────────────────────────────────────────────────────────
 
@@ -261,6 +275,7 @@ public class BasisP2PConnectionLifecycleTests
         Inject(a, BasisNetworkCommons.P2PSub_Request, (ushort)bId, token);
         Inject(b, BasisNetworkCommons.P2PSub_Accept, (ushort)aId, token);
 
+        Introduce(a, b);
         Inject(a, BasisNetworkCommons.P2PSub_LinkUp, (ushort)bId, token);
         Assert.False(BasisServerP2PBroker.IsP2POffloaded(aId, bId)); // one side up only
         Inject(b, BasisNetworkCommons.P2PSub_LinkUp, (ushort)aId, token);
@@ -314,6 +329,7 @@ public class BasisP2PConnectionLifecycleTests
         // Full establish + offload.
         Inject(a, BasisNetworkCommons.P2PSub_Request, (ushort)bId, token);
         Inject(b, BasisNetworkCommons.P2PSub_Accept, (ushort)aId, token);
+        Introduce(a, b);
         Inject(a, BasisNetworkCommons.P2PSub_LinkUp, (ushort)bId, token);
         Inject(b, BasisNetworkCommons.P2PSub_LinkUp, (ushort)aId, token);
         Assert.True(BasisServerP2PBroker.IsP2POffloaded(aId, bId));
@@ -384,4 +400,62 @@ public class BasisP2PConnectionLifecycleTests
         Assert.False(BasisServerP2PBroker.HasSessionForTests(token));
         Assert.Empty(Signals(peer));
     }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void LegacyRequestOrAcceptKeepsBothPeersRelayed(bool oldInitiator)
+    {
+        using var scope = new ServerStaticsScope();
+        int initId = LifecycleSupport.NextPeerId();
+        int targetId = LifecycleSupport.NextPeerId();
+        var initiator = LifecycleSupport.Peer(initId);
+        var target = LifecycleSupport.Peer(targetId);
+        NetworkServer.AuthenticatedPeers[initId] = initiator;
+        NetworkServer.AuthenticatedPeers[targetId] = target;
+        string token = NewToken();
+        Inject(initiator, BasisNetworkCommons.P2PSub_Request, (ushort)targetId, token, version: oldInitiator ? (byte)0 : (byte)2);
+        if (!oldInitiator) Inject(target, BasisNetworkCommons.P2PSub_Accept, (ushort)initId, token, version: 0);
+        Assert.False(BasisServerP2PBroker.HasSessionForTests(token));
+        Assert.False(BasisServerP2PBroker.IsP2POffloaded(initId, targetId));
+        Assert.True(Received(initiator, BasisNetworkCommons.P2PSub_Cancel, (ushort)targetId, token));
+    }
+
+    [Fact]
+    public void CredentialsArePrivateAndEphemeralKeysAreForwardedUnchanged()
+    {
+        using var scope = new ServerStaticsScope();
+        int initId = LifecycleSupport.NextPeerId();
+        int targetId = LifecycleSupport.NextPeerId();
+        var initiator = LifecycleSupport.Peer(initId);
+        var target = LifecycleSupport.Peer(targetId);
+        NetworkServer.AuthenticatedPeers[initId] = initiator;
+        NetworkServer.AuthenticatedPeers[targetId] = target;
+        var aKey = Enumerable.Repeat((byte)17, 32).ToArray();
+        var bKey = Enumerable.Repeat((byte)29, 32).ToArray();
+        string token = NewToken();
+        Inject(initiator, BasisNetworkCommons.P2PSub_Request, (ushort)targetId, token, aKey);
+        Inject(target, BasisNetworkCommons.P2PSub_Accept, (ushort)initId, token, bKey);
+        BasisP2PSignalMessage Body(FakeNetPeer peer, byte sub)
+        {
+            var frame = peer.Sent.Single(s => s.Channel == BasisNetworkCommons.P2PChannel && s.Data[0] == sub);
+            var reader = new NetDataReader(frame.Data); reader.GetByte();
+            BasisP2PSignalMessage msg = default; msg.Deserialize(reader); return msg;
+        }
+        var a = Body(initiator, BasisNetworkCommons.P2PSub_ServerArmed);
+        var b = Body(target, BasisNetworkCommons.P2PSub_ServerArmed);
+        Assert.False(string.IsNullOrEmpty(a.discoveryCredential));
+        Assert.False(string.IsNullOrEmpty(b.discoveryCredential));
+        Assert.NotEqual(a.discoveryCredential, b.discoveryCredential);
+        var request = Body(target, BasisNetworkCommons.P2PSub_Request);
+        var accept = Body(initiator, BasisNetworkCommons.P2PSub_Accept);
+        Assert.Null(accept.discoveryCredential);
+        Assert.Equal(b.discoveryCredential, request.discoveryCredential);
+        Assert.NotEqual(a.discoveryCredential, request.discoveryCredential);
+        Assert.Equal(aKey, request.ephemeralPublicKey);
+        Assert.Equal(bKey, accept.ephemeralPublicKey);
+        // A third party using the public session token cannot contribute a candidate.
+        Assert.False(BasisServerP2PBroker.CollectCandidate(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1234),
+            new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1234), token, null));
+    }
+
 }

@@ -1,4 +1,7 @@
 using System.Net;
+using System;
+using System.Collections.Generic;
+using System.Net.Sockets;
 
 namespace Basis.Network.Core
 {
@@ -40,6 +43,30 @@ namespace Basis.Network.Core
             manager.NatPunchModule.SendNatIntroduceRequest(serverHost, serverPort, token);
         }
 
+        public void RequestIntroductionCandidates(string serverHost, int serverPort, string credential, string ipv4Host)
+        {
+            var addresses = new HashSet<IPAddress>();
+            foreach (string host in new[] { serverHost, ipv4Host })
+            {
+                if (string.IsNullOrEmpty(host)) continue;
+                try
+                {
+                    foreach (var ip in Dns.GetHostAddresses(host))
+                        addresses.Add(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip);
+                }
+                catch (SocketException) { /* Other family/host may still work. */ }
+            }
+            foreach (var address in addresses)
+            {
+                try
+                {
+                    manager.NatPunchModule.SendNatIntroduceRequest(new IPEndPoint(address, serverPort), credential);
+                }
+                catch (SocketException) { /* No route for this family: leave relay available. */ }
+                catch (InvalidOperationException) { /* No usable local address for this family. */ }
+            }
+        }
+
         public NetPeer Connect(IPEndPoint endPoint, NetDataWriter connectData)
         {
             LiteNetLib.NetPeer peer = manager.Connect(endPoint, connectData.AsReadOnlySpan());
@@ -48,12 +75,12 @@ namespace Basis.Network.Core
 
         public void SetEndpointKeys(IPEndPoint endPoint, byte[] sendKey, byte[] recvKey, long initialSendCounter)
         {
-            crypto.SetEndpointKeys(endPoint, sendKey, recvKey, initialSendCounter);
+            crypto.SetEndpointKeys(BasisP2PEndpoints.Canonical(endPoint), sendKey, recvKey, initialSendCounter);
         }
 
         public void RemoveEndpoint(IPEndPoint endPoint)
         {
-            crypto.RemoveEndpoint(endPoint);
+            crypto.RemoveEndpoint(BasisP2PEndpoints.Canonical(endPoint));
         }
     }
 }

@@ -6,6 +6,7 @@ using Basis.Scripts.Networking.NetworkedAvatar;
 using Basis.Scripts.Profiler;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using static SerializableBasis;
@@ -75,6 +76,10 @@ namespace Basis.Scripts.Networking
         private sealed class Session
         {
             public string Token;
+            public string DiscoveryCredential;
+            public string DiscoveryIPv4Host;
+            public bool AwaitDiscoveryArm;
+            public bool AcceptedIncoming;
             public ushort OtherPlayerId;
             public bool LocalIsInitiator;
             public P2PSessionState State;
@@ -87,7 +92,9 @@ namespace Basis.Scripts.Networking
             public byte[] LocalEphemeralPublic;
             public byte[] SendKey;
             public byte[] RecvKey;
-            public IPEndPoint CryptoEndpoint;
+            // Inbound/outbound opens may use different LAN/external endpoints. Retain
+            // associations until retry/teardown so accepting one cannot unseal another.
+            public readonly HashSet<IPEndPoint> CryptoEndpoints = new();
             public long CryptoCounterBase;
 
             // Health / partial-connection bookkeeping (monotonic Stopwatch ticks; ms via StopwatchTicksToMs).
@@ -251,7 +258,8 @@ namespace Basis.Scripts.Networking
             }
             BasisDebug.Log($"[P2P] AcceptIncoming → player {senderPlayerId} (token {Preview(token)}); sending Accept and starting NAT punch.");
             SendSubToServer(BasisNetworkCommons.P2PSub_Accept, senderPlayerId, token, s.LocalEphemeralPublic);
-            StartPunch(s);
+            s.AcceptedIncoming = true;
+            if (!s.AwaitDiscoveryArm) StartPunch(s);
         }
 
         public static void DeclineIncoming(ushort senderPlayerId, string token)
@@ -546,6 +554,15 @@ namespace Basis.Scripts.Networking
                     }
                     break;
                 case BasisNetworkCommons.P2PSub_ServerArmed:
+                    if (_sessionsByToken.TryGetValue(msg.sessionToken, out Session armed) && msg.discoveryVersion == 2 &&
+                        !string.IsNullOrEmpty(msg.discoveryCredential))
+                    {
+                        armed.DiscoveryCredential = msg.discoveryCredential;
+                        armed.DiscoveryIPv4Host = msg.discoveryIPv4Host;
+                        armed.AwaitDiscoveryArm = false;
+                        if (!armed.LocalIsInitiator && armed.AcceptedIncoming && armed.State == P2PSessionState.IncomingPending)
+                            StartPunch(armed);
+                    }
                     if (_sessionsByToken.TryGetValue(msg.sessionToken, out Session s3) &&
                         s3.State == P2PSessionState.OutgoingRequested)
                     {
@@ -588,6 +605,9 @@ namespace Basis.Scripts.Networking
                 OtherPlayerId = msg.otherPlayerId,
                 LocalIsInitiator = false,
                 State = P2PSessionState.IncomingPending,
+                // A private credential proves broker support; an old server that simply
+                // forwards the initiator's capability extension must not stall acceptance.
+                AwaitDiscoveryArm = msg.discoveryVersion == 2 && !string.IsNullOrEmpty(msg.discoveryCredential),
             };
             BasisCryptoHandshake.GenerateKeyPair(out byte[] ephemeralPrivate, out byte[] ephemeralPublic);
             session.LocalEphemeralPrivate = ephemeralPrivate;
@@ -664,7 +684,10 @@ namespace Basis.Scripts.Networking
             if (socket == null) return false;
             try
             {
-                socket.RequestIntroduction(ServerHost, ServerPort, token);
+                if (string.IsNullOrEmpty(s.DiscoveryCredential))
+                    socket.RequestIntroduction(ServerHost, ServerPort, token);
+                else
+                    socket.RequestIntroductionCandidates(ServerHost, ServerPort, s.DiscoveryCredential, s.DiscoveryIPv4Host);
             }
             catch (Exception ex)
             {
@@ -755,58 +778,62 @@ namespace Basis.Scripts.Networking
 
         private static void OnNatIntroductionSuccess(IPEndPoint targetEndPoint, bool sameNetwork, string token)
         {
+            targetEndPoint = BasisP2PEndpoints.Canonical(targetEndPoint);
             if (!_sessionsByToken.TryGetValue(token, out Session s))
             {
                 BasisDebug.LogWarning($"[P2P] NatIntroductionSuccess for unknown token {Preview(token)}.");
                 return;
             }
-            if (s.State == P2PSessionState.Connected)
+            lock (s.Gate)
             {
-                return;
-            }
+                if (s.State != P2PSessionState.Punching)
+                {
+                    return;
+                }
 
-            if (!IsAcceptablePunchTarget(targetEndPoint, sameNetwork, out string targetReason))
-            {
-                BasisDebug.LogError($"[P2P] Refusing punch target for player {s.OtherPlayerId}: {targetReason}");
-                DropSession(s, P2PSessionState.Failed);
-                return;
-            }
+                if (!IsAcceptablePunchTarget(targetEndPoint, sameNetwork, out string targetReason))
+                {
+                    BasisDebug.LogError($"[P2P] Refusing punch target for player {s.OtherPlayerId}: {targetReason}");
+                    DropSession(s, P2PSessionState.Failed);
+                    return;
+                }
 
-            // First success wins — Internal arrives before External on same-LAN pairs.
-            bool firstSuccess = s.ExpectedRemoteAddress == null;
-            if (firstSuccess)
-            {
-                s.ExpectedRemoteAddress = targetEndPoint.Address;
-                s.SameNetwork = sameNetwork;
-                BasisDebug.Log($"[P2P] NatIntroductionSuccess: player {s.OtherPlayerId} reachable ({(sameNetwork ? "Internal — same LAN" : "External")}).");
-            }
+                // First success wins — Internal arrives before External on same-LAN pairs.
+                bool firstSuccess = s.ExpectedRemoteAddress == null;
+                if (firstSuccess)
+                {
+                    s.ExpectedRemoteAddress = targetEndPoint.Address;
+                    s.SameNetwork = sameNetwork;
+                    BasisDebug.Log($"[P2P] NatIntroductionSuccess: player {s.OtherPlayerId} reachable ({(sameNetwork ? "Internal — same LAN" : "External")}).");
+                }
 
-            // Both sides connect to the discovered endpoint; LiteNetLib's simultaneous-open
-            // tiebreak (P2PLose) collapses the two attempts into one link. A symmetric-NAT
-            // peer's real port is only knowable here, so it must connect too — not just wait.
-            if (s.ConnectIssued) return;
-            s.ConnectIssued = true;
+                // Both sides connect to the discovered endpoint; LiteNetLib's simultaneous-open
+                // tiebreak (P2PLose) collapses the two attempts into one link. A symmetric-NAT
+                // peer's real port is only knowable here, so it must connect too — not just wait.
+                if (s.ConnectIssued) return;
+                s.ConnectIssued = true;
 
-            if (!InstallSessionKeys(s, targetEndPoint))
-            {
-                BasisDebug.LogError($"[P2P] Refusing to open an unencrypted direct link to player {s.OtherPlayerId}.");
-                s.ConnectIssued = false;
-                DropSession(s, P2PSessionState.Failed);
-                return;
-            }
+                if (!InstallSessionKeys(s, targetEndPoint))
+                {
+                    BasisDebug.LogError($"[P2P] Refusing to open an unencrypted direct link to player {s.OtherPlayerId}.");
+                    s.ConnectIssued = false;
+                    DropSession(s, P2PSessionState.Failed);
+                    return;
+                }
 
-            try
-            {
-                // Give the handshake its own timeout window (distinct from the introduce burst).
-                Interlocked.Exchange(ref s.PunchStartedTicks, System.Diagnostics.Stopwatch.GetTimestamp());
-                var connectData = new NetDataWriter();
-                connectData.Put(token);
-                _p2pSocket.Connect(targetEndPoint, connectData);
-            }
-            catch (Exception ex)
-            {
-                BasisDebug.LogError($"[P2P] Connect to player {s.OtherPlayerId} failed: {ex.Message}");
-                s.ConnectIssued = false;
+                try
+                {
+                    // Give the handshake its own timeout window (distinct from the introduce burst).
+                    Interlocked.Exchange(ref s.PunchStartedTicks, System.Diagnostics.Stopwatch.GetTimestamp());
+                    var connectData = new NetDataWriter();
+                    connectData.Put(token);
+                    s.P2PPeer = _p2pSocket.Connect(targetEndPoint, connectData);
+                }
+                catch (Exception ex)
+                {
+                    BasisDebug.LogError($"[P2P] Connect to player {s.OtherPlayerId} failed: {ex.Message}");
+                    s.ConnectIssued = false;
+                }
             }
         }
 
@@ -818,14 +845,27 @@ namespace Basis.Scripts.Networking
                 if (_sessionsByToken.TryGetValue(token, out Session s) &&
                     s.State == P2PSessionState.Punching)
                 {
-                    if (!InstallSessionKeys(s, request.RemoteEndPoint))
+                    lock (s.Gate)
                     {
-                        BasisDebug.LogError($"[P2P] Refusing unencrypted inbound direct link from player {s.OtherPlayerId}.");
-                        request.Reject(new NetDataWriter());
-                        return;
+                        if (s.State != P2PSessionState.Punching)
+                        {
+                            request.Reject(new NetDataWriter());
+                            return;
+                        }
+                        if (!InstallSessionKeys(s, request.RemoteEndPoint))
+                        {
+                            BasisDebug.LogError($"[P2P] Refusing unencrypted inbound direct link from player {s.OtherPlayerId}.");
+                            request.Reject(new NetDataWriter());
+                            return;
+                        }
+                        BasisDebug.Log($"[P2P] Inbound P2P connect for token {Preview(token)} (player {s.OtherPlayerId}) — accepting.");
+                        // Accept may synchronously raise PeerConnected before returning.
+                        s.ExpectedRemoteAddress = BasisP2PEndpoints.Canonical(request.RemoteEndPoint).Address;
+                        // Simultaneous-open can replace our outgoing transport peer. Let
+                        // the synchronous callback match this accepted connection instead.
+                        s.P2PPeer = null;
+                        s.P2PPeer = request.Accept();
                     }
-                    BasisDebug.Log($"[P2P] Inbound P2P connect for token {Preview(token)} (player {s.OtherPlayerId}) — accepting.");
-                    s.P2PPeer = request.Accept();
                 }
                 else
                 {
@@ -858,7 +898,7 @@ namespace Basis.Scripts.Networking
                     s.State == P2PSessionState.Punching &&
                     s.ExpectedRemoteAddress != null &&
                     peer.Address != null &&
-                    peer.Address.Equals(s.ExpectedRemoteAddress))
+                    (peer.Address.IsIPv4MappedToIPv6 ? peer.Address.MapToIPv4() : peer.Address).Equals(s.ExpectedRemoteAddress))
                 {
                     s.P2PPeer = peer;
                     matched = s;
@@ -1060,7 +1100,10 @@ namespace Basis.Scripts.Networking
         {
             // Leaving Connected (if we were) decrements the counter via ApplyState under s.Gate.
             ApplyState(s, P2PSessionState.Reconnecting);
+            NetPeer stalePeer = s.P2PPeer;
             s.P2PPeer = null;
+            try { stalePeer?.Disconnect(); } catch { }
+            RemoveSessionKeys(s);
             s.ExpectedRemoteAddress = null;
             s.ConnectIssued = false;
             s.OffloadConfirmed = false;
@@ -1272,22 +1315,27 @@ namespace Basis.Scripts.Networking
 
         private static bool InstallSessionKeys(Session s, IPEndPoint endpoint)
         {
+            endpoint = BasisP2PEndpoints.Canonical(endpoint);
             IBasisP2PSocket socket = _p2pSocket;
             if (socket == null || endpoint == null || s.SendKey == null || s.RecvKey == null) return false;
-            if (s.CryptoEndpoint != null) socket.RemoveEndpoint(s.CryptoEndpoint);
-            socket.SetEndpointKeys(endpoint, s.SendKey, s.RecvKey, s.CryptoCounterBase);
-            s.CryptoEndpoint = endpoint;
-            s.CryptoCounterBase += P2PReconnectNonceGap;
-            return true;
+            lock (s.Gate)
+            {
+                if (s.CryptoEndpoints.Contains(endpoint)) return true;
+                socket.SetEndpointKeys(endpoint, s.SendKey, s.RecvKey, s.CryptoCounterBase);
+                s.CryptoEndpoints.Add(endpoint);
+                s.CryptoCounterBase += P2PReconnectNonceGap;
+                return true;
+            }
         }
 
         private static void RemoveSessionKeys(Session s)
         {
-            IBasisP2PSocket socket = _p2pSocket;
-            if (socket != null && s.CryptoEndpoint != null)
+            lock (s.Gate)
             {
-                socket.RemoveEndpoint(s.CryptoEndpoint);
-                s.CryptoEndpoint = null;
+                var socket = _p2pSocket;
+                if (socket != null)
+                    foreach (var endpoint in s.CryptoEndpoints) socket.RemoveEndpoint(endpoint);
+                s.CryptoEndpoints.Clear();
             }
         }
 
@@ -1361,6 +1409,7 @@ namespace Basis.Scripts.Networking
                 otherPlayerId = otherPlayerId,
                 sessionToken = token ?? string.Empty,
                 ephemeralPublicKey = ephemeralPublicKey,
+                discoveryVersion = 2,
             };
             body.Serialize(writer);
             peer.Send(writer, BasisNetworkCommons.P2PChannel, DeliveryMethod.ReliableOrdered);
