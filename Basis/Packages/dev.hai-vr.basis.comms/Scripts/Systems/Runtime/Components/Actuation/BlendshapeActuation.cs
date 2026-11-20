@@ -36,6 +36,8 @@ namespace HVR.Basis.Comms
         private Dictionary<int, (float, float)> _addressToStreamedLowerUpper;
         private AddressOverride[] _defaultOverrides = Array.Empty<AddressOverride>();
         private FaceTrackingActivityRelay _activityRelay;
+        private OSCAcquisitionServer _oscAcquisitionServer;
+        private EntityId _oscOwnerId;
         private bool _isWearer;
         private bool _trackingActive;
         public bool IsTrackingActive => _trackingActive;
@@ -290,6 +292,17 @@ namespace HVR.Basis.Comms
             var addressesToListenTo = new int[_addessIdToBaseIndex.Count];
             _addessIdToBaseIndex.Keys.CopyTo(addressesToListenTo, 0);
             comms.VariableStore.RegisterAddresses(addressesToListenTo, OnAddressUpdated);
+
+            if (isWearer && debugAddresses.Any(OSCAcquisitionServer.IsFaceTrackingAddress))
+            {
+                _oscAcquisitionServer = OSCAcquisitionServer.SceneInstance;
+                _oscOwnerId = GetEntityId();
+                _oscAcquisitionServer.UpdateFaceTrackingParameters(_oscOwnerId, debugAddresses);
+            }
+            else if (_oscAcquisitionServer != null)
+            {
+                _oscAcquisitionServer.ClearFaceTrackingParameters(_oscOwnerId);
+            }
         }
 
         private static readonly ConditionalWeakTable<Mesh, Dictionary<string, int>> MeshBlendshapeIndices = new();
@@ -358,6 +371,11 @@ namespace HVR.Basis.Comms
 
         private void OnDestroy()
         {
+            if (_oscAcquisitionServer != null)
+            {
+                _oscAcquisitionServer.ClearFaceTrackingParameters(_oscOwnerId);
+            }
+
             if (avatar != null)
             {
                 avatar.OnAvatarReady -= OnHVRAvatarReady;

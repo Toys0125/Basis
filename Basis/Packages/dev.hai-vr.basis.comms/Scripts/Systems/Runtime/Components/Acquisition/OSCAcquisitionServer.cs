@@ -36,6 +36,8 @@ namespace HVR.Basis.Comms
         private bool _settingSubscribed;
         private bool _running;
         private string _lastWakeUp;
+        private bool _wakeUpPending;
+        private bool _useNativeFaceData = NativeFaceData;
         private float _retryAt;
         private bool _bindFailureLogged;
         private float _nextRediscoverAt;
@@ -156,6 +158,7 @@ namespace HVR.Basis.Comms
             }
 
             TrackVrcftEndpoint();
+            FlushWakeUpMessage();
 
             // Hybrid design: background thread receives/decodes UDP, main thread routes callbacks.
             var messages = _client.DrainReceivedMessages();
@@ -218,6 +221,9 @@ namespace HVR.Basis.Comms
 
         private void ExpandNativeFaceData(List<SimpleOSC.OSCMessage> messages)
         {
+            // VRCFT may still have a queued blob while switching to individual parameters.
+            if (!_useNativeFaceData) return;
+
             int count = messages.Count;
             byte[] latest = null;
             for (int i = 0; i < count; i++)
@@ -292,16 +298,22 @@ namespace HVR.Basis.Comms
         public void SendWakeUpMessage(string wakeUp)
         {
             _lastWakeUp = wakeUp;
+            // Avatar acquisition starts before its actuators bind. Refresh once their query nodes are ready.
+            _wakeUpPending = true;
+        }
 
-            if (_client == null) return;
+        private void FlushWakeUpMessage()
+        {
+            if (!_wakeUpPending || _client == null || _lastWakeUp == null) return;
+            _wakeUpPending = false;
 
             try
             {
-                _client.SendOsc("/avatar/change", wakeUp);
+                _client.SendOsc("/avatar/change", _lastWakeUp);
                 int vrcftPort = _osushi != null ? _osushi.VrcftOscPort : 0;
                 if (vrcftPort != 0 && vrcftPort != ExternalProgramReceiverPort)
                 {
-                    _client.SendOscTo(vrcftPort, "/avatar/change", wakeUp);
+                    _client.SendOscTo(vrcftPort, "/avatar/change", _lastWakeUp);
                 }
             }
             catch (Exception e)
@@ -330,6 +342,7 @@ namespace HVR.Basis.Comms
             {
                 EnsureOscQueryRoot();
                 OsushiNode leaf = EnsureQueryNode(normalizedAddress);
+                _ownedFaceTrackingNodes.Remove(normalizedAddress);
                 leaf.ACCESS = PublishAccess;
                 leaf.TYPE = typeTag;
                 leaf.VALUE = BuildQueryValues(values);
@@ -712,7 +725,7 @@ namespace HVR.Basis.Comms
             PruneQueryNode(_oscQueryRoot, segments, 0);
         }
 
-        private static bool PruneQueryNode(OsushiNode current, string[] segments, int index)
+        private bool PruneQueryNode(OsushiNode current, string[] segments, int index)
         {
             if (current == null || current.CONTENTS == null || index >= segments.Length)
             {
@@ -745,12 +758,14 @@ namespace HVR.Basis.Comms
             return current.CONTENTS.Count == 0;
         }
 
-        private static bool CanRemoveNode(OsushiNode node)
+        private bool CanRemoveNode(OsushiNode node)
         {
             bool hasChildren = node.CONTENTS != null && node.CONTENTS.Count > 0;
             bool hasValue = node.VALUE != null;
             bool hasType = !string.IsNullOrEmpty(node.TYPE);
-            return !hasChildren && !hasValue && !hasType && node.ACCESS == 0;
+            return !hasChildren && !hasValue && !hasType && node.ACCESS == 0
+                && !_exactSubscriptionCounts.ContainsKey(node.FULL_PATH)
+                && !_prefixSubscriptionCounts.ContainsKey(node.FULL_PATH);
         }
 
         private static string BuildTypeTag(OscData[] values)
