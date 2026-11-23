@@ -124,6 +124,7 @@ public static class BasisFarLodAtlasBaker
         int regionCaptureSize = Mathf.Clamp(atlasSize / 2, 512, 1024);
 
         Quaternion rootRotation = root.rotation;
+        bool savedAsyncCompilation = ShaderUtil.allowAsyncCompilation;
         LightingScope lighting = LightingScope.Push();
         // Forced depth priming hides any shader whose DepthOnly pass is missing or broken
         // from manual captures (the whole avatar, with common toon shaders). MSAA targets
@@ -149,6 +150,9 @@ public static class BasisFarLodAtlasBaker
         bool[] avatarRendererStates = null;
         try
         {
+            // A synchronous bake cannot wait for a later frame to replace a shader placeholder.
+            // This applies to both the probe and the avatar's materials.
+            ShaderUtil.allowAsyncCompilation = false;
             cameraObject = new GameObject("FarLodBakeCamera") { hideFlags = HideFlags.HideAndDontSave };
             Camera camera = cameraObject.AddComponent<Camera>();
             camera.enabled = false;
@@ -171,12 +175,10 @@ public static class BasisFarLodAtlasBaker
             bodyLinearReadback = NewLinearReadback(captureSize);
             regionLinearReadback = NewLinearReadback(regionCaptureSize);
 
-            if (!DetectCaptureMode(camera, bodyReadback, captureSize))
+            if (!DetectCaptureMode(camera, bodyReadback, captureSize, out string probeFailure))
             {
-                // Errors, not warnings, for every skip: the far avatar silently vanishing from a
-                // bundle must surface in the same red stream creators actually read.
-                BasisFarLodGenerator.LastFailureReason = "no capture path passed the geometry probe (render requests and Camera.Render, MSAA and 1x targets)";
-                Debug.LogError("[FarAvatar] No capture path renders correctly on this pipeline (render requests and Camera.Render, with both MSAA and 1x targets, all failed the geometry probe). Skipping the far avatar instead of baking garbage.");
+                BasisFarLodGenerator.LastFailureReason = probeFailure;
+                Debug.LogError($"[FarAvatar] Skipping the far avatar: {probeFailure}");
                 return null;
             }
             Debug.Log($"[FarAvatar] Capture mode: {(sUseRenderRequest ? "render request" : "Camera.Render")} into {(sUseMsaaTargets ? "4x MSAA" : "1x")} targets.");
@@ -344,6 +346,7 @@ public static class BasisFarLodAtlasBaker
         }
         finally
         {
+            ShaderUtil.allowAsyncCompilation = savedAsyncCompilation;
             if (avatarRenderers != null && avatarRendererStates != null)
             {
                 for (int r = 0; r < avatarRenderers.Length; r++)
@@ -661,17 +664,14 @@ public static class BasisFarLodAtlasBaker
 
     /// <summary>
     /// Proves which manual capture mode actually works on this pipeline before the bake uses
-    /// it. A mode must render a red unlit probe cube in the frame center AND hand back two
-    /// successive, distinct background colors around it. That kills every failure mode seen in
-    /// the wild: clears-but-draws-nothing (one URP setup's Camera.Render), a wrong/stale
-    /// buffer in the readback (another setup's render request), MSAA targets misbehaving in a
-    /// live editor session, and plain no-op paths. Candidates run best-first — render request
-    /// then Camera.Render, MSAA targets then 1x — and the first that provably renders sets
-    /// <see cref="sUseRenderRequest"/>/<see cref="sUseMsaaTargets"/>. False when nothing
-    /// works — the bake then ships no far avatar instead of garbage.
+    /// it. A mode must render the red unlit cube in two consecutive green/magenta capture
+    /// pairs after a warm-up render. The changing background rejects stale readbacks, while
+    /// the cube must be visible in every pass. Camera.Render is preferred to render requests,
+    /// with 4x MSAA probed before 1x for each path.
     /// </summary>
-    private static bool DetectCaptureMode(Camera camera, Texture2D readback, int size)
+    private static bool DetectCaptureMode(Camera camera, Texture2D readback, int size, out string failure)
     {
+        failure = null;
         int savedMask = camera.cullingMask;
         RenderTexture savedTarget = camera.targetTexture;
         GameObject probe = null;
@@ -685,16 +685,20 @@ public static class BasisFarLodAtlasBaker
             {
                 Object.DestroyImmediate(probeCollider);
             }
-            Shader unlit = Shader.Find("Universal Render Pipeline/Unlit");
-            if (unlit == null)
+            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            Shader unlit = pipeline != null ? Shader.Find("Universal Render Pipeline/Unlit") : null;
+            if (unlit == null || !unlit.isSupported)
             {
                 unlit = Shader.Find("Unlit/Color");
             }
-            if (unlit != null)
+            if (unlit == null || !unlit.isSupported)
             {
-                probeMaterial = new Material(unlit) { hideFlags = HideFlags.HideAndDontSave, color = Color.red };
-                probe.GetComponent<MeshRenderer>().sharedMaterial = probeMaterial;
+                failure = "capture probe has no supported unlit shader";
+                return false;
             }
+
+            probeMaterial = new Material(unlit) { hideFlags = HideFlags.HideAndDontSave, color = Color.red };
+            probe.GetComponent<MeshRenderer>().sharedMaterial = probeMaterial;
             probe.transform.position = new Vector3(0f, -8192f, 0f);
 
             camera.cullingMask = ~0;
@@ -711,21 +715,60 @@ public static class BasisFarLodAtlasBaker
             {
                 (false, true), (false, false), (true, true), (true, false),
             };
+            List<string> failures = new List<string>();
+            const int maxAttempts = 3;
             foreach ((bool useRequest, bool useMsaa) in candidates)
             {
+                sUseRenderRequest = useRequest;
+                sUseMsaaTargets = useMsaa;
+                string mode = $"{(useRequest ? "render request" : "Camera.Render")}+{(useMsaa ? 4 : 1)}x";
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
+                {
+                    try
+                    {
+                        // Target creation can also fail for a particular mode. Keep trying
+                        // the ladder and release each acquired target before moving on.
+                        if (probeTarget == null)
+                        {
+                            probeTarget = GetCaptureTarget(size, useMsaa);
+                            camera.targetTexture = probeTarget;
+                        }
+                        // DepthPrimingScope may have invalidated URP's renderer. Let it
+                        // initialize before checking two full capture pairs.
+                        camera.backgroundColor = Color.black;
+                        ReadCapturePixels(camera, readback, size);
+                        if (!CaptureProbeWorks(camera, readback, size, out string passFailure))
+                        {
+                            failures.Add($"{mode} attempt {attempt}: {passFailure}");
+                            continue;
+                        }
+                        if (!CaptureProbeWorks(camera, readback, size, out passFailure))
+                        {
+                            failures.Add($"{mode} attempt {attempt} repeat: {passFailure}");
+                            continue;
+                        }
+                        if (failures.Count > 0)
+                        {
+                            Debug.LogWarning($"[FarAvatar] Capture probe recovered using {mode}. Earlier attempts: {string.Join("; ", failures)}");
+                        }
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add($"{mode} attempt {attempt}: {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+                camera.targetTexture = savedTarget;
                 if (probeTarget != null)
                 {
                     RenderTexture.ReleaseTemporary(probeTarget);
-                }
-                probeTarget = GetCaptureTarget(size, useMsaa);
-                camera.targetTexture = probeTarget;
-                sUseRenderRequest = useRequest;
-                sUseMsaaTargets = useMsaa;
-                if (CaptureProbeWorks(camera, readback, size))
-                {
-                    return true;
+                    probeTarget = null;
                 }
             }
+
+            failure = $"no capture path passed the geometry probe. Pipeline={pipeline?.name ?? "Built-in"}, " +
+                $"quality={QualitySettings.names[QualitySettings.GetQualityLevel()]}, GPU={SystemInfo.graphicsDeviceType}, " +
+                $"shader={unlit.name}, size={size}. {string.Join("; ", failures)}";
             return false;
         }
         finally
@@ -747,24 +790,41 @@ public static class BasisFarLodAtlasBaker
         }
     }
 
-    private static bool CaptureProbeWorks(Camera camera, Texture2D readback, int size)
+    private static bool CaptureProbeWorks(Camera camera, Texture2D readback, int size, out string failure)
     {
-        // Green pass: red cube must land in the center, green background in the corner.
-        Color32[] onGreen = RenderAndRead(camera, readback, size, new Color(0f, 1f, 0f, 1f));
-        Color32 center = onGreen[(size / 2) * size + size / 2];
-        Color32 corner = onGreen[(size / 8) * size + size / 8];
-        bool geometryRendered = center.r > 180 && center.g < 100 && center.b < 100;
-        // Row order is pipeline-dependent (see DetectSampleFlip) but the probe is centered, so
-        // only the corner needs care — all four corners are background in this framing anyway.
-        bool clearedGreen = corner.g > 180 && corner.r < 100 && corner.b < 100;
-        if (!geometryRendered || !clearedGreen)
+        camera.backgroundColor = Color.green;
+        ReadCapturePixels(camera, readback, size);
+        NativeArray<Color32> onGreen = readback.GetPixelData<Color32>(0);
+        // Row order is pipeline-dependent, but the cube is centered and all four corners
+        // are background in this framing.
+        int centerIndex = (size / 2) * size + size / 2;
+        int cornerIndex = (size / 8) * size + size / 8;
+        Color32 center = onGreen[centerIndex];
+        Color32 corner = onGreen[cornerIndex];
+        if (!IsRedProbePixel(center) || corner.g <= 180 || corner.r >= 100 || corner.b >= 100)
         {
+            failure = $"green pass center={center}, corner={corner} (expected red geometry/green background)";
             return false;
         }
-        // Magenta pass: the corner must follow the new background — stale content can't.
-        Color32[] onMagenta = RenderAndRead(camera, readback, size, new Color(1f, 0f, 1f, 1f));
-        Color32 cornerMagenta = onMagenta[(size / 8) * size + size / 8];
-        return cornerMagenta.r > 180 && cornerMagenta.b > 180 && cornerMagenta.g < 100;
+
+        camera.backgroundColor = Color.magenta;
+        ReadCapturePixels(camera, readback, size);
+        NativeArray<Color32> onMagenta = readback.GetPixelData<Color32>(0);
+        center = onMagenta[centerIndex];
+        corner = onMagenta[cornerIndex];
+        if (!IsRedProbePixel(center) || corner.r <= 180 || corner.b <= 180 || corner.g >= 100)
+        {
+            failure = $"magenta pass center={center}, corner={corner} (expected red geometry/magenta background)";
+            return false;
+        }
+
+        failure = null;
+        return true;
+    }
+
+    private static bool IsRedProbePixel(Color32 pixel)
+    {
+        return pixel.r > 180 && pixel.g < 100 && pixel.b < 100;
     }
 
     /// <summary>
@@ -828,25 +888,32 @@ public static class BasisFarLodAtlasBaker
         }
     }
 
+    private static void ReadCapturePixels(Camera camera, Texture2D readback, int size)
+    {
+        RenderTexture previous = RenderTexture.active;
+        try
+        {
+            SubmitRender(camera);
+            RenderTexture.active = camera.targetTexture;
+            readback.ReadPixels(new Rect(0, 0, size, size), 0, 0, false);
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+        }
+    }
+
     private static Color32[] RenderAndRead(Camera camera, Texture2D readback, int captureSize, Color background)
     {
         camera.backgroundColor = background;
-        SubmitRender(camera);
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = camera.targetTexture;
-        readback.ReadPixels(new Rect(0, 0, captureSize, captureSize), 0, 0, false);
-        RenderTexture.active = previous;
+        ReadCapturePixels(camera, readback, captureSize);
         return readback.GetPixels32();
     }
 
     private static float[] RenderAndReadLinear(Camera camera, Texture2D readback, int captureSize, Color background)
     {
         camera.backgroundColor = background;
-        SubmitRender(camera);
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = camera.targetTexture;
-        readback.ReadPixels(new Rect(0, 0, captureSize, captureSize), 0, 0, false);
-        RenderTexture.active = previous;
+        ReadCapturePixels(camera, readback, captureSize);
         NativeArray<ushort> halves = readback.GetPixelData<ushort>(0);
         float[] rgb = new float[captureSize * captureSize * 3];
         for (int h = 0, c = 0; c < rgb.Length; h += 4, c += 3)
@@ -992,11 +1059,7 @@ public static class BasisFarLodAtlasBaker
 
     private static Color[] RenderHdr(Camera camera, Texture2D readback, int size)
     {
-        SubmitRender(camera);
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = camera.targetTexture;
-        readback.ReadPixels(new Rect(0, 0, size, size), 0, 0, false);
-        RenderTexture.active = previous;
+        ReadCapturePixels(camera, readback, size);
         return readback.GetPixels();
     }
 
