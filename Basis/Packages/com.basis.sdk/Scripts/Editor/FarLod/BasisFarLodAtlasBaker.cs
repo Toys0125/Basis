@@ -1,6 +1,7 @@
 using Unity.Scripting.LifecycleManagement;
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
@@ -225,7 +226,7 @@ public static class BasisFarLodAtlasBaker
 
             List<CaptureView> views = new List<CaptureView>(64);
             Vector3[] bodyDirections = BuildBodyViewDirections();
-            List<string> failures = new List<string>();
+            StringBuilder failures = new StringBuilder();
             (bool useRequest, bool useMsaa)[] candidates =
             {
                 (false, true), (false, false), (true, true), (true, false),
@@ -236,33 +237,36 @@ public static class BasisFarLodAtlasBaker
                 sUseRenderRequest = useRequest;
                 sUseMsaaTargets = useMsaa;
                 string mode = $"{(useRequest ? "render request" : "Camera.Render")}+{(useMsaa ? 4 : 1)}x";
-                string failure = null;
+                bool captured = false;
                 try
                 {
                     // Probe the same target and readback format used for beauty. MSAA can
                     // bypass depth priming, but the 1x path may be more reliable on this GPU.
                     bodyTexture = GetBeautyTarget(captureSize, useMsaa);
-                    if (ProbeCaptureMode(camera, bodyTexture, probeReadback, unlit, out failure))
+                    if (ProbeCaptureMode(camera, bodyTexture, probeReadback, unlit, out string probeFailure))
                     {
-                        failure = CaptureBodyViews();
+                        captured = TryCaptureBodyViews(mode);
+                    }
+                    else
+                    {
+                        AppendModeFailure(mode).Append(probeFailure);
                     }
                 }
                 catch (Exception ex)
                 {
-                    failure = $"{ex.GetType().Name}: {ex.Message}";
+                    AppendModeFailure(mode).Append(ex.GetType().Name).Append(": ").Append(ex.Message);
                 }
                 finally
                 {
                     camera.targetTexture = null;
                 }
 
-                if (failure == null)
+                if (captured)
                 {
                     BasisDebug.Log($"[FarAvatar] Capture mode: {mode}.", BasisDebug.LogTag.Avatar);
                     break;
                 }
 
-                failures.Add($"{mode}: {failure}");
                 views.Clear();
                 if (bodyTexture != null)
                 {
@@ -276,16 +280,25 @@ public static class BasisFarLodAtlasBaker
                 var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
                 BasisFarLodGenerator.LastFailureReason = $"no capture mode produced usable body views. Pipeline={pipeline?.name ?? "Built-in"}, " +
                     $"quality={QualitySettings.names[QualitySettings.GetQualityLevel()]}, GPU={SystemInfo.graphicsDeviceType}, " +
-                    $"shader={unlit.name}, size={captureSize}. {string.Join("; ", failures)}";
+                    $"shader={unlit.name}, size={captureSize}. {failures}";
                 BasisDebug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}", BasisDebug.LogTag.Avatar);
                 return null;
             }
-            if (failures.Count > 0)
+            if (failures.Length > 0)
             {
-                BasisDebug.LogWarning($"[FarAvatar] Earlier capture modes failed: {string.Join("; ", failures)}", BasisDebug.LogTag.Avatar);
+                BasisDebug.LogWarning($"[FarAvatar] Earlier capture modes failed: {failures}", BasisDebug.LogTag.Avatar);
             }
 
-            string CaptureBodyViews()
+            StringBuilder AppendModeFailure(string mode)
+            {
+                if (failures.Length > 0)
+                {
+                    failures.Append("; ");
+                }
+                return failures.Append(mode).Append(": ");
+            }
+
+            bool TryCaptureBodyViews(string mode)
             {
                 foreach (Vector3 bodyDirection in bodyDirections)
                 {
@@ -301,17 +314,20 @@ public static class BasisFarLodAtlasBaker
                 int dropped = bodyDirections.Length - views.Count;
                 if (views.Count < 6)
                 {
-                    return $"body capture freshness failed ({dropped} of {bodyDirections.Length} views dropped)";
+                    AppendModeFailure(mode).Append("body capture freshness failed (").Append(dropped)
+                        .Append(" of ").Append(bodyDirections.Length).Append(" views dropped)");
+                    return false;
                 }
                 if (!HasAvatarCoverage(views))
                 {
-                    return "body captures contain too few avatar pixels";
+                    AppendModeFailure(mode).Append("body captures contain too few avatar pixels");
+                    return false;
                 }
                 if (dropped > 0)
                 {
                     BasisDebug.LogWarning($"[FarAvatar] Dropped {dropped} of {bodyDirections.Length} body views that failed freshness validation.", BasisDebug.LogTag.Avatar);
                 }
-                return null;
+                return true;
             }
 
             MeasureBrightnessResponse(camera, centerWorld, rootRotation, radius);
