@@ -180,7 +180,7 @@ public static class BasisFarLodAtlasBaker
             if (unlit == null)
             {
                 BasisFarLodGenerator.LastFailureReason = "capture probe has no supported unlit shader";
-                Debug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}");
+                BasisDebug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}", BasisDebug.LogTag.Avatar);
                 return null;
             }
 
@@ -219,7 +219,7 @@ public static class BasisFarLodAtlasBaker
                 }
                 else
                 {
-                    Debug.LogWarning("[FarAvatar] Hidden/BasisFarLodPartId shader missing — baking without part isolation.");
+                    BasisDebug.LogWarning("[FarAvatar] Hidden/BasisFarLodPartId shader missing — baking without part isolation.", BasisDebug.LogTag.Avatar);
                 }
             }
 
@@ -258,7 +258,7 @@ public static class BasisFarLodAtlasBaker
 
                 if (failure == null)
                 {
-                    Debug.Log($"[FarAvatar] Capture mode: {mode}.");
+                    BasisDebug.Log($"[FarAvatar] Capture mode: {mode}.", BasisDebug.LogTag.Avatar);
                     break;
                 }
 
@@ -277,12 +277,12 @@ public static class BasisFarLodAtlasBaker
                 BasisFarLodGenerator.LastFailureReason = $"no capture mode produced usable body views. Pipeline={pipeline?.name ?? "Built-in"}, " +
                     $"quality={QualitySettings.names[QualitySettings.GetQualityLevel()]}, GPU={SystemInfo.graphicsDeviceType}, " +
                     $"shader={unlit.name}, size={captureSize}. {string.Join("; ", failures)}";
-                Debug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}");
+                BasisDebug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}", BasisDebug.LogTag.Avatar);
                 return null;
             }
             if (failures.Count > 0)
             {
-                Debug.LogWarning($"[FarAvatar] Earlier capture modes failed: {string.Join("; ", failures)}");
+                BasisDebug.LogWarning($"[FarAvatar] Earlier capture modes failed: {string.Join("; ", failures)}", BasisDebug.LogTag.Avatar);
             }
 
             string CaptureBodyViews()
@@ -309,7 +309,7 @@ public static class BasisFarLodAtlasBaker
                 }
                 if (dropped > 0)
                 {
-                    Debug.LogWarning($"[FarAvatar] Dropped {dropped} of {bodyDirections.Length} body views that failed freshness validation.");
+                    BasisDebug.LogWarning($"[FarAvatar] Dropped {dropped} of {bodyDirections.Length} body views that failed freshness validation.", BasisDebug.LogTag.Avatar);
                 }
                 return null;
             }
@@ -324,7 +324,7 @@ public static class BasisFarLodAtlasBaker
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogWarning($"[FarAvatar] Could not complete the close-ups. Using the available views. {ex.GetType().Name}: {ex.Message}");
+                    BasisDebug.LogWarning($"[FarAvatar] Could not complete the close-ups. Using the available views. {ex.GetType().Name}: {ex.Message}", BasisDebug.LogTag.Avatar);
                 }
             }
 
@@ -379,7 +379,7 @@ public static class BasisFarLodAtlasBaker
                 if (dropped > 0)
                 {
                     string detail = firstCaptureError == null ? "" : $" First capture error: {firstCaptureError}";
-                    Debug.LogWarning($"[FarAvatar] Dropped {dropped} invalid close-up views. Body views can supply those atlas samples.{detail}");
+                    BasisDebug.LogWarning($"[FarAvatar] Dropped {dropped} invalid close-up views. Body views can supply those atlas samples.{detail}", BasisDebug.LogTag.Avatar);
                 }
             }
             camera.targetTexture = null;
@@ -396,7 +396,7 @@ public static class BasisFarLodAtlasBaker
             sFlipSampleY = DetectSampleFlip(views, rootToWorld, rootRotation, positions, normals);
             if (sFlipSampleY)
             {
-                Debug.LogWarning("[FarAvatar] Capture rows came back top-down on this pipeline — sampling with mirrored Y.");
+                BasisDebug.LogWarning("[FarAvatar] Capture rows came back top-down on this pipeline — sampling with mirrored Y.", BasisDebug.LogTag.Avatar);
             }
 
             Color32[] atlas = ProjectAtlas(views, rootToWorld, rootRotation, positions, normals, uv, indices, atlasSize, radius, mask.TexelVertexGroup, mask.TexelHidden, vertexAo);
@@ -543,11 +543,11 @@ public static class BasisFarLodAtlasBaker
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[FarAvatar] Could not adjust depth priming for the bake: {ex.Message}");
+                BasisDebug.LogWarning($"[FarAvatar] Could not adjust depth priming for the bake: {ex.Message}", BasisDebug.LogTag.Avatar);
             }
             if (scope._changed.Count > 0)
             {
-                Debug.Log($"[FarAvatar] Depth priming disabled on {scope._changed.Count} renderer(s) for the bake.");
+                BasisDebug.Log($"[FarAvatar] Depth priming disabled on {scope._changed.Count} renderer(s) for the bake.", BasisDebug.LogTag.Avatar);
             }
             return scope;
         }
@@ -856,7 +856,7 @@ public static class BasisFarLodAtlasBaker
                     {
                         if (failures.Count > 0)
                         {
-                            Debug.LogWarning($"[FarAvatar] Capture probe recovered on attempt {attempt}: {string.Join("; ", failures)}");
+                            BasisDebug.LogWarning($"[FarAvatar] Capture probe recovered on attempt {attempt}: {string.Join("; ", failures)}", BasisDebug.LogTag.Avatar);
                         }
                         failure = null;
                         return true;
@@ -1136,12 +1136,12 @@ public static class BasisFarLodAtlasBaker
                 float medianCap = capRatios[capRatios.Count / 2];
                 LastMinBrightness = Mathf.Clamp(medianMin, 0f, 0.5f);
                 LastMaxBrightness = medianCap >= 0.95f ? 4f : Mathf.Clamp(medianCap * 2f, 0.5f, 4f);
-                Debug.Log($"[FarAvatar] Lighting response: min {LastMinBrightness:0.###}, max {(LastMaxBrightness >= 4f ? "uncapped" : LastMaxBrightness.ToString("0.##"))} ({minRatios.Count} samples).");
+                BasisDebug.Log($"[FarAvatar] Lighting response: min {LastMinBrightness:0.###}, max {(LastMaxBrightness >= 4f ? "uncapped" : LastMaxBrightness.ToString("0.##"))} ({minRatios.Count} samples).", BasisDebug.LogTag.Avatar);
             }
         }
         catch (Exception e)
         {
-            Debug.LogWarning($"[FarAvatar] Lighting response probe failed ({e.Message}) — using unclamped lighting.");
+            BasisDebug.LogWarning($"[FarAvatar] Lighting response probe failed ({e.Message}) — using unclamped lighting.", BasisDebug.LogTag.Avatar);
             LastMinBrightness = 0f;
             LastMaxBrightness = 4f;
         }
@@ -1543,7 +1543,7 @@ public static class BasisFarLodAtlasBaker
         if (writtenTexels < texelCount / 100)
         {
             BasisFarLodGenerator.LastFailureReason = $"atlas projection wrote almost nothing: {writtenTexels} of {texelCount} texels";
-            Debug.LogError($"[FarAvatar] Atlas projection wrote almost nothing ({writtenTexels} of {texelCount} texels) — skipping the far avatar instead of baking a flat atlas.");
+            BasisDebug.LogError($"[FarAvatar] Atlas projection wrote almost nothing ({writtenTexels} of {texelCount} texels) — skipping the far avatar instead of baking a flat atlas.", BasisDebug.LogTag.Avatar);
             return null;
         }
 
@@ -1873,7 +1873,7 @@ public static class BasisFarLodAtlasBaker
             EditorUtility.CompressTexture(copy, format, TextureCompressionQuality.Normal);
             if (copy.format != format)
             {
-                Debug.LogWarning($"Far avatar atlas compression to {format} was not applied on this platform; skipping that payload.");
+                BasisDebug.LogWarning($"Far avatar atlas compression to {format} was not applied on this platform; skipping that payload.", BasisDebug.LogTag.Avatar);
                 return;
             }
             textures.Add(new BasisFarLodPayload.FarLodTexture
