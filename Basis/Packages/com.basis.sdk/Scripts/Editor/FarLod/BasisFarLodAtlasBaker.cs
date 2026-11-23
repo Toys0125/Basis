@@ -28,6 +28,8 @@ using Object = UnityEngine.Object;
 public static class BasisFarLodAtlasBaker
 {
     private const int DilatePasses = 16;
+    private const int ProbeSampleWidth = 8;
+    private const int RegionMarkerSize = 8;
     private const float MinCoverage = 0.4f;
     private const float FallbackCoverage = 0.2f;
     private const int OcclusionLayer = 2; // Ignore Raycast: invisible to default queries, targetable by mask
@@ -39,7 +41,7 @@ public static class BasisFarLodAtlasBaker
     // platform/pipeline, so sampling must mirror Y to line up with the projection math.
     private static bool sFlipSampleY;
 
-    // Set per bake by DetectCaptureMode. Manual offscreen camera rendering is pipeline-
+    // Set per bake during capture mode selection. Manual offscreen camera rendering is pipeline-
     // dependent: some URP configurations render nothing for Camera.Render(), others land the
     // wrong buffer for render requests, and MSAA targets (used to defeat forced depth
     // priming) don't survive every environment either — so a ladder of candidate modes is
@@ -134,14 +136,18 @@ public static class BasisFarLodAtlasBaker
         // a no-op on pipelines without the setting.
         DepthPrimingScope depthPriming = DepthPrimingScope.Push();
         GameObject cameraObject = null;
+        Camera camera = null;
         GameObject colliderObject = null;
         GameObject maskObject = null;
+        Renderer regionMarker = null;
         Mesh maskMesh = null;
         Material maskMaterial = null;
+        Material regionMarkerMaterial = null;
         RenderTexture bodyTexture = null;
         RenderTexture regionTexture = null;
         RenderTexture maskBodyTexture = null;
         RenderTexture maskRegionTexture = null;
+        Texture2D probeReadback = null;
         Texture2D bodyReadback = null;
         Texture2D regionReadback = null;
         Texture2D bodyLinearReadback = null;
@@ -154,14 +160,14 @@ public static class BasisFarLodAtlasBaker
             // This applies to both the probe and the avatar's materials.
             ShaderUtil.allowAsyncCompilation = false;
             cameraObject = new GameObject("FarLodBakeCamera") { hideFlags = HideFlags.HideAndDontSave };
-            Camera camera = cameraObject.AddComponent<Camera>();
+            camera = cameraObject.AddComponent<Camera>();
             camera.enabled = false;
             camera.orthographic = true;
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.cullingMask = ~0;
             camera.allowHDR = false;
             // MSAA must stay allowed or URP downgrades the 4x capture targets to 1 sample,
-            // re-enabling depth priming — see GetCaptureTarget.
+            // re-enabling depth priming — see GetBeautyTarget.
             camera.allowMSAA = true;
 #pragma warning disable 618
             camera.useOcclusionCulling = false;
@@ -170,32 +176,16 @@ public static class BasisFarLodAtlasBaker
             // identical whether the pipeline renders via targetTexture or a request destination.
             camera.aspect = 1f;
 
-            bodyReadback = NewReadback(captureSize);
-            regionReadback = NewReadback(regionCaptureSize);
-            bodyLinearReadback = NewLinearReadback(captureSize);
-            regionLinearReadback = NewLinearReadback(regionCaptureSize);
-
-            if (!DetectCaptureMode(camera, bodyReadback, captureSize, out string probeFailure))
+            Shader unlit = FindCaptureShader();
+            if (unlit == null)
             {
-                BasisFarLodGenerator.LastFailureReason = probeFailure;
-                Debug.LogError($"[FarAvatar] Skipping the far avatar: {probeFailure}");
+                BasisFarLodGenerator.LastFailureReason = "capture probe has no supported unlit shader";
+                Debug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}");
                 return null;
             }
-            Debug.Log($"[FarAvatar] Capture mode: {(sUseRenderRequest ? "render request" : "Camera.Render")} into {(sUseMsaaTargets ? "4x MSAA" : "1x")} targets.");
 
-            MeasureBrightnessResponse(camera, centerWorld, rootRotation, radius);
-
-            // MSAA beauty targets are preferred: URP disables depth priming for MSAA targets,
-            // restoring the plain forward path for arbitrary avatar shaders (under a forced-
-            // depth-priming renderer, shaders whose DepthOnly pass is missing or broken are
-            // otherwise invisible in manual captures — probe-verified on stock URP 17.4). The
-            // resolve on readback is plain anti-aliasing, harmless for beauty. The 1x rungs
-            // exist for environments where MSAA capture itself misbehaves; the coverage guard
-            // below still aborts if priming empties them. Mask targets are always 1x because
-            // sample-averaging would corrupt the encoded ids/depth; the part-id shader carries
-            // its own DepthOnly pass, so priming is satisfied there.
-            bodyTexture = GetCaptureTarget(captureSize, sUseMsaaTargets, true);
-            regionTexture = GetCaptureTarget(regionCaptureSize, sUseMsaaTargets, true);
+            probeReadback = NewLinearReadback(Mathf.Min(ProbeSampleWidth, captureSize), 1);
+            bodyLinearReadback = NewLinearReadback(captureSize, captureSize);
 
             if (mask.IsValid)
             {
@@ -224,8 +214,8 @@ public static class BasisFarLodAtlasBaker
                     avatarRendererStates = new bool[avatarRenderers.Length];
                     // Mask bytes must round-trip exactly — render into linear targets so no
                     // sRGB encode remaps the group ids.
+                    bodyReadback = NewReadback(captureSize);
                     maskBodyTexture = RenderTexture.GetTemporary(captureSize, captureSize, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-                    maskRegionTexture = RenderTexture.GetTemporary(regionCaptureSize, regionCaptureSize, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
                 }
                 else
                 {
@@ -234,42 +224,127 @@ public static class BasisFarLodAtlasBaker
             }
 
             List<CaptureView> views = new List<CaptureView>(64);
-
-            // Whole-body ring: equator, upper ring, lower ring (palms face down in T-pose —
-            // without under-views they only ever see the single bottom capture), poles.
-            // Views whose raw reads don't show the requested backgrounds carry a wrong buffer
-            // (not this camera's render) and are dropped; a mostly-poisoned set aborts.
             Vector3[] bodyDirections = BuildBodyViewDirections();
-            int staleBodyViews = 0;
-            for (int v = 0; v < bodyDirections.Length; v++)
+            List<string> failures = new List<string>();
+            (bool useRequest, bool useMsaa)[] candidates =
             {
-                Vector3 directionWorld = (rootRotation * bodyDirections[v]).normalized;
-                CaptureView view = CaptureOne(camera, bodyTexture, bodyReadback, bodyLinearReadback, captureSize,
-                    centerWorld, directionWorld, rootRotation, radius, isRegion: false, default,
-                    maskObject, maskBodyTexture, avatarRenderers, avatarRendererStates, radius, out bool backgroundFresh);
-                if (backgroundFresh)
+                (false, true), (false, false), (true, true), (true, false),
+            };
+
+            foreach ((bool useRequest, bool useMsaa) in candidates)
+            {
+                sUseRenderRequest = useRequest;
+                sUseMsaaTargets = useMsaa;
+                string mode = $"{(useRequest ? "render request" : "Camera.Render")}+{(useMsaa ? 4 : 1)}x";
+                string failure = null;
+                try
                 {
-                    views.Add(view);
+                    // Probe the same target and readback format used for beauty. MSAA can
+                    // bypass depth priming, but the 1x path may be more reliable on this GPU.
+                    bodyTexture = GetBeautyTarget(captureSize, useMsaa);
+                    if (ProbeCaptureMode(camera, bodyTexture, probeReadback, unlit, out failure))
+                    {
+                        failure = CaptureBodyViews();
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    staleBodyViews++;
+                    failure = $"{ex.GetType().Name}: {ex.Message}";
+                }
+                finally
+                {
+                    camera.targetTexture = null;
+                }
+
+                if (failure == null)
+                {
+                    Debug.Log($"[FarAvatar] Capture mode: {mode}.");
+                    break;
+                }
+
+                failures.Add($"{mode}: {failure}");
+                views.Clear();
+                if (bodyTexture != null)
+                {
+                    RenderTexture.ReleaseTemporary(bodyTexture);
+                    bodyTexture = null;
                 }
             }
-            if (staleBodyViews > 0)
+
+            if (views.Count == 0)
             {
-                Debug.LogWarning($"[FarAvatar] Dropped {staleBodyViews} of {bodyDirections.Length} body captures whose readback did not contain this camera's render.");
+                var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+                BasisFarLodGenerator.LastFailureReason = $"no capture mode produced usable body views. Pipeline={pipeline?.name ?? "Built-in"}, " +
+                    $"quality={QualitySettings.names[QualitySettings.GetQualityLevel()]}, GPU={SystemInfo.graphicsDeviceType}, " +
+                    $"shader={unlit.name}, size={captureSize}. {string.Join("; ", failures)}";
+                Debug.LogError($"[FarAvatar] Skipping the far avatar: {BasisFarLodGenerator.LastFailureReason}");
+                return null;
             }
-            if (bodyDirections.Length - staleBodyViews < 6)
+            if (failures.Count > 0)
             {
-                BasisFarLodGenerator.LastFailureReason = $"beauty captures failed freshness validation ({staleBodyViews} of {bodyDirections.Length} body views poisoned, capture mode {(sUseRenderRequest ? "request" : "render")}+{(sUseMsaaTargets ? "4x" : "1x")})";
-                Debug.LogError($"[FarAvatar] Most body captures contained a wrong buffer ({staleBodyViews} of {bodyDirections.Length}) — skipping the far avatar instead of baking garbage.");
+                Debug.LogWarning($"[FarAvatar] Earlier capture modes failed: {string.Join("; ", failures)}");
+            }
+
+            string CaptureBodyViews()
+            {
+                foreach (Vector3 bodyDirection in bodyDirections)
+                {
+                    Vector3 directionWorld = (rootRotation * bodyDirection).normalized;
+                    if (TryCaptureView(camera, bodyTexture, bodyReadback, bodyLinearReadback, captureSize,
+                        centerWorld, directionWorld, rootRotation, radius, null, default,
+                        maskObject, maskBodyTexture, avatarRenderers, avatarRendererStates, radius, out CaptureView view))
+                    {
+                        views.Add(view);
+                    }
+                }
+
+                int dropped = bodyDirections.Length - views.Count;
+                if (views.Count < 6)
+                {
+                    return $"body capture freshness failed ({dropped} of {bodyDirections.Length} views dropped)";
+                }
+                if (!HasAvatarCoverage(views))
+                {
+                    return "body captures contain too few avatar pixels";
+                }
+                if (dropped > 0)
+                {
+                    Debug.LogWarning($"[FarAvatar] Dropped {dropped} of {bodyDirections.Length} body views that failed freshness validation.");
+                }
                 return null;
             }
 
-            // Close-up passes.
-            if (regions != null)
+            MeasureBrightnessResponse(camera, centerWorld, rootRotation, radius);
+
+            if (regions != null && regions.Length > 0)
             {
+                try
+                {
+                    CaptureCloseUps();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[FarAvatar] Could not complete the close-ups. Using the available views. {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            void CaptureCloseUps()
+            {
+                regionTexture = GetBeautyTarget(regionCaptureSize, sUseMsaaTargets);
+                regionLinearReadback = NewLinearReadback(regionCaptureSize, regionCaptureSize);
+                if (maskObject != null)
+                {
+                    regionReadback = NewReadback(regionCaptureSize);
+                    maskRegionTexture = RenderTexture.GetTemporary(regionCaptureSize, regionCaptureSize, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                }
+                regionMarkerMaterial = new Material(unlit) { hideFlags = HideFlags.HideAndDontSave };
+                regionMarker = CreateCaptureMarker(PrimitiveType.Quad);
+                regionMarker.gameObject.SetActive(false);
+                regionMarker.transform.SetParent(camera.transform, false);
+                regionMarker.sharedMaterial = regionMarkerMaterial;
+
+                int dropped = 0;
+                string firstCaptureError = null;
                 Vector3[] regionDirections =
                 {
                     Vector3.right, Vector3.left, Vector3.up, Vector3.down, Vector3.forward, Vector3.back,
@@ -284,43 +359,30 @@ public static class BasisFarLodAtlasBaker
                     for (int d = 0; d < regionDirections.Length; d++)
                     {
                         Vector3 directionWorld = (rootRotation * regionDirections[d]).normalized;
-                        // Close-ups can legitimately fill their corners with avatar, so the
-                        // freshness verdict is ignored — the body-view gate above already
-                        // proved or condemned this capture mode.
-                        views.Add(CaptureOne(camera, regionTexture, regionReadback, regionLinearReadback, regionCaptureSize,
-                            regionCenterWorld, directionWorld, rootRotation, regionRadius, isRegion: true, valid,
-                            maskObject, maskRegionTexture, avatarRenderers, avatarRendererStates, radius, out _));
+                        try
+                        {
+                            if (TryCaptureView(camera, regionTexture, regionReadback, regionLinearReadback, regionCaptureSize,
+                                regionCenterWorld, directionWorld, rootRotation, regionRadius, regionMarker, valid,
+                                maskObject, maskRegionTexture, avatarRenderers, avatarRendererStates, radius, out CaptureView view))
+                            {
+                                views.Add(view);
+                                continue;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            firstCaptureError ??= $"{regions[r].Name}: {ex.GetType().Name}: {ex.Message}";
+                        }
+                        dropped++;
                     }
+                }
+                if (dropped > 0)
+                {
+                    string detail = firstCaptureError == null ? "" : $" First capture error: {firstCaptureError}";
+                    Debug.LogWarning($"[FarAvatar] Dropped {dropped} invalid close-up views. Body views can supply those atlas samples.{detail}");
                 }
             }
             camera.targetTexture = null;
-
-            // Sanity: if the captures show (almost) no avatar, the camera rendered nothing —
-            // the atlas would be flat gray. A fraction threshold rather than exactly-zero:
-            // stray noise pixels must not sneak an empty bake through (the avatar fills a
-            // large part of every body view, so real captures sit far above this).
-            long coveredPixels = 0;
-            long sampledPixels = 0;
-            for (int v = 0; v < views.Count; v++)
-            {
-                Color32[] pixels = views[v].Pixels;
-                for (int p = 0; p < pixels.Length; p += 7)
-                {
-                    sampledPixels++;
-                    if (pixels[p].a > 128)
-                    {
-                        coveredPixels++;
-                    }
-                }
-            }
-            if (coveredPixels < sampledPixels / 200)
-            {
-                // Shipping a flat gray imposter is worse than shipping none — abort so the
-                // bundle builds without a far avatar and the console says why.
-                BasisFarLodGenerator.LastFailureReason = $"captures show (almost) no avatar pixels: {coveredPixels} of {sampledPixels} samples covered, capture mode {(sUseRenderRequest ? "request" : "render")}+{(sUseMsaaTargets ? "4x" : "1x")}";
-                Debug.LogError($"[FarAvatar] Captures show (almost) no avatar pixels ({coveredPixels} of {sampledPixels} samples covered, capture mode {(sUseRenderRequest ? "request" : "render")}+{(sUseMsaaTargets ? "4x" : "1x")}) — skipping the far avatar instead of baking a flat atlas. Check that the avatar's renderers are enabled and visible during build.");
-                return null;
-            }
 
             colliderObject = new GameObject("FarLodBakeCollider") { hideFlags = HideFlags.HideAndDontSave, layer = OcclusionLayer };
             colliderObject.transform.SetPositionAndRotation(root.position, root.rotation);
@@ -347,6 +409,10 @@ public static class BasisFarLodAtlasBaker
         finally
         {
             ShaderUtil.allowAsyncCompilation = savedAsyncCompilation;
+            if (camera != null)
+            {
+                camera.targetTexture = null;
+            }
             if (avatarRenderers != null && avatarRendererStates != null)
             {
                 for (int r = 0; r < avatarRenderers.Length; r++)
@@ -401,9 +467,21 @@ public static class BasisFarLodAtlasBaker
             {
                 Object.DestroyImmediate(regionLinearReadback);
             }
+            if (regionMarker != null)
+            {
+                Object.DestroyImmediate(regionMarker.gameObject);
+            }
             if (cameraObject != null)
             {
                 Object.DestroyImmediate(cameraObject);
+            }
+            if (regionMarkerMaterial != null)
+            {
+                Object.DestroyImmediate(regionMarkerMaterial);
+            }
+            if (probeReadback != null)
+            {
+                Object.DestroyImmediate(probeReadback);
             }
             if (colliderObject != null)
             {
@@ -506,17 +584,17 @@ public static class BasisFarLodAtlasBaker
         };
     }
 
-    private static Texture2D NewLinearReadback(int size)
+    private static Texture2D NewLinearReadback(int width, int height)
     {
-        return new Texture2D(size, size, TextureFormat.RGBAHalf, false, true)
+        return new Texture2D(width, height, TextureFormat.RGBAHalf, false, true)
         {
             hideFlags = HideFlags.HideAndDontSave,
         };
     }
 
-    private static RenderTexture GetCaptureTarget(int size, bool msaa, bool hdr = false)
+    private static RenderTexture GetBeautyTarget(int size, bool msaa)
     {
-        RenderTextureDescriptor descriptor = new RenderTextureDescriptor(size, size, hdr ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32, 24)
+        RenderTextureDescriptor descriptor = new RenderTextureDescriptor(size, size, RenderTextureFormat.ARGBHalf, 24)
         {
             msaaSamples = msaa ? 4 : 1,
         };
@@ -546,11 +624,13 @@ public static class BasisFarLodAtlasBaker
         return directions.ToArray();
     }
 
-    private static CaptureView CaptureOne(Camera camera, RenderTexture target, Texture2D readback, Texture2D linearReadback, int size,
-        Vector3 centerWorld, Vector3 directionWorld, Quaternion rootRotation, float frameRadius, bool isRegion, Bounds validBoundsRoot,
+    private static bool TryCaptureView(Camera camera, RenderTexture target, Texture2D readback, Texture2D linearReadback, int size,
+        Vector3 centerWorld, Vector3 directionWorld, Quaternion rootRotation, float frameRadius, Renderer marker, Bounds validBoundsRoot,
         GameObject maskObject, RenderTexture maskTarget, Renderer[] avatarRenderers, bool[] avatarRendererStates,
-        float clearanceRadius, out bool backgroundFresh)
+        float clearanceRadius, out CaptureView view)
     {
+        view = default;
+        bool isRegion = marker != null;
         Vector3 up = Mathf.Abs(Vector3.Dot(directionWorld, Vector3.up)) > 0.95f ? rootRotation * Vector3.forward : Vector3.up;
         camera.targetTexture = target;
         camera.orthographicSize = frameRadius * (isRegion ? 1.1f : 1f);
@@ -573,20 +653,57 @@ public static class BasisFarLodAtlasBaker
             camera.transform.SetPositionAndRotation(centerWorld - directionWorld * (frameRadius * 2f), Quaternion.LookRotation(directionWorld, up));
         }
 
-        float[] blackLinear = RenderAndReadLinear(camera, linearReadback, size, new Color(0f, 0f, 0f, 0f));
-        float[] whiteLinear = RenderAndReadLinear(camera, linearReadback, size, new Color(1f, 1f, 1f, 0f));
-        Color32[] onBlack = new Color32[size * size];
-        Color32[] onWhite = new Color32[size * size];
-        for (int p = 0, c = 0; p < onBlack.Length; p++, c += 3)
+        Color black = new Color(0f, 0f, 0f, 0f);
+        Color white = new Color(1f, 1f, 1f, 0f);
+        Material markerMaterial = null;
+        if (isRegion)
         {
-            onBlack[p] = new Color32(EncodeSrgb(blackLinear[c]), EncodeSrgb(blackLinear[c + 1]), EncodeSrgb(blackLinear[c + 2]), 255);
-            onWhite[p] = new Color32(EncodeSrgb(whiteLinear[c]), EncodeSrgb(whiteLinear[c + 1]), EncodeSrgb(whiteLinear[c + 2]), 255);
+            // Place a small unlit quad at the left edge just inside the near plane, where
+            // it stays visible even when the avatar fills the frame. Center it vertically
+            // so the sample is stable on pipelines with flipped rows.
+            float pixelWidth = 2f * camera.orthographicSize / size;
+            marker.transform.localPosition = new Vector3(
+                -camera.orthographicSize + RegionMarkerSize * 0.5f * pixelWidth, 0f,
+                camera.nearClipPlane + Mathf.Max(0.0001f, camera.nearClipPlane * 0.00001f));
+            marker.transform.localScale = new Vector3(RegionMarkerSize * pixelWidth, RegionMarkerSize * pixelWidth, 1f);
+            markerMaterial = marker.sharedMaterial;
+            markerMaterial.color = Color.red;
+            marker.gameObject.SetActive(true);
         }
-        // Freshness: the raw reads must actually contain THIS camera's renders — the black
-        // pass shows a black background and the white pass a white one. A capture path that
-        // hands back some other buffer (observed on live-editor render requests) fails this
-        // on every corner, no matter what it contains.
-        backgroundFresh = CornersMatch(onBlack, size, expectDark: true) && CornersMatch(onWhite, size, expectDark: false);
+
+        float[] blackLinear;
+        float[] whiteLinear;
+        try
+        {
+            blackLinear = RenderAndReadLinear(camera, linearReadback, size, black);
+            if (markerMaterial != null)
+            {
+                markerMaterial.color = Color.green;
+            }
+            whiteLinear = RenderAndReadLinear(camera, linearReadback, size, white);
+        }
+        finally
+        {
+            if (isRegion)
+            {
+                marker.gameObject.SetActive(false);
+            }
+        }
+
+        if (isRegion)
+        {
+            int sample = ((size / 2) * size + RegionMarkerSize / 2) * 3;
+            if (!MatchesRegionMarker(blackLinear, whiteLinear, sample))
+            {
+                return false;
+            }
+        }
+        else if (!BodyBackgroundMatches(blackLinear, whiteLinear, size))
+        {
+            return false;
+        }
+
+        Color32[] onBlack = new Color32[size * size];
         for (int p = 0, c = 0; p < onBlack.Length; p++, c += 3)
         {
             float r = blackLinear[c], g = blackLinear[c + 1], b = blackLinear[c + 2];
@@ -604,6 +721,16 @@ public static class BasisFarLodAtlasBaker
             onBlack[p] = new Color32(EncodeSrgb(r), EncodeSrgb(g), EncodeSrgb(b), (byte)Mathf.RoundToInt(coverage * 255f));
         }
 
+        if (isRegion)
+        {
+            // Leave the marker and its antialiased edges out of atlas sampling.
+            int centerY = size / 2;
+            for (int y = centerY - RegionMarkerSize / 2 - 1; y <= centerY + RegionMarkerSize / 2; y++)
+            {
+                Array.Clear(onBlack, y * size, RegionMarkerSize + 1);
+            }
+        }
+
         // Part-id + depth pass: same camera, only the vertex-colored snapshot mesh visible.
         byte[] groupIds = null;
         ushort[] depth16 = null;
@@ -618,16 +745,23 @@ public static class BasisFarLodAtlasBaker
                     avatarRenderer.enabled = false;
                 }
             }
-            maskObject.SetActive(true);
-            camera.targetTexture = maskTarget;
-            Color32[] maskPixels = RenderAndRead(camera, readback, size, new Color(0f, 0f, 0f, 0f));
-            camera.targetTexture = target;
-            maskObject.SetActive(false);
-            for (int r = 0; r < avatarRenderers.Length; r++)
+            Color32[] maskPixels;
+            try
             {
-                if (avatarRendererStates[r] && avatarRenderers[r] != null)
+                maskObject.SetActive(true);
+                camera.targetTexture = maskTarget;
+                maskPixels = RenderAndRead(camera, readback, size, new Color(0f, 0f, 0f, 0f));
+            }
+            finally
+            {
+                camera.targetTexture = target;
+                maskObject.SetActive(false);
+                for (int r = 0; r < avatarRenderers.Length; r++)
                 {
-                    avatarRenderers[r].enabled = true;
+                    if (avatarRendererStates[r] && avatarRenderers[r] != null)
+                    {
+                        avatarRenderers[r].enabled = true;
+                    }
                 }
             }
             groupIds = new byte[maskPixels.Length];
@@ -643,7 +777,7 @@ public static class BasisFarLodAtlasBaker
 
         Matrix4x4 clip = camera.projectionMatrix * camera.worldToCameraMatrix;
         Matrix4x4 ndcToPixel = Matrix4x4.TRS(new Vector3(size * 0.5f, size * 0.5f, 0f), Quaternion.identity, new Vector3(size * 0.5f, size * 0.5f, 1f));
-        return new CaptureView
+        view = new CaptureView
         {
             DirectionWorld = directionWorld,
             WorldToPixel = ndcToPixel * clip,
@@ -660,199 +794,164 @@ public static class BasisFarLodAtlasBaker
             IsRegion = isRegion,
             ValidBoundsRoot = validBoundsRoot,
         };
+        return true;
+    }
+
+    private static Shader FindCaptureShader()
+    {
+        Shader unlit = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null
+            ? Shader.Find("Universal Render Pipeline/Unlit")
+            : null;
+        if (unlit == null || !unlit.isSupported)
+        {
+            unlit = Shader.Find("Unlit/Color");
+        }
+        return unlit != null && unlit.isSupported ? unlit : null;
+    }
+
+    private static Renderer CreateCaptureMarker(PrimitiveType shape)
+    {
+        GameObject marker = GameObject.CreatePrimitive(shape);
+        marker.hideFlags = HideFlags.HideAndDontSave;
+        if (marker.TryGetComponent(out Collider collider))
+        {
+            Object.DestroyImmediate(collider);
+        }
+        Renderer renderer = marker.GetComponent<Renderer>();
+        renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+        return renderer;
     }
 
     /// <summary>
-    /// Proves which manual capture mode actually works on this pipeline before the bake uses
-    /// it. A mode must render the red unlit cube in two consecutive green/magenta capture
-    /// pairs after a warm-up render. The changing background rejects stale readbacks, while
-    /// the cube must be visible in every pass. Camera.Render is preferred to render requests,
-    /// with 4x MSAA probed before 1x for each path.
+    /// Renders a red cube against two different backgrounds into the actual beauty target.
+    /// Its right silhouette edge crosses the frame center, so a single narrow readback sees
+    /// geometry and background. A failed pair can be retried while the renderer initializes.
     /// </summary>
-    private static bool DetectCaptureMode(Camera camera, Texture2D readback, int size, out string failure)
+    private static bool ProbeCaptureMode(Camera camera, RenderTexture target, Texture2D readback, Shader unlit, out string failure)
     {
-        failure = null;
-        int savedMask = camera.cullingMask;
+        Renderer probe = CreateCaptureMarker(PrimitiveType.Cube);
+        Material material = null;
         RenderTexture savedTarget = camera.targetTexture;
-        GameObject probe = null;
-        Material probeMaterial = null;
-        RenderTexture probeTarget = null;
         try
         {
-            probe = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            probe.hideFlags = HideFlags.HideAndDontSave;
-            if (probe.TryGetComponent(out Collider probeCollider))
-            {
-                Object.DestroyImmediate(probeCollider);
-            }
-            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
-            Shader unlit = pipeline != null ? Shader.Find("Universal Render Pipeline/Unlit") : null;
-            if (unlit == null || !unlit.isSupported)
-            {
-                unlit = Shader.Find("Unlit/Color");
-            }
-            if (unlit == null || !unlit.isSupported)
-            {
-                failure = "capture probe has no supported unlit shader";
-                return false;
-            }
-
-            probeMaterial = new Material(unlit) { hideFlags = HideFlags.HideAndDontSave, color = Color.red };
-            probe.GetComponent<MeshRenderer>().sharedMaterial = probeMaterial;
-            probe.transform.position = new Vector3(0f, -8192f, 0f);
-
-            camera.cullingMask = ~0;
+            material = new Material(unlit) { hideFlags = HideFlags.HideAndDontSave, color = Color.red };
+            probe.sharedMaterial = material;
+            probe.transform.position = new Vector3(-0.5f, -8192f, 0f);
+            camera.targetTexture = target;
             camera.orthographicSize = 1.2f;
             camera.nearClipPlane = 0.1f;
             camera.farClipPlane = 10f;
-            camera.transform.SetPositionAndRotation(probe.transform.position - Vector3.forward * 3f, Quaternion.identity);
+            camera.transform.SetPositionAndRotation(new Vector3(0f, -8192f, -3f), Quaternion.identity);
 
-            // Camera.Render rungs first: render requests have been observed passing this
-            // probe and then landing a wrong internal buffer in the readback mid-sequence on
-            // live editor sessions — Camera.Render has not. The per-view freshness check in
-            // CaptureOne is the backstop either way.
-            (bool useRequest, bool useMsaa)[] candidates =
-            {
-                (false, true), (false, false), (true, true), (true, false),
-            };
-            List<string> failures = new List<string>();
+            Rect samples = new Rect((target.width - readback.width) / 2, target.height / 2, readback.width, 1);
             const int maxAttempts = 3;
-            foreach ((bool useRequest, bool useMsaa) in candidates)
+            List<string> failures = new List<string>();
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                sUseRenderRequest = useRequest;
-                sUseMsaaTargets = useMsaa;
-                string mode = $"{(useRequest ? "render request" : "Camera.Render")}+{(useMsaa ? 4 : 1)}x";
-                for (int attempt = 1; attempt <= maxAttempts; attempt++)
+                try
                 {
-                    try
+                    if (ProbeBackground(camera, readback, samples, Color.green, out string passFailure) &&
+                        ProbeBackground(camera, readback, samples, Color.magenta, out passFailure))
                     {
-                        // Target creation can also fail for a particular mode. Keep trying
-                        // the ladder and release each acquired target before moving on.
-                        if (probeTarget == null)
-                        {
-                            probeTarget = GetCaptureTarget(size, useMsaa);
-                            camera.targetTexture = probeTarget;
-                        }
-                        // DepthPrimingScope may have invalidated URP's renderer. Let it
-                        // initialize before checking two full capture pairs.
-                        camera.backgroundColor = Color.black;
-                        ReadCapturePixels(camera, readback, size);
-                        if (!CaptureProbeWorks(camera, readback, size, out string passFailure))
-                        {
-                            failures.Add($"{mode} attempt {attempt}: {passFailure}");
-                            continue;
-                        }
-                        if (!CaptureProbeWorks(camera, readback, size, out passFailure))
-                        {
-                            failures.Add($"{mode} attempt {attempt} repeat: {passFailure}");
-                            continue;
-                        }
                         if (failures.Count > 0)
                         {
-                            Debug.LogWarning($"[FarAvatar] Capture probe recovered using {mode}. Earlier attempts: {string.Join("; ", failures)}");
+                            Debug.LogWarning($"[FarAvatar] Capture probe recovered on attempt {attempt}: {string.Join("; ", failures)}");
                         }
+                        failure = null;
                         return true;
                     }
-                    catch (Exception ex)
-                    {
-                        failures.Add($"{mode} attempt {attempt}: {ex.GetType().Name}: {ex.Message}");
-                    }
+                    failures.Add($"attempt {attempt}: {passFailure}");
                 }
-                camera.targetTexture = savedTarget;
-                if (probeTarget != null)
+                catch (Exception ex)
                 {
-                    RenderTexture.ReleaseTemporary(probeTarget);
-                    probeTarget = null;
+                    failures.Add($"attempt {attempt}: {ex.GetType().Name}: {ex.Message}");
                 }
             }
-
-            failure = $"no capture path passed the geometry probe. Pipeline={pipeline?.name ?? "Built-in"}, " +
-                $"quality={QualitySettings.names[QualitySettings.GetQualityLevel()]}, GPU={SystemInfo.graphicsDeviceType}, " +
-                $"shader={unlit.name}, size={size}. {string.Join("; ", failures)}";
+            failure = $"half-float geometry probe failed ({string.Join("; ", failures)})";
             return false;
         }
         finally
         {
-            camera.cullingMask = savedMask;
             camera.targetTexture = savedTarget;
-            if (probeTarget != null)
+            Object.DestroyImmediate(probe.gameObject);
+            if (material != null)
             {
-                RenderTexture.ReleaseTemporary(probeTarget);
-            }
-            if (probe != null)
-            {
-                Object.DestroyImmediate(probe);
-            }
-            if (probeMaterial != null)
-            {
-                Object.DestroyImmediate(probeMaterial);
+                Object.DestroyImmediate(material);
             }
         }
     }
 
-    private static bool CaptureProbeWorks(Camera camera, Texture2D readback, int size, out string failure)
+    private static bool ProbeBackground(Camera camera, Texture2D readback, Rect samples, Color background, out string failure)
     {
-        camera.backgroundColor = Color.green;
-        ReadCapturePixels(camera, readback, size);
-        NativeArray<Color32> onGreen = readback.GetPixelData<Color32>(0);
-        // Row order is pipeline-dependent, but the cube is centered and all four corners
-        // are background in this framing.
-        int centerIndex = (size / 2) * size + size / 2;
-        int cornerIndex = (size / 8) * size + size / 8;
-        Color32 center = onGreen[centerIndex];
-        Color32 corner = onGreen[cornerIndex];
-        if (!IsRedProbePixel(center) || corner.g <= 180 || corner.r >= 100 || corner.b >= 100)
+        camera.backgroundColor = background;
+        ReadCaptureRegion(camera, readback, samples);
+        Color geometry = readback.GetPixel(0, 0);
+        Color clear = readback.GetPixel(readback.width - 1, 0);
+        if (MatchesRgb(geometry, Color.red) && MatchesRgb(clear, background))
         {
-            failure = $"green pass center={center}, corner={corner} (expected red geometry/green background)";
-            return false;
+            failure = null;
+            return true;
         }
-
-        camera.backgroundColor = Color.magenta;
-        ReadCapturePixels(camera, readback, size);
-        NativeArray<Color32> onMagenta = readback.GetPixelData<Color32>(0);
-        center = onMagenta[centerIndex];
-        corner = onMagenta[cornerIndex];
-        if (!IsRedProbePixel(center) || corner.r <= 180 || corner.b <= 180 || corner.g >= 100)
-        {
-            failure = $"magenta pass center={center}, corner={corner} (expected red geometry/magenta background)";
-            return false;
-        }
-
-        failure = null;
-        return true;
+        failure = $"expected red geometry and {background}, read {geometry} and {clear}";
+        return false;
     }
 
-    private static bool IsRedProbePixel(Color32 pixel)
+    private static bool MatchesRgb(Color actual, Color expected)
     {
-        return pixel.r > 180 && pixel.g < 100 && pixel.b < 100;
+        const float tolerance = 0.2f;
+        return Mathf.Abs(actual.r - expected.r) < tolerance && Mathf.Abs(actual.g - expected.g) < tolerance &&
+               Mathf.Abs(actual.b - expected.b) < tolerance;
     }
 
-    /// <summary>
-    /// At least two of the four corners must agree with the requested background brightness.
-    /// Body views frame the avatar inscribed in the capture circle, so corners are normally
-    /// background — but a scene floor can legitimately occupy the lower ones, hence the
-    /// majority rule. A wrong buffer (uniform depth/id-like content) fails on every corner in
-    /// both passes and can't sneak through.
-    /// </summary>
-    private static bool CornersMatch(Color32[] pixels, int size, bool expectDark)
+    private static bool MatchesRegionMarker(float[] black, float[] white, int sample)
     {
+        // Distinct colors also reject clear-only captures, even when the camera renders
+        // the correct black or white background.
+        return MatchesRgb(new Color(black[sample], black[sample + 1], black[sample + 2]), Color.red) &&
+               MatchesRgb(new Color(white[sample], white[sample + 1], white[sample + 2]), Color.green);
+    }
+
+    private static bool BodyBackgroundMatches(float[] black, float[] white, int size)
+    {
+        // Two corners must track the change together. The other corners may contain
+        // legitimate geometry such as a floor.
         int margin = size / 16;
-        int[] xs = { margin, size - 1 - margin };
-        int[] ys = { margin, size - 1 - margin };
         int matching = 0;
-        foreach (int y in ys)
+        for (int y = 0; y < 2; y++)
         {
-            foreach (int x in xs)
+            for (int x = 0; x < 2; x++)
             {
-                Color32 pixel = pixels[y * size + x];
-                int brightness = (pixel.r + pixel.g + pixel.b) / 3;
-                if (expectDark ? brightness <= 64 : brightness >= 191)
+                int row = y == 0 ? margin : size - 1 - margin;
+                int column = x == 0 ? margin : size - 1 - margin;
+                int i = (row * size + column) * 3;
+                int dark = (EncodeSrgb(black[i]) + EncodeSrgb(black[i + 1]) + EncodeSrgb(black[i + 2])) / 3;
+                int light = (EncodeSrgb(white[i]) + EncodeSrgb(white[i + 1]) + EncodeSrgb(white[i + 2])) / 3;
+                if (dark <= 64 && light >= 191)
                 {
                     matching++;
                 }
             }
         }
         return matching >= 2;
+    }
+
+    private static bool HasAvatarCoverage(List<CaptureView> views)
+    {
+        long covered = 0;
+        long sampled = 0;
+        foreach (CaptureView view in views)
+        {
+            for (int i = 0; i < view.Pixels.Length; i += 7)
+            {
+                sampled++;
+                if (view.Pixels[i].a > 128)
+                {
+                    covered++;
+                }
+            }
+        }
+        return covered > 0 && covered >= sampled / 200;
     }
 
     private static void SubmitRender(Camera camera)
@@ -890,12 +989,17 @@ public static class BasisFarLodAtlasBaker
 
     private static void ReadCapturePixels(Camera camera, Texture2D readback, int size)
     {
+        ReadCaptureRegion(camera, readback, new Rect(0, 0, size, size));
+    }
+
+    private static void ReadCaptureRegion(Camera camera, Texture2D readback, Rect region)
+    {
         RenderTexture previous = RenderTexture.active;
         try
         {
             SubmitRender(camera);
             RenderTexture.active = camera.targetTexture;
-            readback.ReadPixels(new Rect(0, 0, size, size), 0, 0, false);
+            readback.ReadPixels(region, 0, 0, false);
         }
         finally
         {
